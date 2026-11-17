@@ -1,0 +1,218 @@
+# PlummyKnowledge — Development Roadmap
+
+| | |
+|---|---|
+| Статус | v0.1 |
+| Источник | [PROJECT_BLUEPRINT.md](PROJECT_BLUEPRINT.md) §13, §19, §21, §22 |
+| Решения | [ADR-001…009](adr/README.md) |
+| Связанные документы | [PRODUCT_SPEC.md](PRODUCT_SPEC.md), [ARCHITECTURE.md](ARCHITECTURE.md), [SECURITY_MODEL.md](SECURITY_MODEL.md) |
+
+Последовательность фаз 0–13 взята из blueprint без изменений. Документ добавляет к каждой фазе решения ADR-005…008,
+security gate (проверки безопасности **внутри** фазы) и критерии выхода. Фаза 12 — это итоговый аудит и hardening,
+а не первая проверка безопасности.
+
+## 1. Принципы последовательности
+
+1. Сначала работающий end-to-end сценарий, затем расширение (§22 п.1). Ядро: Docker Compose → login → provider config →
+   upload PDF → parse → chunk → embed → retrieve → streamed answer → verified citation (§22).
+2. Bootstrap и авторизация готовы **до** полноценного пользовательского сценария (Фазы 2–3).
+3. Локальная загрузка — **первый** источник документов (Фаза 5).
+4. Единый ingestion pipeline ([ADR-008](adr/0008-unified-document-ingestion.md)) появляется **до** Google Drive и
+   Microsoft 365 (Фаза 5 < Фазы 9–10).
+5. Полноценный RAG работает **до** сложных внешних интеграций (Фазы 6–8 < Фазы 9–10).
+6. Безопасность проверяется на протяжении всей разработки: каждая фаза закрывается своим security gate.
+7. Не начинать Google OAuth, Microsoft Graph и сложный RAG до стабильного запуска каркаса (§21).
+8. Каждая фаза соответствует Definition of Done (§12, [../CLAUDE.md](../CLAUDE.md)).
+
+## 2. Фазы
+
+### Фаза 0 — Product discovery (§13)
+
+- Vision, target users, MVP/out-of-scope — [PRODUCT_SPEC.md](PRODUCT_SPEC.md).
+- Repository, README, roadmap, ADR index — [adr/README.md](adr/README.md).
+- User journeys и threat model — [SECURITY_MODEL.md](SECURITY_MODEL.md).
+- **Выход:** спецификации согласованы, ADR-001…008 Accepted. *(Текущее состояние: документация готова; README,
+  NOTICE и GitHub Project — первая рабочая сессия §21.)*
+
+### Фаза 1 — Repository и developer experience (§13)
+
+- Monorepo и lockfiles; Dockerfiles и Compose: PostgreSQL+pgvector, Redis, backend, worker, frontend.
+- Healthchecks, Pydantic Settings (основа Instance Settings, ADR-006), Alembic, `.env.example` без секретов.
+- Ruff, pytest, mypy/pyright; ESLint, Prettier, strict TypeScript, Vitest.
+- GitHub Actions, pre-commit, issue/PR templates; проверка `scripts/version.py check` в CI; версия приложений из
+  `VERSION` ([ADR-009](adr/0009-automatic-versioning.md)).
+- **Security gate:** нет секретов в репозитории и `.env.example`; ошибки конфигурации останавливают старт; порты
+  БД/Redis не публикуются наружу; dependency scanning в CI (раннее включение пункта Фазы 12).
+- **Выход:** `docker compose up` поднимает сервисы, health/readiness зелёные, CI проходит.
+
+### Фаза 2 — Core backend и data model (§13)
+
+- Async SQLAlchemy session lifecycle и transaction boundaries.
+- Organization, User, Group, Role, Permission и связи; системные роли и permissions — миграцией.
+- `instance_state` и CLI `plummy admin create` — серверный способ создать первого администратора (ADR-006); нужен для
+  разработки до web-setup и остаётся процедурой восстановления.
+- Tenant-aware query patterns, audit events, migrations.
+- **Предварительно:** ADR «Tenant membership».
+- **Security gate:** тесты изоляции двух организаций; составные FK; SC-05 для первых ресурсов.
+- **Выход:** модели и миграции проверены на чистой БД; тесты изоляции проходят.
+
+### Фаза 3 — Authentication/authorization и bootstrap (§13, ADR-006)
+
+- Password hashing (Argon2id), login/logout, access/refresh strategy, refresh rotation/revocation, session
+  management, rate limiting.
+- Permission policy service и проверки в use cases; CSRF/cookie strategy.
+- Группа `setup`: bootstrap token, `GET /setup/status`, `POST /setup/initialize`, режим `cli_only`.
+- Instance Settings только на чтение (`GET /system/settings`); Organization Settings с проверкой instance-границ.
+- **Предварительно:** ADR «Auth/session strategy».
+- **Security gate:** negative RBAC tests; revoked sessions отклоняются; SC-03, SC-04; тела setup-запросов не
+  логируются; SC-02 (часть про Organization Settings).
+- **Выход:** первый администратор создаётся только с bootstrap token или CLI; защищённый endpoint работает.
+
+### Фаза 4 — AI provider abstraction и сетевая политика (§13, ADR-007)
+
+- `LLMProvider`, `EmbeddingProvider`, capabilities, typed errors.
+- **`SafeHttpClient`** и network allowlist в Instance Settings — до первого адаптера.
+- Адаптеры OpenAI, Anthropic, Ollama, OpenAI-compatible — через одни и те же интерфейсы.
+- Connection tests, encrypted secrets, timeout/retry/cancellation; contract tests.
+- **Предварительно:** ADR «Шифрование секретов».
+- **Security gate:** SSRF-тесты по каждому классу адресов и альтернативным записям IP; SC-02 (`endpoint_not_allowed`),
+  SC-06, SC-07; секреты не возвращаются и не логируются.
+- **Выход:** облачный и локальный (Ollama через allowlist) провайдеры проходят connection test и contract tests.
+
+### Фаза 5 — Local document ingestion (§13, ADR-008)
+
+- `StorageProvider` и local storage; quarantine upload.
+- Document Source `upload` (создаётся с KB); `Document`/`DocumentVersion`; file validation.
+- `ParserProvider` + Docling, normalized document structure.
+- `ChunkingStrategy`, Celery tasks, idempotency/retry; embeddings, pgvector, job status, reindex/delete.
+- Все 12 стадий единого pipeline; стадии 1–2 сразу спроектированы под коннекторы.
+- Tests PDF/DOCX/XLSX/TXT/CSV/MD.
+- **Предварительно:** ADR «Хранение векторов».
+- **Security gate:** лимиты размера/страниц/распаковки, archive bombs, malicious filenames, изоляция парсера; SC-05
+  для документов; SC-09; deleted docs не находятся.
+- **Выход:** загруженный PDF/DOCX проходит pipeline до `ready`; повторы не создают дубликатов.
+
+### Фаза 6 — Retrieval и RAG evaluation (§13)
+
+- Vector search и PostgreSQL full-text search; hybrid fusion (RRF); tenant/KB/version filters; deduplication.
+- Bounded context assembly и citation ID validation.
+- Evaluation dataset (30–50 документов, 50–100 вопросов) и метрики Recall@K/citation precision.
+- Prompt injection test cases.
+- **Предварительно:** ADR «FTS-конфигурация».
+- **Security gate:** unauthorized chunks не попадают в LLM; выдуманные citation IDs отклоняются; SC-08.
+- **Выход:** метрики evaluation зафиксированы как baseline.
+
+### Фаза 7 — Knowledge Bases и Assistants (§13, ADR-005)
+
+- CRUD KB, sources, KB-level access.
+- CRUD Assistant, instructions, model/retrieval profiles.
+- Assistant Access Model: доступ ко всем KB ассистента; ассистент без KB — только `assistants.manage`.
+- Проверки доступа и тесты комбинаций permissions.
+- **Security gate:** SC-01; отзыв доступа к KB (прямого и через группу) немедленно скрывает ассистента.
+- **Выход:** матрица комбинаций «пользователь × KB × ассистент» покрыта тестами.
+
+### Фаза 8 — Chat UI и streaming (§13)
+
+- Login/setup/chat/history UI; setup wizard (ADR-006).
+- SSE client и typed events, stop generation.
+- Citation display и protected in-app viewer.
+- Loading/error/empty states, accessibility, E2E.
+- **Предварительно:** ADR «Генерация в API или worker».
+- **Security gate:** XSS-тесты рендеринга ответа (Markdown без сырого HTML, без автозагрузки внешних изображений);
+  CSRF; viewer повторно проверяет доступ; E2E для SC-01.
+- **Выход:** вертикальный сценарий §22 работает end-to-end → **релиз 0.1.0** (вместе с минимальным open-source
+  пакетом, см. §3).
+
+### Фаза 9 — Google Drive (§13)
+
+- Scopes и verification requirements; OAuth state validation, encrypted refresh tokens, folder picker.
+- Recursive listing, download/export, initial sync; Changes API cursor, incremental sync, rename/move/delete.
+- Throttle/backoff, revoke, reconciliation, tests и docs.
+- Коннектор только реализует `DataSourceConnector`; документы идут в общий pipeline (ADR-008).
+- **Security gate:** OAuth state/PKCE; честное отображение scopes; redirects загрузки проверяются `SafeHttpClient`;
+  SC-08 на внешних документах; удаление в источнике отражается в индексе.
+- **Выход:** **релиз 0.3.0**.
+
+### Фаза 10 — Microsoft 365 (§13)
+
+- Entra app registration и OAuth PKCE; delegated/app permissions и Selected permissions research.
+- Site/drive/library/folder picker, Graph listing/download.
+- Initial sync, Delta Query, changes, retries, revoke, tests.
+- **Security gate:** как в Фазе 9; предупреждение о широте `Files.Read.All`.
+- **Выход:** **релиз 0.4.0**.
+
+### Фаза 11 — Production deployment (§13)
+
+- S3-compatible storage и MinIO; Compose profiles, Nginx TLS, production secrets/resource limits.
+- Backup/restore, upgrades, retention, worker scaling; сегментация сетей и egress-фильтрация ([DEPLOYMENT.md](DEPLOYMENT.md)).
+- Admin jobs/sync dashboard и troubleshooting.
+- **Security gate:** backup/restore drill; проверка lifecycle удаления; ключ шифрования хранится отдельно от backup.
+
+### Фаза 12 — Security hardening (§13)
+
+- Threat model review и tenant/RBAC audit.
+- OAuth, SSRF, upload/parser, archive bomb и prompt injection tests — полный прогон SC-01…SC-09.
+- XSS/CSRF/CORS, rate limits, logs, deletion lifecycle.
+- Dependency/container scanning и security reporting.
+- **Выход (вместе с Фазой 11):** **релиз 0.5.0**.
+
+### Фаза 13 — Open-source release (§13)
+
+- README, diagrams, quick start, configuration/deployment guides.
+- Connector/provider development guides, backup/restore, troubleshooting.
+- CONTRIBUTING, CODE_OF_CONDUCT, SECURITY, LICENSE, NOTICE.
+- CHANGELOG, SemVer, GitHub Release, demo, roadmap, Discussions.
+- **Выход:** **релиз 1.0.0** — стабильные contracts и production readiness (§19).
+
+## 3. Релизы (§19)
+
+| Релиз | Содержание | Фазы |
+|---|---|---|
+| 0.1.0 | Docker Compose deployment, локальная аутентификация и KB-level авторизация, LLM-провайдеры, upload PDF/DOCX и асинхронная индексация, hybrid retrieval, streamed chat, проверяемые citations и in-app viewer, tenant isolation tests, базовый audit, документация и quick start | 0–8 + минимальный пакет Фазы 13 (README, LICENSE, NOTICE, CONTRIBUTING, SECURITY, quick start) |
+| 0.2.0 | XLSX/CSV и RAG improvements | Доработка 5–6 |
+| 0.3.0 | Google Drive | 9 |
+| 0.4.0 | Microsoft 365 | 10 |
+| 0.5.0 | Hardening, admin, backups | 11–12 |
+| 1.0.0 | Стабильные contracts и production readiness | 13 |
+
+Перед каждым релизом — контрольный список §20 blueprint и [SECURITY_MODEL.md §19](SECURITY_MODEL.md).
+
+**Версии ([ADR-009](adr/0009-automatic-versioning.md)).** Между релизами каждый коммит автоматически повышает
+`VERSION`: `0.1.0-dev.1`, `0.1.0-dev.2`, … Релиз выпускается командой `python3 scripts/version.py release`
+(→ `0.1.0`, тег `v0.1.0`), после чего разработка продолжается с `0.2.0-dev.1`. Номера релизов остаются привязанными
+к таблице выше. В Фазе 1 версия backend, frontend и Docker-образов берётся из `VERSION`, а CI проверяет её рост
+(`python3 scripts/version.py check`).
+
+## 4. Первые семь рабочих сессий (§21)
+
+| # | Сессия | Фаза |
+|---|---|---|
+| 1 | GitHub repository, README, Apache 2.0 LICENSE, NOTICE, .gitignore, docs, GitHub Project | 0 |
+| 2 | FastAPI backend, Pydantic Settings, logging, health endpoints, pytest, Ruff | 1 |
+| 3 | React + TypeScript + Vite, Chakra UI, Redux Toolkit, RTK Query, router | 1 |
+| 4 | PostgreSQL + pgvector и Redis через Compose; SQLAlchemy async и Alembic | 1 |
+| 5 | Celery worker, тестовая задача, retry и наблюдаемое состояние | 1 |
+| 6 | Organization и User, миграции, tenant isolation tests; `instance_state` и `plummy admin create` | 2 |
+| 7 | Минимальный auth flow и защищённый endpoint; обновить docs и зафиксировать milestone | 3 (начало) |
+
+## 5. Контрольные сценарии по фазам
+
+| Сценарий ([SECURITY_MODEL.md §18.1](SECURITY_MODEL.md)) | Фаза первого теста |
+|---|---|
+| SC-01 Нет доступа к одной из KB ассистента | 7 (API), 8 (E2E) |
+| SC-02 Администратор организации расширяет allowlist | 3–4 |
+| SC-03 Повторная первоначальная настройка | 3 |
+| SC-04 Параллельное создание первого администратора | 3 |
+| SC-05 Документ другого tenant по прямому запросу | 2, 5 |
+| SC-06 Локальный Ollama по разрешённому адресу | 4 |
+| SC-07 Разрешённый hostname → запрещённый адрес | 4 |
+| SC-08 Prompt injection во внешнем документе | 6, 9 |
+| SC-09 Повторный ingestion обработанной версии | 5 |
+
+## 6. Уточнения к blueprint
+
+| Вопрос | Решение в этом roadmap | Требует подтверждения |
+|---|---|---|
+| Фаза 5 тестирует XLSX/CSV, а релиз 0.1.0 включает только PDF/DOCX, XLSX/CSV — 0.2.0 | Pipeline Фазы 5 принимает все форматы MVP; гарантированное качество structure-aware для XLSX/CSV (sheet/row) — в 0.2.0 | Да |
+| Фаза 13 (open-source release) идёт после 0.1.0, хотя 0.1.0 — первый публичный релиз, а §17 советует публиковать skeleton рано | Минимальный open-source пакет выпускается с 0.1.0; Фаза 13 завершает его к 1.0.0 | Да |
+| Web-setup в blueprint не привязан к фазе | Серверный bootstrap (CLI) — Фаза 2; web-setup — Фаза 3; wizard UI — Фаза 8 | Нет (ADR-006) |

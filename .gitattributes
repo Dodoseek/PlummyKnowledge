@@ -1,0 +1,2 @@
+# PlummyKnowledge: конфликты VERSION разрешает merge-driver (docs/adr/0009-automatic-versioning.md)
+VERSION merge=plummy-version
