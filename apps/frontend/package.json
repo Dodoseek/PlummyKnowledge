@@ -1,0 +1,55 @@
+{
+  "name": "plummy-frontend",
+  "private": true,
+  "description": "PlummyKnowledge web UI (React SPA). Version comes from the repository VERSION file (ADR-009).",
+  "license": "Apache-2.0",
+  "type": "module",
+  "packageManager": "npm@11.21.2",
+  "engines": {
+    "node": "^20.19.0 || ^22.13.0 || >=24",
+    "npm": ">=11.0.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -b --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@chakra-ui/react": "~2.10.10",
+    "@emotion/react": "^11.14.0",
+    "@emotion/styled": "^11.14.1",
+    "@reduxjs/toolkit": "^2.14.0",
+    "framer-motion": "^11.18.2",
+    "react": "~18.3.1",
+    "react-dom": "~18.3.1",
+    "react-redux": "^9.3.1",
+    "react-router": "^7.18.5"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.0",
+    "@testing-library/dom": "^10.4.0",
+    "@testing-library/jest-dom": "^6.6.0",
+    "@testing-library/react": "^16.3.0",
+    "@testing-library/user-event": "^14.6.0",
+    "@types/node": "^22.15.0",
+    "@types/react": "~18.3.31",
+    "@types/react-dom": "~18.3.7",
+    "@vitejs/plugin-react": "^5.2.0",
+    "eslint": "^10.0.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.8",
+    "globals": "^16.5.0",
+    "jsdom": "^27.0.0",
+    "prettier": "^3.6.0",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.73.0",
+    "vite": "^7.3.0",
+    "vitest": "^4.1.12"
+  }
+}

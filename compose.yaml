@@ -1,0 +1,149 @@
+# PlummyKnowledge — local development stack.
+#
+#   docker compose up --build
+#
+# Frontend: http://localhost:5173 · API: http://localhost:8000/api/v1 (docs: /api/v1/docs)
+#
+# Development only: default credentials below are for a database that is never published outside the
+# Docker network. PostgreSQL has two roles (ADR-011): the bootstrap superuser `postgres`, used only by the
+# container's init script (deploy/postgres/initdb) to create the application role, database and extensions,
+# and the application role `plummy` (no superuser) used by migrations and the API.
+# The production profile (Nginx/TLS, MinIO, secrets as files, resource limits) is roadmap Phase 11 — see
+# docs/DEPLOYMENT.md. Variables can be overridden in a local .env (see .env.example).
+
+name: plummy
+
+x-backend-env: &backend-env
+  APP_ENV: ${APP_ENV:-development}
+  APP_DEBUG: ${APP_DEBUG:-false}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  SECRET_KEY: ${SECRET_KEY:-}
+  DATABASE_URL: postgresql+asyncpg://${PLUMMY_DB_USER:-plummy}:${PLUMMY_DB_PASSWORD:-plummy_dev_password}@postgres:5432/${PLUMMY_DB_NAME:-plummy}
+  REDIS_URL: redis://redis:6379/0
+  CORS_ORIGINS: ${CORS_ORIGINS:-}
+  API_DOCS_ENABLED: ${API_DOCS_ENABLED:-}
+
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.7-pg17
+    environment:
+      # Bootstrap superuser: used only by the init script below, never given to the application.
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres_dev_password}
+      # Application role and database, created by deploy/postgres/initdb on the first start of the volume.
+      PLUMMY_DB_USER: ${PLUMMY_DB_USER:-plummy}
+      PLUMMY_DB_PASSWORD: ${PLUMMY_DB_PASSWORD:-plummy_dev_password}
+      PLUMMY_DB_NAME: ${PLUMMY_DB_NAME:-plummy}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./deploy/postgres/initdb:/docker-entrypoint-initdb.d:ro
+      - ./deploy/postgres/extensions.sql:/plummy/extensions.sql:ro
+    networks: [data]
+    healthcheck:
+      # TCP check: during initialisation the server listens on the Unix socket only, so the service stays
+      # unhealthy until the init script (role, database, extensions) has finished.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$${PLUMMY_DB_USER}\" -d \"$${PLUMMY_DB_NAME}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:8.6-alpine
+    command: ["redis-server", "--appendonly", "yes", "--save", ""]
+    volumes:
+      - redis-data:/data
+    networks: [data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  # One-shot step: applies Alembic migrations before the API starts (schema is never changed by the API).
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
+      target: dev
+    command: ["alembic", "upgrade", "head"]
+    environment: *backend-env
+    volumes:
+      - ./apps/backend/alembic:/app/alembic:ro
+      - ./apps/backend/src:/app/src:ro
+    networks: [data]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  backend:
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
+      target: dev
+    environment: *backend-env
+    volumes:
+      - ./apps/backend/src:/app/src:ro
+      - ./apps/backend/alembic:/app/alembic:ro
+      - ./apps/backend/tests:/app/tests:ro
+      - ./apps/backend/pyproject.toml:/app/pyproject.toml:ro
+      - ./VERSION:/VERSION:ro
+    ports:
+      - "127.0.0.1:8000:8000"
+    networks: [data, edge]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health/ready', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 6
+    # No restart policy: a fatal startup error (e.g. invalid configuration) stops the container with exit code 1.
+
+  frontend:
+    build:
+      context: .
+      dockerfile: apps/frontend/Dockerfile
+      target: dev
+    environment:
+      API_PROXY_TARGET: http://backend:8000
+    volumes:
+      - ./apps/frontend/src:/app/src:ro
+      - ./apps/frontend/public:/app/public:ro
+      - ./apps/frontend/index.html:/app/index.html:ro
+      - ./VERSION:/VERSION:ro
+    ports:
+      - "127.0.0.1:5173:5173"
+    networks: [edge]
+    depends_on:
+      backend:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:5173/"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 6
+    restart: unless-stopped
+
+networks:
+  # PostgreSQL and Redis live on an internal network without external access or published ports.
+  data:
+    internal: true
+  edge: {}
+
+volumes:
+  postgres-data:
+  redis-data:

@@ -26,6 +26,8 @@
 | [ADR-007](0007-network-access-and-local-llm.md) | Network Access and Local LLM Providers | Accepted | 2026-11-17 |
 | [ADR-008](0008-unified-document-ingestion.md) | Unified Document Ingestion | Accepted | 2026-11-17 |
 | [ADR-009](0009-automatic-versioning.md) | Automatic Versioning | Accepted | 2026-11-17 |
+| [ADR-010](0010-api-error-format.md) | API Error Format (RFC 9457) | Accepted | 2026-11-17 |
+| [ADR-011](0011-database-roles-and-extensions.md) | PostgreSQL Roles and Extensions | Accepted | 2026-11-17 |
 
 ADR-001…004 оформляют решения, уже зафиксированные в blueprint v1.0; новых решений они не вводят.
 
@@ -39,7 +41,8 @@ ADR-001…004 оформляют решения, уже зафиксирован
 | Auth/session strategy: TTL, формат access token, cookies, CSRF | Фаза 3 | [SECURITY_MODEL.md §4](../SECURITY_MODEL.md) |
 | Шифрование секретов: алгоритм, key ring, ротация | Фаза 4 | [SECURITY_MODEL.md §7](../SECURITY_MODEL.md) |
 | Хранение векторов разной размерности в pgvector | Фаза 5 | [DATABASE_SCHEMA.md §5.10](../DATABASE_SCHEMA.md) |
-| Формат ошибок API (RFC 9457), пагинация, хранилище idempotency keys | Фаза 2–3 | [API_CONTRACTS.md §1](../API_CONTRACTS.md) |
+| Пагинация, хранилище idempotency keys | Фаза 2–3 | [API_CONTRACTS.md §1.6, §1.7](../API_CONTRACTS.md) |
+| Разделение роли миграций и runtime-роли API/worker | Фаза 2 / 12 | [ADR-011](0011-database-roles-and-extensions.md) |
 | Генерация ответа в процессе API или в worker | Фаза 8 | [ARCHITECTURE.md §9.4](../ARCHITECTURE.md) |
 | PostgreSQL Row Level Security как второй рубеж tenant isolation | Фаза 2 / 12 | [SECURITY_MODEL.md §5](../SECURITY_MODEL.md) |
 | Конфигурация full-text search для русского и английского | Фаза 6 | [DATABASE_SCHEMA.md §5.9](../DATABASE_SCHEMA.md) |

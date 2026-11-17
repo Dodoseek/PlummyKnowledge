@@ -698,7 +698,10 @@ Blueprint требует **определить** lifecycle и сроки; ко�
 ## 9. Миграции (§13, §20)
 
 - Alembic; одна ревизия на логическое изменение; ревизии не редактируются после попадания в `main`.
-- Первая ревизия: `CREATE EXTENSION IF NOT EXISTS vector; CREATE EXTENSION IF NOT EXISTS citext;`.
+- Расширения `vector` и `citext` устанавливает администратор БД до первой миграции (`deploy/postgres/extensions.sql`,
+  [ADR-011](adr/0011-database-roles-and-extensions.md)). Первая ревизия только проверяет их наличие и завершается
+  понятной ошибкой, если их нет; миграции не выполняют `CREATE/DROP EXTENSION`.
+- Миграции и приложение работают под ролью без `SUPERUSER`, владеющей базой приложения (ADR-011).
 - Сид системных `permissions` и системных `roles` — миграцией данных.
 - Каждая миграция проверяется на **чистой БД** и на **upgrade path** с предыдущего релиза (§20).
 - Тяжёлые индексы (HNSW, GIN) — `CREATE INDEX CONCURRENTLY` в отдельной ревизии.

@@ -218,6 +218,35 @@ apps/backend/
 └── tests/{unit,integration,contract,security,e2e}/
 ```
 
+**Реализовано в Фазе 1** (каталоги создаются по мере появления кода, пустые модули не заводятся):
+
+```text
+apps/backend/
+├── pyproject.toml, uv.lock       # зависимости (uv), Ruff, mypy strict, pytest
+├── alembic.ini, alembic/         # 0001: проверка расширений vector, citext (ADR-011)
+├── src/plummy/
+│   ├── main.py                   # create_app() factory + lifespan (uvicorn --factory)
+│   ├── composition.py            # Resources: engine, session factory, Redis, CheckReadiness
+│   ├── core/                     # config.py (Settings), logging.py (JSON), version.py (VERSION)
+│   ├── application/health/       # CheckReadiness + port DependencyCheck
+│   ├── infrastructure/db/        # engine, Base (naming convention), проверки БД/миграций
+│   ├── infrastructure/redis/     # клиент, проверка Redis
+│   └── api/                      # router (/api), v1/health, errors (problem+json), middleware (X-Request-ID)
+└── tests/{unit,api,integration}/
+
+apps/frontend/src/
+├── main.tsx
+├── app/                          # providers (Redux, Chakra), store, routes, theme
+├── shared/                       # api (baseApi RTK Query, нормализация ошибок), config (env), components
+├── features/health/              # healthApi (readiness), SystemStatusCard
+├── layouts/, pages/              # AppLayout; Home, NotFound, RouteError
+└── test/                         # setup и утилиты Vitest
+```
+
+Сессия/транзакции: одна `AsyncSession` на запрос (`get_db_session`); границы транзакций явно задаются в use cases
+(`async with session.begin()`), незакоммиченное откатывается при закрытии сессии. `domain/` и `workers/` появятся с
+первыми сущностями (Фаза 2) и Celery (сессия 5).
+
 Пакеты `packages/*` используются для переиспользуемых, независимых от приложения библиотек (адаптеры провайдеров,
 обработка документов, retrieval, коннекторы). **Открытый вопрос:** какие из них выделять в отдельные Python-пакеты
 в MVP, а какие держать внутри `apps/backend` до появления второго потребителя.

@@ -1,0 +1,9 @@
+# Build context is the repository root; send only what the frontend image needs.
+*
+!VERSION
+!apps/frontend
+apps/frontend/node_modules
+apps/frontend/dist
+apps/frontend/coverage
+apps/frontend/.env*
+apps/frontend/Dockerfile*

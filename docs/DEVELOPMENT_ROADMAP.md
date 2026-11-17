@@ -44,6 +44,9 @@ security gate (проверки безопасности **внутри** фаз
 - **Security gate:** нет секретов в репозитории и `.env.example`; ошибки конфигурации останавливают старт; порты
   БД/Redis не публикуются наружу; dependency scanning в CI (раннее включение пункта Фазы 12).
 - **Выход:** `docker compose up` поднимает сервисы, health/readiness зелёные, CI проходит.
+- *(Текущее состояние: сессии 2–4 выполнены — backend, frontend, PostgreSQL+pgvector, Redis, Alembic, Compose,
+  Ruff/mypy/pytest, ESLint/Prettier/Vitest, версия из `VERSION`. Не сделано: Celery worker (сессия 5), GitHub
+  Actions, pre-commit, issue/PR templates, dependency scanning.)*
 
 ### Фаза 2 — Core backend и data model (§13)
 

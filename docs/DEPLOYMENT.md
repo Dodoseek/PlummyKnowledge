@@ -2,13 +2,60 @@
 
 | | |
 |---|---|
-| Статус | v0.1 — целевая модель; Docker-файлы и Compose создаются в Фазах 1 и 11 |
+| Статус | v0.2 — среда разработки реализована (Фаза 1, §0); production-профиль — целевая модель Фазы 11 |
 | Источник | [PROJECT_BLUEPRINT.md](PROJECT_BLUEPRINT.md) §3, §5, §8, §11, §13 (Фазы 1, 11) |
-| Решения | [ADR-006](adr/0006-initial-setup-and-system-configuration.md), [ADR-007](adr/0007-network-access-and-local-llm.md) |
+| Решения | [ADR-006](adr/0006-initial-setup-and-system-configuration.md), [ADR-007](adr/0007-network-access-and-local-llm.md), [ADR-011](adr/0011-database-roles-and-extensions.md) |
 | Связанные документы | [ARCHITECTURE.md §4, §10, §12](ARCHITECTURE.md), [SECURITY_MODEL.md](SECURITY_MODEL.md) |
 
-Имена переменных, сервисов, volumes и CLI-команд ниже — **[Proposed]**; они фиксируются при реализации Фазы 1 и
-обновляются здесь.
+Раздел §0 описывает то, что реализовано. Остальные имена переменных, сервисов, volumes и CLI-команд — **[Proposed]**;
+они фиксируются при реализации соответствующих фаз и обновляются здесь.
+
+## 0. Среда разработки (реализовано, Фаза 1)
+
+Запуск из корня репозитория: `docker compose up --build` (файл `compose.yaml`, `.env` не обязателен).
+
+| Сервис | Образ / сборка | Назначение | Порты на хосте | Сети |
+|---|---|---|---|---|
+| `postgres` | `pgvector/pgvector:0.8.7-pg17` | PostgreSQL 17 + pgvector | — | `data` |
+| `redis` | `redis:8.6-alpine` | Redis (AOF) | — | `data` |
+| `migrate` | `apps/backend/Dockerfile` (`dev`) | Одноразово: `alembic upgrade head`; API стартует только после успешного завершения | — | `data` |
+| `backend` | `apps/backend/Dockerfile` (`dev`) | FastAPI, `uvicorn --reload`; healthcheck = `/api/v1/health/ready` | `127.0.0.1:8000` | `data`, `edge` |
+| `frontend` | `apps/frontend/Dockerfile` (`dev`) | Vite dev server; `/api` проксируется на `backend` (same-origin, без CORS) | `127.0.0.1:5173` | `edge` |
+
+- Сеть `data` — `internal: true`; порты PostgreSQL и Redis не публикуются. Учётные данные БД в `compose.yaml` —
+  только для разработки (значения по умолчанию, переопределяются через `.env`).
+- Роли PostgreSQL ([ADR-011](adr/0011-database-roles-and-extensions.md)): суперпользователь `postgres`
+  (`POSTGRES_PASSWORD`) используется только init-скриптом `deploy/postgres/initdb` при создании volume. Скрипт
+  создаёт роль приложения `PLUMMY_DB_USER` (без `SUPERUSER`; `CREATEDB` — только для integration-тестов) и её БД
+  `PLUMMY_DB_NAME`, устанавливает расширения из `deploy/postgres/extensions.sql`. `migrate` и `backend`
+  подключаются под ролью приложения. Volume, созданный до ADR-011, пересоздаётся: `docker compose down -v`.
+- `backend` (dev) перед `uvicorn --reload` выполняет `python -m plummy.check_config`: при невалидной конфигурации
+  контейнер завершается с кодом 1 и не перезапускается (как `prod`-таргет).
+- Volumes: `postgres-data`, `redis-data`. Исходный код монтируется read-only (`src`, `alembic`, `tests`).
+- Dockerfile backend содержит таргеты `dev` и `prod` (non-root, только runtime-зависимости); Dockerfile frontend —
+  `dev`, `build` и `dist` (статические файлы для Nginx Фазы 11). Контекст сборки — корень репозитория (файл
+  `VERSION`, ADR-009).
+- Миграции не выполняются при старте API; readiness возвращает `503`, пока ревизия БД не совпадает с head.
+- Celery worker, scheduler, Nginx, MinIO и prod-compose не входят в Фазу 1 (сессия 5 и Фаза 11).
+
+**Переменные окружения backend (реализовано).** Имена утверждены в задаче Фазы 1 и заменяют предложенные ниже
+`PLUMMY_ENV`, `PLUMMY_LOG_LEVEL`, `PLUMMY_DATABASE_URL_FILE`, `PLUMMY_REDIS_URL_FILE`, `PLUMMY_DB_POOL_SIZE`,
+`PLUMMY_CORS_ORIGINS`.
+
+| Переменная | Значение по умолчанию | Описание |
+|---|---|---|
+| `APP_ENV` | `production` | `development` \| `test` \| `production`; без значения — самый строгий режим |
+| `APP_DEBUG` | `false` | В `production` запрещено `true` |
+| `LOG_LEVEL` | `INFO` | `DEBUG`…`CRITICAL`; логи — JSON в stdout, SQL-логирование отключено |
+| `SECRET_KEY` / `SECRET_KEY_FILE` | — | ≥ 32 символов; обязателен в `production`; в `development`/`test` без значения генерируется временный ключ |
+| `DATABASE_URL` / `DATABASE_URL_FILE` | — (обязателен) | `postgresql+asyncpg://…` |
+| `REDIS_URL` / `REDIS_URL_FILE` | — (обязателен) | `redis://…` или `rediss://…` |
+| `CORS_ORIGINS` | пусто (CORS выключен) | Список origins через запятую; `*`, пути и credentials отклоняются |
+| `DB_POOL_SIZE`, `DB_MAX_OVERFLOW` | `5`, `5` | Ограничение пула соединений на процесс (§11) |
+| `API_DOCS_ENABLED` | вкл., кроме `production` | Swagger UI `/api/v1/docs` загружает JS/CSS с публичного CDN, поэтому в `production` выключен; `true` включает явно. `/api/v1/openapi.json` доступен всегда |
+
+`NAME` и `NAME_FILE` одновременно — ошибка конфигурации. Невалидная конфигурация → сообщение без значений секретов
+и exit code 1. Frontend: `VITE_API_BASE_URL` (по умолчанию `/api/v1`) — публичное значение, попадает в bundle.
 
 ## 1. Модель развёртывания
 
@@ -80,7 +127,7 @@
 ## 6. Bootstrap (ADR-006)
 
 1. Подготовить `.env` из `.env.example` и файлы секретов; сгенерировать ключ шифрования.
-2. Запустить `postgres` и `redis`.
+2. Запустить `postgres` и `redis`; подготовить роль приложения, БД и расширения (§6.1).
 3. Выполнить `migrate`: миграции Alembic и `plummy setup init-token`. Токен (≥ 256 бит, срок по умолчанию 24 ч)
    записывается в `bootstrap/setup-token`; в лог попадает только путь.
 4. Запустить `api`, worker-сервисы, `scheduler`, `nginx`; дождаться readiness.
@@ -91,6 +138,34 @@
 Варианты: `PLUMMY_SETUP_MODE=cli_only` — шаги 5–6 заменяет `plummy admin create`. Токен истёк — повторить
 `plummy setup init-token`. Потерян доступ администратора — `plummy admin reset-password` / `plummy admin create` на
 сервере.
+
+### 6.1 PostgreSQL: роли и расширения (ADR-011, реализовано)
+
+Выполняется администратором БД **до** первого запуска `migrate`. Ни приложение, ни миграции не получают прав
+суперпользователя.
+
+1. Ролью администратора (суперпользователь или администратор управляемого PostgreSQL) создать роль приложения и БД:
+
+   ```sql
+   CREATE ROLE plummy LOGIN PASSWORD '<из менеджера секретов>'
+     NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+   CREATE DATABASE plummy OWNER plummy;
+   ```
+
+2. Подключившись к этой БД той же ролью администратора, установить расширения:
+
+   ```bash
+   psql "postgresql://<admin>@<host>:5432/plummy" -v ON_ERROR_STOP=1 -f deploy/postgres/extensions.sql
+   ```
+
+   В управляемых сервисах сначала разрешить расширения `vector` и `citext` в настройках провайдера.
+3. В `DATABASE_URL` (лучше `DATABASE_URL_FILE`) указать роль приложения. Учётные данные администратора в
+   окружение приложения не передаются.
+4. Запустить `migrate`. Если расширения не установлены, ревизия `0001` завершается ошибкой со списком недостающих
+   расширений и ссылкой на `extensions.sql`; API не стартует.
+
+Новые версии могут добавить расширение или потребовать `ALTER EXTENSION … UPDATE`. Это отражается в release notes
+как шаг администратора перед `migrate`.
 
 ## 7. Сетевая конфигурация (ADR-007)
 
@@ -163,6 +238,7 @@ Allowlist по умолчанию пуст; примеры выше не явл�
 | Симптом | Где смотреть |
 |---|---|
 | Readiness не проходит | Логи `api`: БД, Redis, storage, неприменённые миграции, ошибки конфигурации |
+| `migrate`: `Required PostgreSQL extensions are not installed` | Расширения не установлены администратором → §6.1 |
 | `setup_token_invalid` | Токен истёк или погашен → `plummy setup init-token` |
 | Провайдер: `endpoint_not_allowed` / `egress_denied` | Запись allowlist: URL, `purposes`, `allowed_cidrs`; фактический IP сервиса |
 | Ответ чата приходит одним куском | Буферизация SSE в Nginx |

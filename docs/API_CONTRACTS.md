@@ -4,7 +4,7 @@
 |---|---|
 | Статус | Draft v0.1 (до реализации; контракт не стабилен до 1.0.0, §19) |
 | Источник | [PROJECT_BLUEPRINT.md](PROJECT_BLUEPRINT.md) §5, §6, §10, §12 |
-| Решения | [ADR-005](adr/0005-assistant-access-model.md), [ADR-006](adr/0006-initial-setup-and-system-configuration.md) (группы `setup`, `system`), [ADR-007](adr/0007-network-access-and-local-llm.md), [ADR-008](adr/0008-unified-document-ingestion.md) |
+| Решения | [ADR-005](adr/0005-assistant-access-model.md), [ADR-006](adr/0006-initial-setup-and-system-configuration.md) (группы `setup`, `system`), [ADR-007](adr/0007-network-access-and-local-llm.md), [ADR-008](adr/0008-unified-document-ingestion.md), [ADR-010](adr/0010-api-error-format.md) |
 | Связанные документы | [ARCHITECTURE.md](ARCHITECTURE.md), [DATABASE_SCHEMA.md](DATABASE_SCHEMA.md), [SECURITY_MODEL.md](SECURITY_MODEL.md) |
 
 **Как читать.** Общие правила (§10), группы endpoints (§10), SSE-события (§5) и требования к цитатам (§6)
@@ -49,7 +49,7 @@
 - Для небезопасных методов (`POST`, `PUT`, `PATCH`, `DELETE`) обязателен заголовок `X-CSRF-Token`, совпадающий с
   CSRF cookie (double-submit), плюс проверка `Origin` **[Proposed — ADR «Auth/session strategy» (планируется)]**.
 
-### 1.5 Формат ошибок **[Proposed — ADR «Формат ошибок, пагинация, idempotency» (планируется)]**
+### 1.5 Формат ошибок ([ADR-010](adr/0010-api-error-format.md), реализовано)
 
 Единый формат (§10) на базе RFC 9457, `Content-Type: application/problem+json`:
 
@@ -62,12 +62,23 @@
   "detail": "You do not have permission to manage this knowledge base.",
   "correlation_id": "01JD0Z7Q6Y3T9V2K8M4N5P6R7S",
   "errors": [
-    { "field": "name", "code": "too_long", "message": "Must be at most 200 characters." }
+    { "field": "body.name", "code": "string_too_long", "message": "String should have at most 200 characters" }
   ]
 }
 ```
 
-`detail` не содержит секретов, stack traces, SQL, содержимого документов или сведений об объектах других организаций.
+Правила (ADR-010):
+
+- `type` = `about:blank`; `title` — фраза HTTP-статуса; `status` = HTTP-статус.
+- `code` — обязательный стабильный идентификатор; клиенты ветвятся по `code`, а не по `title`/`detail`.
+- `correlation_id` — всегда, равен заголовку ответа `X-Request-ID`.
+- `detail` — необязателен, отсутствует у `5xx`. `detail` и `errors[].message` не содержат секретов, stack traces,
+  SQL, переданных значений, содержимого документов или сведений об объектах других организаций.
+- `errors` — только у `validation_error` и `invalid_query_parameter`. `field` — путь через точку с источником
+  (`body.…`, `query.…`, `path.…`, `header.…`); `code` — тип ошибки Pydantic (`missing`, `int_parsing`, …) или
+  прикладной код.
+- Статус без прикладного кода: прочие `4xx` → `bad_request`, прочие `5xx` → `internal_error`.
+- Исключение: `503` от `GET /health/ready` — `application/json` со статусом проверок (§2.1).
 
 | HTTP | `code` | Когда |
 |---|---|---|
@@ -80,6 +91,7 @@
 | 403 | `assistant_unavailable` | Ассистент собственного диалога пользователя стал недоступен ([ADR-005](adr/0005-assistant-access-model.md)) |
 | 403 | `setup_token_invalid` | Bootstrap token неверен, истёк или погашен ([ADR-006](adr/0006-initial-setup-and-system-configuration.md)) |
 | 404 | `not_found` | Нет ресурса или нет доступа к нему |
+| 405 | `method_not_allowed` | Метод не поддерживается маршрутом; заголовок `Allow` |
 | 409 | `conflict` | Конфликт состояния (уникальность, версия) |
 | 409 | `idempotency_key_mismatch` | Тот же `Idempotency-Key` с другим телом запроса |
 | 409 | `sync_already_running` | Для источника уже есть активный sync (§7) |
@@ -92,6 +104,7 @@
 | 422 | `endpoint_not_allowed` | `base_url` провайдера не проходит сетевую политику инсталляции ([ADR-007](adr/0007-network-access-and-local-llm.md)) |
 | 422 | `setting_exceeds_instance_policy` | Значение Organization Settings шире, чем разрешает instance policy ([ADR-006](adr/0006-initial-setup-and-system-configuration.md)) |
 | 429 | `rate_limited` | Превышен лимит; заголовок `Retry-After` (§8 п.5) |
+| 500 | `internal_error` | Необработанная ошибка; без `detail`, подробности — в логе по `correlation_id` |
 | 502 | `provider_error` | Ошибка AI provider / источника |
 | 502 | `egress_denied` | Исходящее соединение заблокировано сетевой политикой во время выполнения (например, DNS указал на запрещённый адрес) ([ADR-007](adr/0007-network-access-and-local-llm.md)) |
 | 503 | `service_unavailable` | Зависимость недоступна (БД, Redis) |
@@ -709,13 +722,13 @@ data: {"delta":"Перенос возможен "}
 
 ## 7. Открытые вопросы
 
-1. Формат ошибок и пагинации (планируемый ADR).
+1. Формат пагинации (планируемый ADR).
 2. Хранилище idempotency keys (PostgreSQL / Redis).
 3. Пользовательские роли в MVP.
 4. SSE: разрыв соединения, `Last-Event-ID`.
 5. Нужен ли endpoint скачивания оригинала документа (и с какими заголовками безопасности).
 
-Решено: setup и системные настройки ([ADR-006](adr/0006-initial-setup-and-system-configuration.md)), доступ к
+Решено: формат ошибок ([ADR-010](adr/0010-api-error-format.md)), setup и системные настройки ([ADR-006](adr/0006-initial-setup-and-system-configuration.md)), доступ к
 ассистентам ([ADR-005](adr/0005-assistant-access-model.md)), сетевые ошибки провайдеров
 ([ADR-007](adr/0007-network-access-and-local-llm.md)), upload как Document Source
 ([ADR-008](adr/0008-unified-document-ingestion.md)).

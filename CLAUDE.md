@@ -10,9 +10,11 @@ PlummyKnowledge — open-source **self-hosted** платформа корпор�
 источники документов, индексирует их, даёт безопасный поиск и отвечает на вопросы с **проверяемыми цитатами**.
 Лицензия — Apache License 2.0.
 
-**Текущее состояние:** репозиторий содержит только спецификации и ADR; кода ещё нет. Следующий шаг — «Первые семь
-рабочих сессий» ([DEVELOPMENT_ROADMAP.md §4](docs/DEVELOPMENT_ROADMAP.md), blueprint §21). Не начинать Google OAuth,
-Microsoft Graph и сложный RAG до стабильного запуска каркаса.
+**Текущее состояние:** Этап 1 (Foundation) — каркас: `apps/backend` (FastAPI, Pydantic Settings, SQLAlchemy async,
+Alembic с расширениями `vector`/`citext`, Redis, health live/ready), `apps/frontend` (React 18, Chakra UI, Redux
+Toolkit/RTK Query, router, технический экран статуса), `compose.yaml` для разработки. Бизнес-сущностей, Celery,
+Nginx и prod-compose ещё нет. Следующие шаги — сессии 5–7 ([DEVELOPMENT_ROADMAP.md §4](docs/DEVELOPMENT_ROADMAP.md)).
+Не начинать Google OAuth, Microsoft Graph и сложный RAG до стабильного запуска каркаса.
 
 ## Приоритет источников
 
@@ -180,9 +182,31 @@ python3 scripts/version.py check       # VERSION валиден и больше,
 python3 scripts/version.py release     # релиз X.Y.Z + тег vX.Y.Z (только по решению владельца)
 ```
 
-Остальные будут добавлены после инициализации каркаса (blueprint §21, сессии 2–5): запуск Compose, миграции Alembic,
-backend tests/lint/typecheck (pytest, Ruff, mypy/pyright), frontend tests/lint/typecheck (Vitest, ESLint, tsc),
-E2E (Playwright), CLI `plummy` ([DEPLOYMENT.md](docs/DEPLOYMENT.md)). **Не выдумывать команды** — до их появления
+Среда разработки (из корня репозитория):
+
+```bash
+docker compose up --build                                   # postgres, redis, migrate, backend, frontend
+docker compose exec backend pytest                          # backend: unit + API + integration
+docker compose exec backend ruff check src tests alembic    # backend lint
+docker compose exec backend ruff format --check src tests alembic
+docker compose exec backend mypy                            # backend typecheck (strict)
+docker compose run --rm migrate                             # alembic upgrade head
+```
+
+Новая миграция создаётся локально (в контейнере `alembic/` смонтирован read-only):
+`cd apps/backend && uv run alembic revision -m "..."`.
+
+Frontend (в `apps/frontend`, Node ^20.19 / ^22.13 / >=24, npm из `packageManager` — 11.21.2; `.npmrc` с
+`engine-strict` отклоняет npm 10; `package-lock.json` обновлять только этой версией npm):
+
+```bash
+npm ci && npm test && npm run lint && npm run typecheck && npm run format:check && npm run build
+```
+
+Backend локально без Docker (в `apps/backend`): `uv sync` и `uv run pytest` (integration-тесты пропускаются без
+`DATABASE_URL`/`REDIS_URL`), `uv run ruff check .`, `uv run mypy`.
+
+Ещё не существуют: E2E (Playwright), CI (GitHub Actions), CLI `plummy`, Celery worker. **Не выдумывать команды** —
 сверяться с фактическими конфигурациями в репозитории.
 
 ## Definition of Done (§12)

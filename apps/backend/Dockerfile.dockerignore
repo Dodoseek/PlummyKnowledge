@@ -1,0 +1,14 @@
+# Build context is the repository root; send only what the backend image needs.
+*
+!VERSION
+!apps/backend/pyproject.toml
+!apps/backend/uv.lock
+!apps/backend/alembic.ini
+!apps/backend/alembic
+!apps/backend/src
+!apps/backend/tests
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
