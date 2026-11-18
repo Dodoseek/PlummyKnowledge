@@ -70,6 +70,7 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 markers = [
     "integration: requires running PostgreSQL and Redis (DATABASE_URL / REDIS_URL)",
+    "live: calls real AI provider APIs; runs only with LIVE_PROVIDER_TESTS=1 and API keys (never in CI)",
 ]
 addopts = ["--strict-markers", "-ra"]
 filterwarnings = [
