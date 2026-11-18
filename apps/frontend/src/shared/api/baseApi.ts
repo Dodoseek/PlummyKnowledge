@@ -19,6 +19,9 @@ export const MY_SESSIONS_TAG = 'MySessions';
 export const USERS_TAG = 'Users';
 export const GROUPS_TAG = 'Groups';
 export const ROLES_TAG = 'Roles';
+export const PROVIDERS_TAG = 'Providers';
+export const MODELS_TAG = 'Models';
+export const EMBEDDING_PROFILES_TAG = 'EmbeddingProfiles';
 
 const rawBaseQuery = fetchBaseQuery({
   baseUrl: config.apiBaseUrl,
@@ -61,6 +64,16 @@ const baseQueryWithSession: BaseQueryFn<string | FetchArgs, unknown, FetchBaseQu
 export const baseApi = createApi({
   reducerPath: 'api',
   baseQuery: baseQueryWithSession,
-  tagTypes: [SESSION_TAG, SETUP_STATUS_TAG, MY_SESSIONS_TAG, USERS_TAG, GROUPS_TAG, ROLES_TAG],
+  tagTypes: [
+    SESSION_TAG,
+    SETUP_STATUS_TAG,
+    MY_SESSIONS_TAG,
+    USERS_TAG,
+    GROUPS_TAG,
+    ROLES_TAG,
+    PROVIDERS_TAG,
+    MODELS_TAG,
+    EMBEDDING_PROFILES_TAG,
+  ],
   endpoints: () => ({}),
 });

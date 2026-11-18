@@ -22,6 +22,19 @@ const MESSAGES: Record<string, string> = {
   last_administrator: 'The instance must keep at least one active administrator.',
   cannot_modify_self: 'You cannot disable or delete your own account.',
   invalid_user_state: 'This action is not possible in the user’s current state.',
+  provider_name_taken: 'A provider with this name already exists.',
+  provider_in_use: 'The provider is used by an embedding profile and cannot be deleted.',
+  model_id_taken: 'This provider already has a model with this ID.',
+  embedding_profile_name_taken: 'An embedding profile with this name already exists.',
+  reindex_required:
+    'The model and vector settings of a profile cannot change. Create a new profile and reindex instead.',
+  invalid_state: 'This change is not possible in the current state.',
+  endpoint_not_allowed:
+    'The server’s network policy does not allow this address. Ask the server operator to add it to the ' +
+    'allowlist in the instance configuration.',
+  secrets_not_configured:
+    'Secret storage is not configured on the server (SECRETS_KEYRING_FILE). Keys cannot be saved yet.',
+  secret_unavailable: 'The stored key cannot be decrypted on this server. Enter the key again.',
   activation_token_invalid:
     'This activation link is invalid, expired or already used. Ask your administrator for a new one.',
 };

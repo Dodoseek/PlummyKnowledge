@@ -16,4 +16,6 @@ export const PERMISSIONS = {
   groupsManage: 'groups.manage',
   rolesRead: 'roles.read',
   rolesAssign: 'roles.assign',
+  providersRead: 'providers.read',
+  providersManage: 'providers.manage',
 } as const;

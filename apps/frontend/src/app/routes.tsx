@@ -8,6 +8,9 @@ import { UsersPage } from '../features/admin/UsersPage';
 import { ActivatePage } from '../features/auth/ActivatePage';
 import { LoginPage } from '../features/auth/LoginPage';
 import { RequireAuth } from '../features/auth/RequireAuth';
+import { EmbeddingProfilesPage } from '../features/providers/EmbeddingProfilesPage';
+import { ProviderDetailPage } from '../features/providers/ProviderDetailPage';
+import { ProvidersPage } from '../features/providers/ProvidersPage';
 import { SetupPage } from '../features/setup/SetupPage';
 import { AppLayout } from '../layouts/AppLayout';
 import { HomePage } from '../pages/HomePage';
@@ -35,6 +38,9 @@ export const routes: RouteObject[] = [
           { path: 'admin/users/:userId', element: <UserDetailPage /> },
           { path: 'admin/groups', element: <GroupsPage /> },
           { path: 'admin/groups/:groupId', element: <GroupDetailPage /> },
+          { path: 'admin/providers', element: <ProvidersPage /> },
+          { path: 'admin/providers/:providerId', element: <ProviderDetailPage /> },
+          { path: 'admin/embedding-profiles', element: <EmbeddingProfilesPage /> },
         ],
       },
       { path: '*', element: <NotFoundPage /> },

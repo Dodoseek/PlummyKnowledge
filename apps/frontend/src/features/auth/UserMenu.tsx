@@ -37,6 +37,11 @@ export function UserMenu() {
           Groups
         </Link>
       )}
+      {can(PERMISSIONS.providersRead) && (
+        <Link as={RouterLink} to="/admin/providers" fontSize="sm">
+          AI providers
+        </Link>
+      )}
       <Link as={RouterLink} to="/account" fontSize="sm" data-testid="current-user">
         {session.user.display_name}
       </Link>
