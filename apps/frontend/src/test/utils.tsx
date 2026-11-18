@@ -94,3 +94,24 @@ export function browserStorageDump(): string {
   }
   return entries.join('\n');
 }
+
+/** A session with the administration permissions of the `admin` role. */
+export const ADMIN_SESSION = {
+  ...SESSION,
+  permissions: [
+    'chat.use',
+    'groups.manage',
+    'groups.read',
+    'roles.assign',
+    'roles.read',
+    'users.manage',
+    'users.read',
+  ],
+};
+
+export const MEMBER_SESSION = {
+  ...SESSION,
+  user: { id: '0190a000-0000-7000-8000-000000000002', email: 'member@example.com', display_name: 'Member' },
+  roles: ['member'],
+  permissions: ['chat.use'],
+};

@@ -16,6 +16,14 @@ const MESSAGES: Record<string, string> = {
   unauthenticated: 'Your session has ended. Sign in again.',
   session_revoked: 'Your session was ended. Sign in again.',
   permission_denied: 'You do not have permission to do this.',
+  not_found: 'It no longer exists or was never there.',
+  email_taken: 'A user with this email already exists.',
+  group_name_taken: 'A group with this name already exists.',
+  last_administrator: 'The instance must keep at least one active administrator.',
+  cannot_modify_self: 'You cannot disable or delete your own account.',
+  invalid_user_state: 'This action is not possible in the user’s current state.',
+  activation_token_invalid:
+    'This activation link is invalid, expired or already used. Ask your administrator for a new one.',
 };
 
 export function messageFor(error: ApiError): string {

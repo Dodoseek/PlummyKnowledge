@@ -15,6 +15,10 @@ export const CSRF_HEADER = 'X-CSRF-Token';
 /** Cache tags shared by features. */
 export const SESSION_TAG = 'Session';
 export const SETUP_STATUS_TAG = 'SetupStatus';
+export const MY_SESSIONS_TAG = 'MySessions';
+export const USERS_TAG = 'Users';
+export const GROUPS_TAG = 'Groups';
+export const ROLES_TAG = 'Roles';
 
 const rawBaseQuery = fetchBaseQuery({
   baseUrl: config.apiBaseUrl,
@@ -32,7 +36,7 @@ const rawBaseQuery = fetchBaseQuery({
 });
 
 /** Endpoints whose 401 is an expected answer, not "the session ended". */
-const AUTH_PROBE_ENDPOINTS = new Set(['getSession', 'login', 'logout', 'initializeSetup']);
+const AUTH_PROBE_ENDPOINTS = new Set(['getSession', 'login', 'logout', 'initializeSetup', 'activate']);
 
 /**
  * A 401 from any other request means the session expired or was revoked: refetch `/auth/me`, so the route
@@ -57,6 +61,6 @@ const baseQueryWithSession: BaseQueryFn<string | FetchArgs, unknown, FetchBaseQu
 export const baseApi = createApi({
   reducerPath: 'api',
   baseQuery: baseQueryWithSession,
-  tagTypes: [SESSION_TAG, SETUP_STATUS_TAG],
+  tagTypes: [SESSION_TAG, SETUP_STATUS_TAG, MY_SESSIONS_TAG, USERS_TAG, GROUPS_TAG, ROLES_TAG],
   endpoints: () => ({}),
 });
