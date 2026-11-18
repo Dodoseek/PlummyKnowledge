@@ -33,6 +33,7 @@ CONFIG_ENV_VARS = (
     "SESSION_ABSOLUTE_TTL",
     "SESSION_COOKIE_SECURE",
     "SECRETS_KEYRING_FILE",
+    "CONFIG_FILE",
 )
 
 DB_PASSWORD = "db-password-should-never-leak"
@@ -69,6 +70,7 @@ def make_settings(**overrides: Any) -> Settings:
         "public_url": TEST_PUBLIC_URL,
         # Explicit, so the container's SECRETS_KEYRING_FILE does not leak into tests.
         "secrets_keyring_file": None,
+        "config_file": None,
     }
     if overrides.get("app_env") == "production":
         values["secrets_keyring_file"] = TEST_KEYRING_PATH

@@ -154,6 +154,10 @@ class Settings(BaseSettings):
     # or a mounted volume). Required in production; elsewhere, without it, secrets cannot be saved.
     secrets_keyring_file: Path | None = None
 
+    # Instance configuration file (TOML): the outbound network allowlist (ADR-007). Unset: empty allowlist,
+    # only public https endpoints are reachable.
+    config_file: Path | None = None
+
     _secret_key_generated: bool = PrivateAttr(default=False)
 
     @classmethod
@@ -308,6 +312,7 @@ class Settings(BaseSettings):
             "session_absolute_ttl_seconds": int(self.session_absolute_ttl.total_seconds()),
             "session_cookie_secure": self.session_cookie_secure,
             "secrets_keyring_configured": self.secrets_keyring_file is not None,
+            "config_file_configured": self.config_file is not None,
         }
 
 

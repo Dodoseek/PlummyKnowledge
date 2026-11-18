@@ -6,7 +6,9 @@ Used by the API lifespan now and by Celery workers later, so both roles share th
 from __future__ import annotations
 
 import logging
+import socket
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
@@ -38,6 +40,7 @@ from plummy.application.setup.use_cases import (
     ResetPassword,
 )
 from plummy.application.system.use_cases import (
+    AllowlistEntryView,
     GetInstanceSettings,
     InstanceSettingsView,
     SecretsSettingsView,
@@ -54,11 +57,17 @@ from plummy.application.users.use_cases import (
     UpdateUser,
 )
 from plummy.core.config import ConfigurationError, Settings, SetupMode
+from plummy.core.instance_config import build_egress_policy, load_instance_config
+from plummy.core.network.addresses import IPAddress
+from plummy.core.network.policy import EgressPolicy
+from plummy.core.network.urls import parse_ip
 from plummy.infrastructure.clock import SystemClock
 from plummy.infrastructure.db import create_engine, create_session_factory
 from plummy.infrastructure.db.checks import DatabaseCheck, MigrationsCheck, SecretsCheck
 from plummy.infrastructure.db.migrations import get_expected_heads
 from plummy.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWorkFactory
+from plummy.infrastructure.http.egress_audit import EgressDenialAuditor
+from plummy.infrastructure.http.safe_client import SafeHttpClient
 from plummy.infrastructure.redis import create_redis_client
 from plummy.infrastructure.redis.checks import RedisCheck
 from plummy.infrastructure.redis.rate_limiter import RedisRateLimiter
@@ -129,9 +138,14 @@ class Resources:
     auth: AuthServices
     admin: AdminServices
     secrets: SecretVault
+    http: SafeHttpClient
 
     async def aclose(self) -> None:
         """Release connections. Each resource is closed even if another one fails to close."""
+        try:
+            await self.http.aclose()
+        except Exception:
+            logger.exception("failed to close outbound http client")
         try:
             await self.redis.aclose()
         except Exception:
@@ -156,7 +170,42 @@ def load_secret_cipher(settings: Settings) -> AesGcmSecretCipher | None:
         raise ConfigurationError(f"Invalid configuration: SECRETS_KEYRING_FILE: {exc}") from None
 
 
-def instance_settings_view(settings: Settings, cipher: SecretCipher | None) -> InstanceSettingsView:
+def _platform_addresses(settings: Settings) -> list[tuple[str, IPAddress]]:
+    """Addresses of PostgreSQL and Redis, which an allowlist CIDR must never include (ADR-007 §3)."""
+    services = {
+        "PostgreSQL": urlsplit(settings.database_url.get_secret_value()).hostname,
+        "Redis": urlsplit(settings.redis_url.get_secret_value()).hostname,
+    }
+    addresses: list[tuple[str, IPAddress]] = []
+    for service, host in services.items():
+        if not host:
+            continue
+        literal = parse_ip(host)
+        if literal is not None:
+            addresses.append((service, literal))
+            continue
+        try:
+            infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+        except OSError:
+            logger.warning("cannot resolve %s host to check the network allowlist", service)
+            continue
+        for info in infos:
+            address = parse_ip(str(info[4][0]).split("%", 1)[0])
+            if address is not None:
+                addresses.append((service, address))
+    return addresses
+
+
+def load_egress_policy(settings: Settings) -> EgressPolicy:
+    """The outbound network policy from CONFIG_FILE; an invalid file stops the process (ADR-007)."""
+    config = load_instance_config(settings.config_file)
+    needs_platform_check = any(entry.allowed_cidrs for entry in config.allowlist)
+    return build_egress_policy(config, _platform_addresses(settings) if needs_platform_check else ())
+
+
+def instance_settings_view(
+    settings: Settings, cipher: SecretCipher | None, policy: EgressPolicy | None = None
+) -> InstanceSettingsView:
     return InstanceSettingsView(
         app_env=settings.app_env.value,
         public_url=settings.public_url,
@@ -170,6 +219,18 @@ def instance_settings_view(settings: Settings, cipher: SecretCipher | None) -> I
             primary_key_id=cipher.primary_key_id if cipher else None,
             keys=len(cipher.key_ids) if cipher else 0,
         ),
+        network_allowlist=tuple(
+            AllowlistEntryView(
+                name=entry.name,
+                url=entry.url.origin + entry.path_prefix,
+                purposes=tuple(sorted(purpose.value for purpose in entry.purposes)),
+                provider_types=tuple(sorted(entry.provider_types))
+                if entry.provider_types is not None
+                else None,
+                allowed_cidrs=tuple(str(network) for network in entry.allowed_cidrs),
+            )
+            for entry in (policy.allowlist if policy else ())
+        ),
     )
 
 
@@ -181,6 +242,7 @@ def build_resources(
 ) -> Resources:
     """Create clients without connecting; connectivity is verified by readiness checks."""
     cipher = load_secret_cipher(settings)
+    egress_policy = load_egress_policy(settings)
     expected_heads = get_expected_heads()
     engine = create_engine(settings)
     redis = create_redis_client(settings)
@@ -236,7 +298,7 @@ def build_resources(
         ),
         roles=ListRoles(uow),
         permissions=ListPermissions(uow),
-        instance_settings=GetInstanceSettings(instance_settings_view(settings, cipher)),
+        instance_settings=GetInstanceSettings(instance_settings_view(settings, cipher, egress_policy)),
     )
     return Resources(
         engine=engine,
@@ -246,6 +308,7 @@ def build_resources(
         auth=auth,
         admin=admin,
         secrets=SecretVault(cipher, clock),
+        http=SafeHttpClient(egress_policy, on_denied=EgressDenialAuditor(uow)),
     )
 
 

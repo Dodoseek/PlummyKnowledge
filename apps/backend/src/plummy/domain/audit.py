@@ -46,6 +46,7 @@ class AuditAction(StrEnum):
     GROUP_DELETED = "group.deleted"
     GROUP_MEMBERS_CHANGED = "group.members.changed"
     SECRETS_ROTATED = "secrets.rotated"
+    NETWORK_EGRESS_DENIED = "network.egress.denied"
 
 
 @dataclass(frozen=True, slots=True)

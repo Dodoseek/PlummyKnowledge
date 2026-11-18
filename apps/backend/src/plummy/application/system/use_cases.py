@@ -19,6 +19,15 @@ class SecretsSettingsView:
 
 
 @dataclass(frozen=True, slots=True)
+class AllowlistEntryView:
+    name: str
+    url: str
+    purposes: tuple[str, ...]
+    provider_types: tuple[str, ...] | None
+    allowed_cidrs: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class InstanceSettingsView:
     """Only non-secret values; secrets and connection strings are never part of this view."""
 
@@ -30,6 +39,7 @@ class InstanceSettingsView:
     session_cookie_secure: bool
     api_docs_enabled: bool
     secrets: SecretsSettingsView
+    network_allowlist: tuple[AllowlistEntryView, ...]
 
 
 class GetInstanceSettings:

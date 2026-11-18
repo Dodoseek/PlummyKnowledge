@@ -29,6 +29,18 @@ class SecretsSettings(BaseModel):
     keys: int
 
 
+class AllowlistEntry(BaseModel):
+    name: str
+    url: str
+    purposes: list[str]
+    provider_types: list[str] | None
+    allowed_cidrs: list[str]
+
+
+class NetworkSettings(BaseModel):
+    allowlist: list[AllowlistEntry]
+
+
 class InstanceSettingsResponse(BaseModel):
     app_env: str
     public_url: str | None
@@ -36,6 +48,7 @@ class InstanceSettingsResponse(BaseModel):
     session: SessionSettings
     api_docs_enabled: bool
     secrets: SecretsSettings
+    network: NetworkSettings
 
 
 @router.get("/settings", response_model=InstanceSettingsResponse)
@@ -55,5 +68,17 @@ async def get_instance_settings(context: Reader, resources: ResourcesDep) -> Ins
             configured=view.secrets.configured,
             primary_key_id=view.secrets.primary_key_id,
             keys=view.secrets.keys,
+        ),
+        network=NetworkSettings(
+            allowlist=[
+                AllowlistEntry(
+                    name=entry.name,
+                    url=entry.url,
+                    purposes=list(entry.purposes),
+                    provider_types=list(entry.provider_types) if entry.provider_types is not None else None,
+                    allowed_cidrs=list(entry.allowed_cidrs),
+                )
+                for entry in view.network_allowlist
+            ]
         ),
     )
