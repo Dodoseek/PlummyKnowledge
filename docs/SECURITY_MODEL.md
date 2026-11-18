@@ -62,8 +62,8 @@ injection; скомпрометированный внешний провайд�
 ## 3. Roles и permissions
 
 Инсталляция принадлежит одной организации ([ADR-012](adr/0012-single-organization-deployment.md)): ролей уровня
-«платформы» и «организации» нет. Каталог permissions и системные роли создаются миграцией `0003`; назначение ролей
-через API — этап «Users & RBAC».
+«платформы» и «организации» нет. Каталог permissions и системные роли создаются миграцией `0003`; роли назначаются
+пользователям и группам через API (`roles.assign`, API_CONTRACTS.md §2.4–2.5).
 
 ### 3.1 Роли (§2)
 
@@ -76,6 +76,18 @@ injection; скомпрометированный внешний провайд�
 
 Первый Administrator создаётся при первоначальной настройке (§4.5). Владелец инсталляции (человек с доступом к
 серверу) — не роль приложения: Instance Settings меняются только на сервере (ADR-006).
+
+Защита от потери управления (реализовано):
+
+- В инсталляции всегда остаётся хотя бы один **активный** пользователь с прямой ролью `admin`: снятие роли,
+  отключение или удаление, которые нарушили бы это, отклоняются (`409 last_administrator`). Все такие изменения
+  берут блокировку строки роли `admin` (`SELECT … FOR UPDATE`), поэтому два администратора не могут одновременно
+  снять роль друг с друга.
+- Роль `admin` назначается **только напрямую**, не через группы: каждое назначение явно, а инвариант не зависит от
+  состава групп.
+- Администратор не может отключить или удалить себя (`409 cannot_modify_self`).
+- Создание пользователя с ролями требует `roles.assign` в дополнение к `users.manage` — `users.manage` не даёт
+  выдать себе или другим больше прав.
 
 ### 3.2 Каталог permissions
 
@@ -128,16 +140,18 @@ injection; скомпрометированный внешний провайд�
 
 ### 3.5 Вычисление прав
 
-- Эффективные permissions = объединение permissions ролей пользователя и (с этапа «Users & RBAC») ролей его групп.
+- Эффективные permissions = объединение permissions прямых ролей пользователя и ролей его неудалённых групп
+  (реализовано).
 - Эффективный доступ к KB = максимум из прямого доступа, доступа через группы и `knowledge_bases.manage`.
-- Права загружаются **на каждый запрос** вместе с проверкой сессии (реализовано: один запрос к `user_roles` и
-  `role_permissions`); отзыв роли вступает в силу со следующего запроса.
+- Права загружаются **на каждый запрос** вместе с проверкой сессии (реализовано: один запрос к `user_roles`,
+  `group_roles`, `user_groups` и `role_permissions`); отзыв роли, исключение из группы или удаление группы вступают
+  в силу со следующего запроса.
 
 ## 4. Authentication и сессии ([ADR-013](adr/0013-auth-session-strategy.md))
 
 Требования (§5, §13 Фаза 3): локальная аутентификация, Argon2id, cookies HttpOnly/Secure/SameSite, CSRF strategy,
 отзыв сессий, rate limiting login, password reset только при наличии email infrastructure; OIDC — следующая фаза,
-SAML/SCIM — позднее. Автоматической регистрации нет: пользователей создаёт Administrator (этап «Users & RBAC») или
+SAML/SCIM — позднее. Автоматической регистрации нет: пользователей создаёт Administrator (§4.6) или
 первоначальная настройка.
 
 ### 4.1 Пароли
@@ -163,8 +177,12 @@ SAML/SCIM — позднее. Автоматической регистраци�
 - Login и setup всегда создают **новую** сессию; сессия из прежней cookie отзывается (`superseded`) — защита от
   session fixation.
 - Logout отзывает текущую сессию (`logout`); без сессии — только удаляет cookie (идемпотентно).
-- Отзыв всех сессий пользователя: смена/сброс пароля (`plummy.cli admin reset-password`), позднее —
-  отключение/удаление пользователя и действие администратора.
+- Отзыв всех сессий пользователя: смена пароля самим пользователем (`password_change`; этому браузеру сразу
+  выдаётся новая сессия), сброс через CLI, отключение (`user_disabled`) и удаление пользователя, действие
+  администратора (`POST /users/{id}/sessions/revoke`, `admin`).
+- Пользователь видит и отзывает **только свои** сессии (`GET/DELETE /auth/sessions`); чужая сессия неотличима от
+  несуществующей (`404`).
+- Смена пароля требует текущий пароль; проверка идёт через лимиты `login`, неудачи считаются неудачными входами.
 - Refresh tokens не используются (ADR-013).
 
 ### 4.3 Cookies (§5)
@@ -208,6 +226,21 @@ SAML/SCIM — позднее. Автоматической регистраци�
   оставшийся файл токена.
 - Восстановление доступа администратора — только CLI на сервере (`python -m plummy.cli admin reset-password`;
   отзывает все сессии пользователя), с audit-событием. Публичного механизма повторного создания администратора нет.
+
+### 4.6 Создание пользователей и активация ([ADR-015](adr/0015-user-activation-links.md))
+
+- Administrator создаёт пользователя в статусе `invited` **без пароля** и получает одноразовую ссылку
+  `{PUBLIC_URL}/activate#token=…`; пароль знает только пользователь.
+- Токен — 256 бит, в БД только SHA-256 (`user_activation_tokens`), срок 72 ч, один действующий токен на
+  пользователя; перевыпуск заменяет прежний. Токен находится во фрагменте URL: браузер не отправляет его на сервер
+  при открытии страницы и в `Referer`; frontend сразу убирает его из адресной строки и не сохраняет.
+- `POST /auth/activate` — публичный, с проверкой `Origin` и лимитом 10/мин на IP (Redis, fail closed). Пароль
+  проверяется политикой §4.1 (нарушение не тратит ссылку). Установка пароля, статус `active`, удаление токена и
+  создание сессии — одна транзакция с блокировкой строки пользователя; повторная или параллельная активация
+  отклоняется.
+- Любая причина отказа (неверный, истёкший, использованный токен, пользователь отключён, удалён или уже активен) →
+  одинаковый `400 activation_token_invalid`; причина пишется только в audit (`user.activation.rejected`).
+- Пользователь `invited` не может войти (`invalid_credentials`, как для неизвестного email).
 
 ## 5. Изоляция данных ([ADR-012](adr/0012-single-organization-deployment.md))
 
@@ -357,13 +390,15 @@ OpenAI/Anthropic). Полный алгоритм — в ADR-007; здесь — 
 
 Журнал append-only (DATABASE_SCHEMA.md §7.3); не содержит секретов, токенов и содержимого документов.
 
-**[Proposed] Критичные действия:**
+Реализованы события setup, аутентификации, пользователей, групп и ролей; остальные — **[Proposed]**.
+
+**Критичные действия:**
 
 | Область | События |
 |---|---|
 | Setup / настройки | `setup.completed`, `setup.initialize.rejected`, `setup.token_issued`, `admin.created_via_cli`, `admin.password_reset_via_cli`, `settings.updated` |
 | Аутентификация | `auth.login.succeeded`, `auth.login.failed`, `auth.logout`, `auth.session.revoked`, `auth.session.revoked_by_admin`, `auth.password.changed`, `auth.password.reset_requested`, `auth.password.reset` |
-| Пользователи и группы | `user.created`, `user.updated`, `user.disabled`, `user.deleted`, `group.created`, `group.updated`, `group.deleted`, `group.members.changed` |
+| Пользователи и группы | `user.created`, `user.updated`, `user.disabled`, `user.deleted`, `user.activated`, `user.activation.reissued`, `user.activation.rejected`, `group.created`, `group.updated`, `group.deleted`, `group.members.changed` |
 | Роли и доступ | `role.assigned`, `role.revoked`, `role.created`, `role.updated`, `role.deleted`, `kb.access.granted`, `kb.access.revoked` |
 | Провайдеры | `provider.created`, `provider.updated`, `provider.deleted`, `provider.secret.rotated`, `provider.tested`, `model.created`, `model.updated`, `model.deleted`, `embedding_profile.created`, `embedding_profile.updated` |
 | Источники | `data_source.created`, `data_source.updated`, `data_source.deleted`, `data_source.oauth.started`, `data_source.connected`, `data_source.oauth.failed`, `data_source.disconnected`, `sync.requested` |
@@ -444,6 +479,8 @@ OpenAI/Anthropic). Полный алгоритм — в ADR-007; здесь — 
 | Утечка между KB / пользователями | Контекст из сессии, фильтры доступа к KB в SQL, проверка состояния ресурсов в jobs, (RLS) | Тесты «KB без доступа / чужой диалог недоступны» для каждого endpoint/job |
 | Утечка между организациями | Одна организация на инсталляцию (ADR-012): отдельные БД, storage, ключи | Не применимо внутри инсталляции |
 | RBAC bypass | Policy в каждом use case, deny by default, 404/403, frontend не boundary | Negative RBAC tests, тесты комбинаций permissions (§13 Фаза 7) |
+| Потеря управления и эскалация через управление пользователями | Последний активный администратор защищён блокировкой строки роли `admin`; `admin` только напрямую; запрет отключать/удалять себя; роли при создании — только с `roles.assign` (§3.1) | Тесты последнего администратора, в том числе параллельные снятия ролей и удаления |
+| Перехват ссылки активации | Токен во фрагменте URL, только SHA-256 в БД, 72 ч, одноразовость под блокировкой, перевыпуск отменяет прежний, одинаковая ошибка, лимит на IP (ADR-015) | Тесты повторной/параллельной активации, истёкшего и перевыпущенного токена |
 | Утечка API keys / OAuth tokens | Шифрование, ключ вне БД, write-only API, redaction, отсутствие в prompt | Тесты: secrets не возвращаются и не логируются |
 | SSRF | Валидация URL и IP, запрет private/metadata, allowlist уровня инсталляции, pinning | SSRF-тесты (§12) |
 | Malicious uploads / parser exploits | Quarantine, magic bytes, лимиты, изолированный парсер, timeout | Upload/parser tests (§13 Фаза 12) |
@@ -513,7 +550,8 @@ restart, interrupted sync.
 6. Список распространённых паролей для парольной политики (источник, лицензия).
 
 Решено: одна организация на инсталляцию ([ADR-012](adr/0012-single-organization-deployment.md)), сессии, CSRF,
-пароли и лимиты входа ([ADR-013](adr/0013-auth-session-strategy.md)), срок и повторная генерация bootstrap token
+пароли и лимиты входа ([ADR-013](adr/0013-auth-session-strategy.md)), создание пользователей ссылкой активации
+([ADR-015](adr/0015-user-activation-links.md)), срок и повторная генерация bootstrap token
 (§4.5), сетевой allowlist и локальные модели ([ADR-007](adr/0007-network-access-and-local-llm.md)), bootstrap
 ([ADR-006](adr/0006-initial-setup-and-system-configuration.md)), доступ к ассистентам
 ([ADR-005](adr/0005-assistant-access-model.md)).

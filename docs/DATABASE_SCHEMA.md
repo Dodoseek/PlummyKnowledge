@@ -6,7 +6,7 @@
 | Источник | [PROJECT_BLUEPRINT.md](PROJECT_BLUEPRINT.md) §5, §6, §7, §8, §9, §12, §20 |
 | СУБД | PostgreSQL + pgvector (§3) |
 | Миграции | Alembic (§3) |
-| Решения | [ADR-012](adr/0012-single-organization-deployment.md), [ADR-013](adr/0013-auth-session-strategy.md), [ADR-005](adr/0005-assistant-access-model.md), [ADR-006](adr/0006-initial-setup-and-system-configuration.md), [ADR-008](adr/0008-unified-document-ingestion.md) |
+| Решения | [ADR-012](adr/0012-single-organization-deployment.md), [ADR-013](adr/0013-auth-session-strategy.md), [ADR-005](adr/0005-assistant-access-model.md), [ADR-006](adr/0006-initial-setup-and-system-configuration.md), [ADR-008](adr/0008-unified-document-ingestion.md), [ADR-014](adr/0014-list-pagination.md), [ADR-015](adr/0015-user-activation-links.md) |
 | Связанные документы | [ARCHITECTURE.md](ARCHITECTURE.md), [API_CONTRACTS.md](API_CONTRACTS.md), [SECURITY_MODEL.md](SECURITY_MODEL.md) |
 
 **Как читать.** Состав сущностей и общие правила (§9) нормативны. Колонки, типы, enum-значения и индексы —
@@ -82,7 +82,7 @@ erDiagram
 
 | Группа (§9) | Таблицы |
 |---|---|
-| Identity | `users`, `groups`, `user_groups`, `roles`, `permissions`, `role_permissions`, `user_roles`, `group_roles`, `sessions` |
+| Identity | `users`, `user_activation_tokens`, `groups`, `user_groups`, `roles`, `permissions`, `role_permissions`, `user_roles`, `group_roles`, `sessions` |
 | AI | `ai_providers`, `embedding_provider_configs`, `model_configs`, `secret_references` |
 | Knowledge | `knowledge_bases`, `knowledge_base_access`, `assistants`, `assistant_knowledge_bases`, `data_sources`, `data_source_credentials`, `knowledge_base_sources`, `documents`, `document_versions`, `document_chunks`, `embeddings` |
 | Chat | `conversations`, `messages`, `message_citations`, `generation_runs` |
@@ -100,8 +100,7 @@ erDiagram
 
 ## 3. Система, Identity и настройки
 
-Таблицы §3.0–§3.2, §3.4–§3.6 реализованы миграциями `0002`–`0005` (Фазы 2–3). `groups`, `user_groups`,
-`group_roles` (§3.3) появятся на этапе «Users & RBAC».
+Таблицы §3.0, §3.2–§3.6 реализованы миграциями `0002`–`0006` (Фазы 2–3); Application Settings (§3.1) — позже.
 
 ### 3.0 `instance_state` ([ADR-006](adr/0006-initial-setup-and-system-configuration.md)) — реализовано, `0002`
 
@@ -134,27 +133,43 @@ Instance Settings и при чтении ограничиваются ими (ef
 `max_output_tokens_cap` (≤ instance cap), `allowed_provider_types` (⊆ instance-разрешённых). Таблица создаётся в
 фазе, где появятся эти настройки.
 
-### 3.2 `users` — реализовано, `0002`
+### 3.2 `users` — реализовано, `0002`, `0006`
 
 | Колонка | Тип | Ограничения / описание |
 |---|---|---|
-| `email` | `citext` | NOT NULL, UNIQUE в инсталляции ([ADR-012](adr/0012-single-organization-deployment.md)); хранится в нижнем регистре |
+| `email` | `citext` | NOT NULL; уникален среди неудалённых пользователей (`uq_users_email_active … WHERE deleted_at IS NULL`, [ADR-012](adr/0012-single-organization-deployment.md), [ADR-015](adr/0015-user-activation-links.md)); хранится в нижнем регистре |
 | `display_name` | `text` | NOT NULL, 1–200 символов |
-| `password_hash` | `text` | Argon2id ([ADR-013](adr/0013-auth-session-strategy.md)); NULL для будущих внешних identity (OIDC) |
+| `password_hash` | `text` | Argon2id ([ADR-013](adr/0013-auth-session-strategy.md)); NULL у `invited` (до активации) и у будущих внешних identity (OIDC) |
 | `status` | `text` | `active` \| `disabled` \| `invited`; NOT NULL, по умолчанию `active` |
 | `last_login_at` | `timestamptz` | |
 | `password_changed_at` | `timestamptz` | Сессии, созданные раньше, отклоняются |
-| `deleted_at` | `timestamptz` | Soft delete; удалённый пользователь не может войти |
+| `deleted_at` | `timestamptz` | Soft delete; удалённый пользователь не может войти, его email освобождается |
 
-Индексы: `(status)`.
+Индексы: `(status)`, `(created_at, id)` (keyset-пагинация, [ADR-014](adr/0014-list-pagination.md)),
+частичный уникальный `(email) WHERE deleted_at IS NULL`.
 
-### 3.3 `groups`, `user_groups` — этап «Users & RBAC»
+`user_activation_tokens` ([ADR-015](adr/0015-user-activation-links.md)) — реализовано, `0006`:
 
-`groups`: `name text NOT NULL`, `description text`, `deleted_at`; `UNIQUE (lower(name)) WHERE deleted_at IS NULL`.
+| Колонка | Тип | Ограничения / описание |
+|---|---|---|
+| `user_id` | `uuid` | PK, FK `users` `ON DELETE CASCADE` — не больше одного токена на пользователя |
+| `token_hash` | `bytea` | NOT NULL, UNIQUE, ровно 32 байта (SHA-256 256-битного токена; сам токен не хранится) |
+| `expires_at` | `timestamptz` | NOT NULL; создание + 72 ч |
+| `created_by` | `uuid` | FK `users` `ON DELETE SET NULL` — администратор, выдавший ссылку |
+| `created_at` | `timestamptz` | NOT NULL |
 
-`user_groups`: `user_id`, `group_id`, `created_at`; PK `(user_id, group_id)`; индекс `(group_id)`.
+Перевыпуск заменяет строку (upsert); активация удаляет её в той же транзакции, что задаёт пароль.
 
-### 3.4 `permissions`, `roles`, `role_permissions`, `user_roles`, `group_roles` — реализовано, `0003` (кроме `group_roles`)
+### 3.3 `groups`, `user_groups` — реализовано, `0006`
+
+`groups`: `name citext NOT NULL` (1–100 символов), `description text` (до 500), `created_at`, `updated_at`,
+`deleted_at`; частичный уникальный индекс `(name) WHERE deleted_at IS NULL` (без учёта регистра за счёт `citext`);
+индекс `(created_at, id)`. Удаление — soft delete с очисткой участников и ролей группы.
+
+`user_groups`: `user_id` (FK `users` `ON DELETE CASCADE`), `group_id` (FK `groups` `ON DELETE CASCADE`),
+`created_at`; PK `(user_id, group_id)`; индекс `(group_id)`.
+
+### 3.4 `permissions`, `roles`, `role_permissions`, `user_roles`, `group_roles` — реализовано, `0003`, `0006`
 
 `permissions` — справочник, заполняется миграцией данных; каталог — [SECURITY_MODEL.md §3](SECURITY_MODEL.md#3-roles-и-permissions):
 
@@ -179,7 +194,13 @@ Permission на изменение Instance Settings не существует: 
 `user_roles`: `user_id`, `role_id`, `granted_by uuid NULL` (FK `users`), `created_at`; PK `(user_id, role_id)`;
 индекс `(role_id)`.
 
-`group_roles` (этап «Users & RBAC»): `group_id`, `role_id`, `granted_by`, `created_at`; PK `(group_id, role_id)`.
+`group_roles` (`0006`): `group_id` (FK `groups` `ON DELETE CASCADE`), `role_id` (FK `roles` `ON DELETE RESTRICT`),
+`granted_by` (FK `users` `ON DELETE SET NULL`), `created_at`; PK `(group_id, role_id)`; индекс `(role_id)`. Роль
+`admin` группам не назначается (проверка в use case): инвариант «хотя бы один активный администратор» зависит только
+от `user_roles`.
+
+Эффективные роли пользователя = `user_roles` ∪ `group_roles` неудалённых групп из `user_groups`; запрос выполняется
+при аутентификации каждого запроса.
 
 ### 3.5 `sessions` ([ADR-013](adr/0013-auth-session-strategy.md)) — реализовано, `0004`
 

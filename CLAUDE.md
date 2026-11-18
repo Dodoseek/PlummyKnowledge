@@ -11,13 +11,17 @@ PlummyKnowledge — open-source **self-hosted** платформа корпор�
 Лицензия — Apache License 2.0. Одна инсталляция принадлежит **одной** организации и работает на её серверах или в её
 облаке: multi-tenancy, сущности Organization и `organization_id` нет ([ADR-012](docs/adr/0012-single-organization-deployment.md)).
 
-**Текущее состояние:** Этап 1 (Foundation) и Этап 2 (Bootstrap & Authentication). Backend: FastAPI, Pydantic
-Settings, SQLAlchemy async, Alembic (`vector`/`citext`, users, instance_state, RBAC-каталог, sessions, audit_logs),
-Redis (rate limit, брокер Celery), health live/ready; Celery worker с диагностической задачей; первоначальная настройка по bootstrap token и CLI `python -m plummy.cli`;
-login/logout/me на серверных сессиях ([ADR-013](docs/adr/0013-auth-session-strategy.md)); `SecurityContext` и
-`require_permission`. Frontend: React 18, Chakra UI, RTK Query, страницы `/setup` и `/login`, guard, выход.
-CI (GitHub Actions), pre-commit (secret scan, lint), Dependabot. Управления пользователями, KB, Nginx и
-prod-compose ещё нет ([DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md)).
+**Текущее состояние:** Фазы 1–3 roadmap завершены (Foundation, Bootstrap & Authentication, Users & RBAC). Backend:
+FastAPI, Pydantic Settings, SQLAlchemy async, Alembic (`vector`/`citext`, users, activation tokens, groups,
+RBAC-каталог и назначения ролей, sessions, audit_logs), Redis (rate limit, брокер Celery), health live/ready; Celery
+worker с диагностической задачей; первоначальная настройка по bootstrap token и CLI `python -m plummy.cli`;
+login/logout/me, свои сессии, смена пароля на серверных сессиях ([ADR-013](docs/adr/0013-auth-session-strategy.md));
+`SecurityContext` и `require_permission`; API пользователей (создание ссылкой активации,
+[ADR-015](docs/adr/0015-user-activation-links.md)), групп и ролей с защитой последнего администратора;
+cursor-пагинация ([ADR-014](docs/adr/0014-list-pagination.md)); `GET /system/settings`. Frontend: React 18,
+Chakra UI, RTK Query, страницы `/setup`, `/login`, `/activate`, `/account`, `/admin/users`, `/admin/groups`, guard,
+выход. CI (GitHub Actions), pre-commit (secret scan, lint), Dependabot. Application Settings, провайдеров, KB, Nginx
+и prod-compose ещё нет ([DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md)).
 Не начинать Google OAuth, Microsoft Graph и сложный RAG до стабильного запуска каркаса.
 
 ## Приоритет источников

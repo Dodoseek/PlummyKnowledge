@@ -85,6 +85,7 @@
 | HTTP | `code` | Когда |
 |---|---|---|
 | 400 | `bad_request` | Некорректный запрос, не связанный с валидацией полей |
+| 400 | `activation_token_invalid` | Ссылка активации неверна, истекла, использована или пользователь уже не `invited` — одинаково для всех причин ([ADR-015](adr/0015-user-activation-links.md)) |
 | 401 | `unauthenticated` | Нет сессии, сессия истекла или пользователь неактивен |
 | 401 | `session_revoked` | Сессия отозвана (§12) |
 | 401 | `invalid_credentials` | Логин — одинаково для неизвестного email, неверного пароля и отключённого пользователя |
@@ -97,12 +98,17 @@
 | 409 | `conflict` | Конфликт состояния (уникальность, версия) |
 | 409 | `idempotency_key_mismatch` | Тот же `Idempotency-Key` с другим телом запроса |
 | 409 | `sync_already_running` | Для источника уже есть активный sync (§7) |
+| 409 | `email_taken` | Email уже занят пользователем, который не удалён |
+| 409 | `group_name_taken` | Имя группы (без учёта регистра) уже занято |
+| 409 | `last_administrator` | Операция оставила бы инсталляцию без активного администратора |
+| 409 | `cannot_modify_self` | Администратор пытается отключить или удалить собственную учётную запись |
+| 409 | `invalid_user_state` | Действие невозможно в текущем статусе пользователя (например, перевыпуск ссылки для `active`) |
 | 409 | `setup_already_completed` | Инсталляция уже инициализирована ([ADR-006](adr/0006-initial-setup-and-system-configuration.md)) |
 | 409 | `reindex_required` | Операция требует переиндексации (смена embedding profile, §5) |
 | 413 | `payload_too_large` | Превышен лимит размера (§8 п.6) |
 | 415 | `unsupported_media_type` | Формат вне списка MVP (§6) |
 | 422 | `validation_error` | Ошибка валидации DTO; список в `errors` |
-| 422 | `invalid_query_parameter` | Неразрешённый фильтр/сортировка (§10) |
+| 422 | `invalid_query_parameter` | Неизвестный или повторённый query-параметр, неразрешённая сортировка, неверный `limit` или `cursor` (§1.6); причина — в `errors[].code` |
 | 422 | `endpoint_not_allowed` | `base_url` провайдера не проходит сетевую политику инсталляции ([ADR-007](adr/0007-network-access-and-local-llm.md)) |
 | 422 | `setting_exceeds_instance_policy` | Значение Application Settings шире, чем разрешает instance policy ([ADR-006](adr/0006-initial-setup-and-system-configuration.md)) |
 | 429 | `rate_limited` | Превышен лимит; заголовок `Retry-After` (§8 п.5) |
@@ -112,18 +118,23 @@
 | 503 | `service_unavailable` | Зависимость недоступна (БД, Redis) |
 | 504 | `provider_timeout` | Timeout провайдера |
 
-### 1.6 Pagination, фильтры, сортировка (§10) **[Proposed]**
+### 1.6 Pagination, фильтры, сортировка ([ADR-014](adr/0014-list-pagination.md), реализовано)
 
-- Cursor pagination: `?limit=25&cursor=<opaque>`; `limit` по умолчанию 25, максимум 100.
+- Cursor (keyset) pagination: `?limit=25&cursor=<opaque>`; `limit` — 1…100, по умолчанию 25.
 - Ответ списка:
 
   ```json
   { "items": [ ... ], "next_cursor": "eyJ...", "has_more": true }
   ```
 
-- Фильтры и сортировка — **только из allowlist** конкретного endpoint (§10): `?status=failed&sort=-created_at`.
-  Неизвестный параметр или поле сортировки → `422 invalid_query_parameter`. Значения никогда не подставляются в SQL
-  напрямую.
+- `cursor` непрозрачен для клиента (base64url JSON с позицией `(значение сортировки, id)`), привязан к сортировке:
+  курсор другой сортировки, повреждённый или длиннее 1024 символов → `422 invalid_query_parameter`
+  (`errors[].code = invalid_cursor`). Курсор только задаёт позицию: фильтры доступа всегда применяет сервер.
+- Фильтры и сортировка — **только из allowlist** конкретного endpoint: `?status=invited&sort=-created_at`.
+  Неизвестный или повторённый параметр, сортировка вне списка, `limit` вне диапазона → `422 invalid_query_parameter`
+  (`errors[].field = query.<имя>`, `errors[].code` — `unknown_query_parameter`, `duplicate_query_parameter`,
+  `invalid_sort`, `invalid_limit`, `invalid_cursor`). Значения никогда не подставляются в SQL напрямую; поиск `q`
+  экранирует `%`, `_` и `\`.
 
 ### 1.7 Idempotency (§10)
 
@@ -214,9 +225,10 @@
 | POST | `/api/v1/auth/login` | Логин, установка cookie сессии — **реализовано** | — | pub | — | `auth.login.succeeded` / `auth.login.failed` | login |
 | POST | `/api/v1/auth/logout` | Отзыв текущей сессии — **реализовано** | — | pub | — | `auth.logout` | — |
 | GET | `/api/v1/auth/me` | Текущий пользователь, роли, эффективные permissions, сессия, CSRF-токен — **реализовано** | сессия | auth | — | — | — |
-| GET | `/api/v1/auth/sessions` | Мои активные сессии | сессия | auth | — | — | — |
-| DELETE | `/api/v1/auth/sessions/{session_id}` | Отозвать свою сессию | сессия | auth | — | `auth.session.revoked` | — |
-| POST | `/api/v1/auth/password/change` | Смена пароля; отзыв остальных сессий | сессия | auth | — | `auth.password.changed` | login |
+| GET | `/api/v1/auth/sessions` | Мои активные сессии — **реализовано** | сессия | auth | — | — | — |
+| DELETE | `/api/v1/auth/sessions/{session_id}` | Отозвать свою сессию — **реализовано** | сессия | auth | — | `auth.session.revoked` | — |
+| POST | `/api/v1/auth/password/change` | Смена пароля; отзыв всех сессий и новая сессия — **реализовано** | сессия | auth | — | `auth.password.changed` | login |
+| POST | `/api/v1/auth/activate` | Активация учётной записи по одноразовой ссылке ([ADR-015](adr/0015-user-activation-links.md)) — **реализовано** | activation token | pub | — | `user.activated` / `user.activation.rejected` | activation |
 | POST | `/api/v1/auth/password/reset-request` | Только при наличии email infrastructure (§5) | — | pub | — | `auth.password.reset_requested` | login |
 | POST | `/api/v1/auth/password/reset` | Только при наличии email infrastructure (§5) | reset token | pub | — | `auth.password.reset` | login |
 
@@ -252,6 +264,24 @@
 **`GET /auth/me`** — `200 Session`; `401 unauthenticated` (нет cookie, сессия не найдена или истекла, пользователь
 неактивен), `401 session_revoked` (сессия отозвана). При `401` cookie удаляется.
 
+**`GET /auth/sessions`** — `200 { "items": [SessionItem] }`, только действующие сессии текущего пользователя,
+сначала последние использованные. `SessionItem`: `id`, `created_at`, `last_seen_at`, `expires_at`, `user_agent`,
+`ip_address`, `current` (сессия этого запроса). Хэши токенов не возвращаются.
+
+**`DELETE /auth/sessions/{session_id}`** — `204`. Чужая, отозванная или несуществующая сессия → одинаковый
+`404 not_found`. Отзыв текущей сессии удаляет cookie (это выход).
+
+**`POST /auth/password/change`** — `{ "current_password": "…", "new_password": "…" }`. Проверка текущего пароля идёт
+через лимиты `login` (неудача считается неудачной попыткой входа). `200 Session` + новая cookie: все сессии
+пользователя отзываются (`password_change`), этому браузеру выдаётся новая сессия и новый CSRF-токен. Ошибки:
+`422` с `errors[].code` — `invalid_current_password` (поле `body.current_password`), `password_unchanged` или
+правило политики паролей (поле `body.new_password`); `403 csrf_failed`; `429 rate_limited`.
+
+**`POST /auth/activate`** — публичный: `{ "token": "…", "password": "…" }`; токен — из фрагмента ссылки
+`{PUBLIC_URL}/activate#token=…`. `200 Session` + cookie (как login). Неверный, истёкший, использованный токен или
+пользователь, который уже не `invited`, → одинаковый `400 activation_token_invalid`. Пароль, нарушающий политику, →
+`422` (`body.password`), ссылка остаётся действующей. Лимит `activation`; требуется доверенный `Origin`.
+
 ### 2.3 `settings` — Application Settings ([ADR-006](adr/0006-initial-setup-and-system-configuration.md), [ADR-012](adr/0012-single-organization-deployment.md))
 
 Группы `organizations` нет: инсталляция принадлежит одной организации (ADR-012).
@@ -274,39 +304,60 @@
 }
 ```
 
-### 2.4 `users`
+### 2.4 `users` (реализовано)
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
-| GET | `/api/v1/users` | Список (фильтры: `status`, `group_id`, `q`) | `users.read` | auth | — | — | — |
-| POST | `/api/v1/users` | Создать пользователя с временным паролем (смена при первом входе) **[Proposed]** | `users.manage` | auth | Idem | `user.created` | — |
-| GET | `/api/v1/users/{id}` | Карточка | `users.read` | auth | — | — | — |
-| PATCH | `/api/v1/users/{id}` | Имя, статус (`disabled` → отзыв всех сессий) | `users.manage` | auth | — | `user.updated`, `user.disabled` | — |
-| DELETE | `/api/v1/users/{id}` | Soft delete; отзыв сессий | `users.manage` | auth | — | `user.deleted` | — |
-| PUT | `/api/v1/users/{id}/roles` | Заменить набор ролей | `roles.assign` | auth | — | `role.assigned`, `role.revoked` | — |
-| POST | `/api/v1/users/{id}/sessions/revoke` | Отозвать все сессии пользователя | `users.manage` | auth | — | `auth.session.revoked_by_admin` | — |
+| GET | `/api/v1/users` | Список: фильтры `status`, `group_id`, `q`; сортировка `email` (по умолчанию), `-email`, `created_at`, `-created_at` | `users.read` | auth | — | — | — |
+| POST | `/api/v1/users` | Создать пользователя `invited` и получить одноразовую ссылку активации ([ADR-015](adr/0015-user-activation-links.md)) | `users.manage` (+ `roles.assign`, если переданы `roles`) | auth | — | `user.created` | — |
+| GET | `/api/v1/users/{id}` | Карточка: прямые роли и группы | `users.read` | auth | — | — | — |
+| PATCH | `/api/v1/users/{id}` | Имя, статус `active`/`disabled` (`disabled` → отзыв всех сессий) | `users.manage` | auth | — | `user.updated`, `user.disabled` | — |
+| DELETE | `/api/v1/users/{id}` | Soft delete; отзыв сессий, удаление из групп и ролей, email освобождается | `users.manage` | auth | — | `user.deleted` | — |
+| PUT | `/api/v1/users/{id}/roles` | Заменить набор прямых ролей | `roles.assign` | auth | — | `role.assigned`, `role.revoked` | — |
+| POST | `/api/v1/users/{id}/sessions/revoke` | Отозвать все сессии пользователя → `{ "revoked": N }` | `users.manage` | auth | — | `auth.session.revoked_by_admin` | — |
+| POST | `/api/v1/users/{id}/activation` | Новая ссылка активации (только `invited`); прежняя перестаёт действовать | `users.manage` | auth | — | `user.activation.reissued` | — |
 
-Пароли и хэши в ответах отсутствуют. Нельзя снять роль Administrator с последнего активного администратора
-(защита от потери управления); восстановление — только CLI на сервере.
+**DTO `User`**: `id`, `email`, `display_name`, `status` (`active` / `invited` / `disabled`), `roles` (прямые роли),
+`created_at`, `last_login_at`; карточка дополнительно содержит `groups: [{ id, name }]`. Пароли, хэши и токены в
+ответах отсутствуют.
 
-### 2.5 `groups`
+**`POST /users`** — `{ "email": "…", "display_name": "…", "roles": ["member"] }` (неизвестные поля, в том числе
+`password`, → `422`). `201 { "user": User, "activation": { "url": "…/activate#token=…", "expires_at": "…" } }`.
+Ссылка показывается один раз и действует 72 часа. Idempotency-Key не нужен: повтор даёт `409 email_taken`
+(email уникален среди неудалённых пользователей, без учёта регистра). Ошибки: `422` (`invalid_email`,
+`invalid_display_name`, `unknown_role`), `403 permission_denied`.
+
+**Инварианты:** в инсталляции всегда есть хотя бы один активный администратор — снятие роли `admin`, отключение и
+удаление, которые нарушили бы это, → `409 last_administrator` (изменения сериализуются блокировкой строки роли
+`admin`). Администратор не может отключить или удалить себя (`409 cannot_modify_self`). Статус `invited` нельзя
+задать через `PATCH`; `invited` → `active` только через активацию (`409 invalid_user_state`). Включение
+отключённого пользователя, который не активировался, возвращает его в `invited`. Восстановление доступа без
+администратора — только CLI на сервере.
+
+### 2.5 `groups` (реализовано)
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
-| GET | `/api/v1/groups` | Список | `groups.read` | auth | — | — | — |
+| GET | `/api/v1/groups` | Список с `member_count`: фильтр `q`; сортировка `name` (по умолчанию), `-name`, `created_at`, `-created_at` | `groups.read` | auth | — | — | — |
 | POST | `/api/v1/groups` | Создать | `groups.manage` | auth | — | `group.created` | — |
-| GET | `/api/v1/groups/{id}` | Карточка с участниками | `groups.read` | auth | — | — | — |
-| PATCH | `/api/v1/groups/{id}` | Изменить | `groups.manage` | auth | — | `group.updated` | — |
-| DELETE | `/api/v1/groups/{id}` | Удалить (доступы группы к KB снимаются) | `groups.manage` | auth | — | `group.deleted` | — |
+| GET | `/api/v1/groups/{id}` | Карточка с участниками и ролями | `groups.read` | auth | — | — | — |
+| PATCH | `/api/v1/groups/{id}` | Имя, описание (`description: null` очищает) | `groups.manage` | auth | — | `group.updated` | — |
+| DELETE | `/api/v1/groups/{id}` | Soft delete: участники и роли группы снимаются (позже — и доступы к KB); имя освобождается | `groups.manage` | auth | — | `group.deleted` | — |
 | PUT | `/api/v1/groups/{id}/members` | Заменить состав | `groups.manage` | auth | — | `group.members.changed` | — |
 | PUT | `/api/v1/groups/{id}/roles` | Заменить роли группы | `roles.assign` | auth | — | `role.assigned`, `role.revoked` | — |
 
-### 2.6 `roles`
+Имя группы — 1–100 символов, уникально среди неудалённых групп без учёта регистра (`409 group_name_taken`);
+описание — до 500 символов. `PUT …/members` принимает `{ "user_ids": [...] }` (до 1000); несуществующие или
+удалённые пользователи → `422 unknown_user`. Роль `admin` группе не назначается (`422 role_not_assignable_to_group`):
+администратор назначается только напрямую. Эффективные permissions пользователя = прямые роли ∪ роли его групп;
+вычисляются на каждом запросе, поэтому изменения действуют со следующего запроса участников.
+
+### 2.6 `roles` (чтение реализовано)
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
-| GET | `/api/v1/roles` | Роли с их permissions | `roles.read` | auth | — | — | — |
-| GET | `/api/v1/roles/permissions` | Каталог permissions | `roles.read` | auth | — | — | — |
+| GET | `/api/v1/roles` | `{ items: [{ key, name, description, is_system, permissions }] }` | `roles.read` | auth | — | — | — |
+| GET | `/api/v1/roles/permissions` | `{ items: [{ key, description }] }` | `roles.read` | auth | — | — | — |
 | POST / PATCH / DELETE | `/api/v1/roles[/{id}]` | Пользовательские роли — **не в 0.1.0** **[Proposed]** | `roles.manage` | auth | — | `role.created/updated/deleted` | — |
 
 Системные роли (§2) неизменяемы.
@@ -538,6 +589,20 @@ PDF, DOCX), `429`. Тип определяется по содержимому, 
 Endpoints для **изменения** Instance Settings и allowlist **не существуют**: они меняются конфигурацией сервера и
 перезапуском. Секретные значения представлены как `{ "configured": true }`.
 
+**Реализовано сейчас** — только существующие настройки (остальные разделы появятся вместе с функциями):
+
+```json
+{
+  "app_env": "production",
+  "public_url": "https://kb.example.test",
+  "setup_mode": "web",
+  "session": { "idle_ttl_seconds": 86400, "absolute_ttl_seconds": 604800, "cookie_secure": true },
+  "api_docs_enabled": false
+}
+```
+
+Целевая форма (**[Proposed]**, по мере появления лимитов, SMTP, storage и network allowlist):
+
 ```json
 {
   "public_url": "https://kb.example.test",
@@ -694,13 +759,15 @@ data: {"delta":"Перенос возможен "}
 
 ## 5. Rate limits (§5, §8 п.5)
 
-`login` и `setup` реализованы ([ADR-013](adr/0013-auth-session-strategy.md)); остальные значения — **[Proposed]**
-(по умолчанию, настраиваются). Хранилище счётчиков — Redis; при его недоступности login и setup отвечают `503`.
+`login`, `setup` и `activation` реализованы ([ADR-013](adr/0013-auth-session-strategy.md),
+[ADR-015](adr/0015-user-activation-links.md)); остальные значения — **[Proposed]** (по умолчанию, настраиваются).
+Хранилище счётчиков — Redis; при его недоступности эти endpoints отвечают `503`.
 
 | Профиль | Лимит | Ключ |
 |---|---|---|
 | `login` | 5/мин и 20/час на IP + email; 30/мин на IP; 10 неудачных попыток за 15 мин на email | IP, SHA-256(email) |
 | `setup` | 5/мин | IP |
+| `activation` | 10/мин | IP |
 | `upload` | 30/мин, суммарный объём 500 МБ/час | пользователь |
 | `chat` | 20/мин, не более 2 одновременных генераций | пользователь |
 | `provider_test` | 10/мин | инсталляция |
@@ -730,13 +797,13 @@ data: {"delta":"Перенос возможен "}
 
 ## 7. Открытые вопросы
 
-1. Формат пагинации (планируемый ADR).
-2. Хранилище idempotency keys (PostgreSQL / Redis).
-3. Пользовательские роли в MVP.
-4. SSE: разрыв соединения, `Last-Event-ID`.
-5. Нужен ли endpoint скачивания оригинала документа (и с какими заголовками безопасности).
+1. Хранилище idempotency keys (PostgreSQL / Redis).
+2. Пользовательские роли в MVP.
+3. SSE: разрыв соединения, `Last-Event-ID`.
+4. Нужен ли endpoint скачивания оригинала документа (и с какими заголовками безопасности).
 
-Решено: формат ошибок ([ADR-010](adr/0010-api-error-format.md)), setup и системные настройки ([ADR-006](adr/0006-initial-setup-and-system-configuration.md)), доступ к
+Решено: формат ошибок ([ADR-010](adr/0010-api-error-format.md)), пагинация ([ADR-014](adr/0014-list-pagination.md)),
+создание пользователей ссылкой активации ([ADR-015](adr/0015-user-activation-links.md)), setup и системные настройки ([ADR-006](adr/0006-initial-setup-and-system-configuration.md)), доступ к
 ассистентам ([ADR-005](adr/0005-assistant-access-model.md)), сетевые ошибки провайдеров
 ([ADR-007](adr/0007-network-access-and-local-llm.md)), upload как Document Source
 ([ADR-008](adr/0008-unified-document-ingestion.md)).

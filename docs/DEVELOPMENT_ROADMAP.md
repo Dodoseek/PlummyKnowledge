@@ -63,9 +63,11 @@ security gate (проверки безопасности **внутри** фаз
 - **Предварительно:** ADR-012 (Accepted).
 - **Security gate:** тесты «чужие данные недоступны» для первых ресурсов; SC-05 — с появлением документов (Фаза 5).
 - **Выход:** модели и миграции проверены на чистой БД и upgrade path.
-- *(Текущее состояние: этап «Bootstrap & Authentication» реализовал `users`, `roles`, `permissions`,
-  `role_permissions`, `user_roles`, `sessions`, `instance_state`, `audit_logs`, UnitOfWork и CLI. Не сделано:
-  `groups`, `user_groups`, `group_roles`, API управления пользователями и ролями — этап «Users & RBAC».)*
+- *(Текущее состояние: **фаза завершена.** Этапы «Bootstrap & Authentication» и «Users & RBAC» реализовали
+  `users`, `user_activation_tokens`, `groups`, `user_groups`, `roles`, `permissions`, `role_permissions`,
+  `user_roles`, `group_roles`, `sessions`, `instance_state`, `audit_logs` (миграции `0002`–`0006`, проверены на
+  чистой БД и upgrade/downgrade), UnitOfWork, CLI, cursor-пагинацию ([ADR-014](adr/0014-list-pagination.md)) и
+  тесты «чужие данные недоступны» для сессий пользователей.)*
 
 ### Фаза 3 — Authentication/authorization и bootstrap (§13, ADR-006)
 
@@ -73,16 +75,23 @@ security gate (проверки безопасности **внутри** фаз
   ([ADR-013](adr/0013-auth-session-strategy.md)); управление своими сессиями и смена пароля.
 - Permission policy service и проверки в use cases; CSRF/cookie strategy.
 - Группа `setup`: bootstrap token, `GET /setup/status`, `POST /setup/initialize`, режим `cli_only`.
-- Instance Settings только на чтение (`GET /system/settings`); Application Settings с проверкой instance-границ.
+- Instance Settings только на чтение (`GET /system/settings`).
+- Управление пользователями, группами и ролями; создание пользователей ссылкой активации
+  ([ADR-015](adr/0015-user-activation-links.md)); защита последнего администратора.
 - **Предварительно:** ADR-013 (Accepted).
 - **Security gate:** negative RBAC tests; revoked sessions отклоняются; SC-03, SC-04; тела setup-запросов не
-  логируются; SC-02 (часть про Application Settings).
+  логируются.
 - **Выход:** первый администратор создаётся только с bootstrap token или CLI; защищённый endpoint работает.
-- *(Текущее состояние: реализованы bootstrap token и CLI (`setup init-token`, `admin create`,
+- *(Текущее состояние: **фаза завершена.** Реализованы bootstrap token и CLI (`setup init-token`, `admin create`,
   `admin reset-password`), `GET /setup/status`, `POST /setup/initialize`, режим `cli_only`, login/logout/me,
-  сессии, CSRF, лимиты входа, `SecurityContext.require` (системные роли → permissions), `require_permission`, frontend setup/login/guards;
-  SC-03, SC-04, revoked sessions — тесты есть. Не сделано: `/auth/sessions`, смена пароля, `GET /system/settings`,
-  Application Settings, назначение ролей через API — этапы «Users & RBAC» и далее.)*
+  сессии, CSRF, лимиты входа, `SecurityContext.require`, `require_permission`; свои сессии
+  (`GET/DELETE /auth/sessions`), смена пароля, активация (`POST /auth/activate`), `GET /system/settings`;
+  API пользователей, групп и ролей (эффективные права = прямые роли ∪ роли групп); frontend: setup, login, guards,
+  `/account`, `/activate`, `/admin/users`, `/admin/groups`. Тесты: SC-03, SC-04, revoked sessions, negative RBAC,
+  последний администратор (в том числе параллельно), одноразовость активации.
+  **Перенесено:** Application Settings (`GET/PATCH /settings`) и SC-02 в части Application Settings — вместе с
+  первыми настройками, которые в них появятся (лимиты чата, retention), не позднее Фазы 7; сброс пароля по email —
+  с появлением email-инфраструктуры.)*
 
 ### Фаза 4 — AI provider abstraction и сетевая политика (§13, ADR-007)
 
