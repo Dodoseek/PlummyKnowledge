@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Статус | v0.2 — identity-таблицы реализованы (Фазы 2–3); остальное — рабочий проект |
+| Статус | v0.3 — identity-таблицы (Фазы 2–3), `secret_references` и AI-таблицы (Фаза 4) реализованы; остальное — рабочий проект |
 | Источник | [PROJECT_BLUEPRINT.md](PROJECT_BLUEPRINT.md) §5, §6, §7, §8, §9, §12, §20 |
 | СУБД | PostgreSQL + pgvector (§3) |
 | Миграции | Alembic (§3) |
@@ -225,68 +225,71 @@ Permission на изменение Instance Settings не существует: 
 
 ## 4. AI
 
-### 4.1 `secret_references` (§5, §8)
+### 4.1 `secret_references` ([ADR-016](adr/0016-secret-encryption.md)) — реализовано, `0007`
 
 | Колонка | Тип | Описание |
 |---|---|---|
-| `kind` | `text` | `ai_api_key` \| `oauth_refresh_token` \| `oauth_client_secret` \| … |
-| `backend` | `text` | `db_encrypted` в MVP; поле оставляет место для внешнего vault позднее |
-| `ciphertext` | `bytea` | Зашифрованное значение |
-| `nonce` | `bytea` | |
-| `key_id` | `text` | Версия ключа шифрования (для ротации) |
-| `algorithm` | `text` | Например `AES-256-GCM` (ADR «Шифрование секретов» (планируется)) |
-| `fingerprint` | `text` | **[Proposed]** Последние 4 символа/хэш для отображения «•••• abcd»; не позволяет восстановить секрет |
-| `rotated_at` | `timestamptz` | |
+| `kind` | `text` | `ai_api_key` \| `oauth_refresh_token` \| `oauth_client_secret` (CHECK) |
+| `backend` | `text` | `db_encrypted` (CHECK); поле оставляет место для внешнего vault позднее |
+| `ciphertext` | `bytea` | Шифртекст с тегом GCM (> 16 байт) |
+| `nonce` | `bytea` | 12 байт, новый на каждое шифрование |
+| `key_id` | `text` | Ключ key ring (`[A-Za-z0-9._-]{1,32}`); индекс для ротации |
+| `algorithm` | `text` | `AES-256-GCM` (CHECK) |
+| `hint` | `text` | Последние 4 символа секрета длиной ≥ 16, иначе NULL; не позволяет восстановить секрет |
+| `created_at`, `updated_at` | `timestamptz` | |
+| `rotated_at` | `timestamptz` | Последнее перешифрование или замена значения |
 
 Правила: значение никогда не возвращается API (§12 «secrets не возвращаются»); `ciphertext` не попадает в логи;
-associated data для AEAD включает `id` и `kind`, чтобы шифртекст нельзя было «пересадить» в другую
-запись **[Proposed]**.
+associated data AEAD — `plummy-secret-v1|<id>|<kind>`, поэтому шифртекст нельзя «пересадить» в другую запись.
+Запись-владелец (например `ai_providers`) и секрет сохраняются в одной транзакции; замена секрета перезаписывает ту же
+запись новым шифртекстом и nonce (старое значение не хранится), удаление секрета удаляет запись.
 
-### 4.2 `ai_providers` (§5)
+### 4.2 `ai_providers` (§5) — реализовано, `0008`
 
 | Колонка | Тип | Описание |
 |---|---|---|
-| `name` | `text` | NOT NULL; `UNIQUE (lower(name))` |
-| `provider_type` | `text` | `openai` \| `anthropic` \| `ollama` \| `openai_compatible` |
-| `base_url` | `text` | Endpoint; проходит SSRF-валидацию (§8 п.7) |
-| `secret_ref_id` | `uuid` | FK `secret_references`, NULL для провайдеров без ключа (Ollama) |
-| `settings` | `jsonb` | Timeouts, retry, заголовки без секретов |
+| `name` | `citext` | 1–100 символов; уникален среди неудалённых (`uq_ai_providers_name_active`, `WHERE deleted_at IS NULL`) |
+| `provider_type` | `text` | `openai` \| `anthropic` \| `ollama` \| `openai_compatible` (CHECK); не меняется |
+| `base_url` | `text` | 1–2048 символов; проходит проверку сетевой политики (§8 п.7, ADR-007) |
+| `secret_ref_id` | `uuid` | FK `secret_references` (`ON DELETE SET NULL`), уникален; NULL — провайдер без ключа |
+| `settings` | `jsonb` | Объект; сейчас `timeout_seconds` (1–600). Заголовков и секретов не содержит |
 | `enabled` | `boolean` | |
 | `last_test_at` | `timestamptz` | |
 | `last_test_status` | `text` | `ok` \| `failed` |
-| `last_test_error` | `text` | Redacted |
-| `deleted_at` | `timestamptz` | |
+| `last_test_error` | `text` | Только типизированный код ошибки (`^[a-z_]{1,64}$`), не текст ответа провайдера |
+| `created_at`, `updated_at` | `timestamptz` | Индекс `(created_at, id)` для cursor-пагинации |
+| `deleted_at` | `timestamptz` | Мягкое удаление: ключ и модели удаляются, имя освобождается |
 
-### 4.3 `model_configs` (§5)
+### 4.3 `model_configs` (§5) — реализовано, `0008`
 
 | Колонка | Тип | Описание |
 |---|---|---|
-| `provider_id` | `uuid` | FK |
-| `model_id` | `text` | Идентификатор модели у провайдера (§5 «model ID») |
-| `display_name` | `text` | |
-| `kind` | `text` | `chat` (embedding-модели описываются в `embedding_provider_configs`) |
-| `context_window` | `integer` | |
-| `max_output_tokens` | `integer` | |
-| `default_params` | `jsonb` | temperature и т.п. |
-| `capabilities` | `jsonb` | streaming и т.д. |
+| `provider_id` | `uuid` | FK `ai_providers` (`ON DELETE CASCADE`) |
+| `model_id` | `text` | Идентификатор модели у провайдера (§5 «model ID»), 1–256 символов; не меняется |
+| `display_name` | `text` | ≤ 200 символов |
+| `kind` | `text` | `chat` (CHECK; embedding-модели описываются в `embedding_provider_configs`) |
+| `context_window` | `integer` | > 0 |
+| `max_output_tokens` | `integer` | > 0 |
+| `default_params` | `jsonb` | Пока не используется API (temperature и т.п. — с Фазой 7) |
+| `capabilities` | `jsonb` | Пока не используется API |
 | `enabled` | `boolean` | |
 
 `UNIQUE (provider_id, model_id)`.
 
-### 4.4 `embedding_provider_configs` — embedding profile (§5, §9)
+### 4.4 `embedding_provider_configs` — embedding profile (§5, §9) — реализовано, `0008`
 
 В API и UI называется **embedding profile** (группа endpoints `embedding-profiles`, §10).
 
 | Колонка | Тип | Описание |
 |---|---|---|
-| `name` | `text` | `UNIQUE (lower(name))` |
-| `provider_id` | `uuid` | FK `ai_providers` |
-| `model_id` | `text` | |
-| `dimensions` | `integer` | NOT NULL |
+| `name` | `citext` | 1–100 символов, `UNIQUE` |
+| `provider_id` | `uuid` | FK `ai_providers` (`ON DELETE RESTRICT`); провайдер с profile нельзя удалить (`provider_in_use`) |
+| `model_id` | `text` | 1–256 символов |
+| `dimensions` | `integer` | NOT NULL, 1–16000 (предел `vector` в pgvector) |
 | `distance_metric` | `text` | `cosine` \| `inner_product` \| `l2` |
 | `normalize` | `boolean` | |
-| `max_input_tokens` | `integer` | |
-| `status` | `text` | `active` \| `deprecated` \| `retired` |
+| `max_input_tokens` | `integer` | > 0 |
+| `status` | `text` | `active` \| `deprecated` \| `retired`; из `retired` не возвращается |
 
 **Profile неизменяем** в части `provider_id`, `model_id`, `dimensions`, `distance_metric`, `normalize`: смена
 модели = новый profile + переиндексация (§5). Изменять можно только `name` и `status`.

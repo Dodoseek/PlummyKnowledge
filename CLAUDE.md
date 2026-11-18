@@ -11,17 +11,22 @@ PlummyKnowledge — open-source **self-hosted** платформа корпор�
 Лицензия — Apache License 2.0. Одна инсталляция принадлежит **одной** организации и работает на её серверах или в её
 облаке: multi-tenancy, сущности Organization и `organization_id` нет ([ADR-012](docs/adr/0012-single-organization-deployment.md)).
 
-**Текущее состояние:** Фазы 1–3 roadmap завершены (Foundation, Bootstrap & Authentication, Users & RBAC). Backend:
+**Текущее состояние:** Фазы 1–4 roadmap завершены (Foundation, Bootstrap & Authentication, Users & RBAC, AI providers
+& network policy). Backend:
 FastAPI, Pydantic Settings, SQLAlchemy async, Alembic (`vector`/`citext`, users, activation tokens, groups,
 RBAC-каталог и назначения ролей, sessions, audit_logs), Redis (rate limit, брокер Celery), health live/ready; Celery
 worker с диагностической задачей; первоначальная настройка по bootstrap token и CLI `python -m plummy.cli`;
 login/logout/me, свои сессии, смена пароля на серверных сессиях ([ADR-013](docs/adr/0013-auth-session-strategy.md));
 `SecurityContext` и `require_permission`; API пользователей (создание ссылкой активации,
 [ADR-015](docs/adr/0015-user-activation-links.md)), групп и ролей с защитой последнего администратора;
-cursor-пагинация ([ADR-014](docs/adr/0014-list-pagination.md)); `GET /system/settings`. Frontend: React 18,
-Chakra UI, RTK Query, страницы `/setup`, `/login`, `/activate`, `/account`, `/admin/users`, `/admin/groups`, guard,
-выход. CI (GitHub Actions), pre-commit (secret scan, lint), Dependabot. Application Settings, провайдеров, KB, Nginx
-и prod-compose ещё нет ([DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md)).
+cursor-пагинация ([ADR-014](docs/adr/0014-list-pagination.md)); `GET /system/settings`. Фаза 4: шифрование секретов
+с key ring вне БД ([ADR-016](docs/adr/0016-secret-encryption.md), CLI `secrets`), network allowlist в `CONFIG_FILE` и
+`SafeHttpClient` ([ADR-007](docs/adr/0007-network-access-and-local-llm.md)), порты `LLMProvider`/`EmbeddingProvider`
+и адаптеры OpenAI, Anthropic, Ollama, OpenAI-compatible (httpx, без SDK), API `providers`, моделей и
+`embedding-profiles` с connection test. Frontend: React 18, Chakra UI, RTK Query, страницы `/setup`, `/login`,
+`/activate`, `/account`, `/admin/users`, `/admin/groups`, `/admin/providers`, `/admin/embedding-profiles`, guard,
+выход. CI (GitHub Actions), pre-commit (secret scan, lint), Dependabot. Application Settings, storage и ingestion,
+KB, Nginx и prod-compose ещё нет ([DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md)).
 Не начинать Google OAuth, Microsoft Graph и сложный RAG до стабильного запуска каркаса.
 
 ## Приоритет источников
@@ -233,6 +238,17 @@ docker compose restart worker                                  # после из
 python3 scripts/check_secrets.py                               # secret scan всех tracked-файлов
 python3 -m unittest discover -s scripts/tests                  # тесты scripts/
 ```
+
+Секреты ([ADR-016](docs/adr/0016-secret-encryption.md), dev — в контейнере `migrate`):
+
+```bash
+docker compose run --rm migrate python -m plummy.cli secrets status         # записи по key_id
+docker compose run --rm migrate python -m plummy.cli secrets rotate         # перешифровать на primary
+docker compose run --rm migrate python -m plummy.cli secrets generate-key   # новая запись key ring (печатает ключ)
+```
+
+Живые contract tests провайдеров (тратят токены, в CI не запускаются; в `apps/backend`):
+`LIVE_PROVIDER_TESTS=1 ANTHROPIC_API_KEY=… OPENAI_API_KEY=… OPENAI_TEST_MODEL=… uv run pytest -m live`.
 
 `.githooks/pre-commit`: secret scan staged-строк → ruff/prettier/eslint staged-файлов (если `uv`/`node_modules`
 есть; `PLUMMY_SKIP_LINT=1` — пропустить lint один раз) → bump `VERSION`. CI — `.github/workflows/ci.yml`: те же

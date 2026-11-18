@@ -2,9 +2,9 @@
 
 | | |
 |---|---|
-| Статус | v0.2 — реализованы `health`, `setup`, `auth` (login, logout, me); контракт не стабилен до 1.0.0, §19 |
+| Статус | v0.3 — реализованы `health`, `setup`, `auth`, `users`, `groups`, `roles` (чтение), `providers`, `embedding-profiles`, `system`; контракт не стабилен до 1.0.0, §19 |
 | Источник | [PROJECT_BLUEPRINT.md](PROJECT_BLUEPRINT.md) §5, §6, §10, §12 |
-| Решения | [ADR-005](adr/0005-assistant-access-model.md), [ADR-006](adr/0006-initial-setup-and-system-configuration.md) (группы `setup`, `system`), [ADR-007](adr/0007-network-access-and-local-llm.md), [ADR-008](adr/0008-unified-document-ingestion.md), [ADR-010](adr/0010-api-error-format.md) |
+| Решения | [ADR-005](adr/0005-assistant-access-model.md), [ADR-006](adr/0006-initial-setup-and-system-configuration.md) (группы `setup`, `system`), [ADR-007](adr/0007-network-access-and-local-llm.md), [ADR-008](adr/0008-unified-document-ingestion.md), [ADR-010](adr/0010-api-error-format.md), [ADR-016](adr/0016-secret-encryption.md) |
 | Связанные документы | [ARCHITECTURE.md](ARCHITECTURE.md), [DATABASE_SCHEMA.md](DATABASE_SCHEMA.md), [SECURITY_MODEL.md](SECURITY_MODEL.md) |
 
 **Как читать.** Общие правила (§10), группы endpoints (§10), SSE-события (§5) и требования к цитатам (§6)
@@ -104,18 +104,25 @@
 | 409 | `cannot_modify_self` | Администратор пытается отключить или удалить собственную учётную запись |
 | 409 | `invalid_user_state` | Действие невозможно в текущем статусе пользователя (например, перевыпуск ссылки для `active`) |
 | 409 | `setup_already_completed` | Инсталляция уже инициализирована ([ADR-006](adr/0006-initial-setup-and-system-configuration.md)) |
-| 409 | `reindex_required` | Операция требует переиндексации (смена embedding profile, §5) |
+| 409 | `reindex_required` | Операция требует переиндексации (смена модели или параметров векторов embedding profile, §5) |
+| 409 | `provider_name_taken` | Имя AI-провайдера (без учёта регистра) уже занято неудалённым провайдером |
+| 409 | `provider_in_use` | Провайдер используется embedding profile (позднее — ассистентами) и не может быть удалён |
+| 409 | `model_id_taken` | У провайдера уже есть модель с таким model ID |
+| 409 | `embedding_profile_name_taken` | Имя embedding profile (без учёта регистра) уже занято |
+| 409 | `invalid_state` | Действие невозможно в текущем состоянии ресурса (например, вернуть `retired` profile в `active`) |
 | 413 | `payload_too_large` | Превышен лимит размера (§8 п.6) |
 | 415 | `unsupported_media_type` | Формат вне списка MVP (§6) |
 | 422 | `validation_error` | Ошибка валидации DTO; список в `errors` |
 | 422 | `invalid_query_parameter` | Неизвестный или повторённый query-параметр, неразрешённая сортировка, неверный `limit` или `cursor` (§1.6); причина — в `errors[].code` |
-| 422 | `endpoint_not_allowed` | `base_url` провайдера не проходит сетевую политику инсталляции ([ADR-007](adr/0007-network-access-and-local-llm.md)) |
+| 422 | `endpoint_not_allowed` | `base_url` провайдера не проходит сетевую политику инсталляции ([ADR-007](adr/0007-network-access-and-local-llm.md)); причина — в `errors[].code` поля `body.base_url` |
 | 422 | `setting_exceeds_instance_policy` | Значение Application Settings шире, чем разрешает instance policy ([ADR-006](adr/0006-initial-setup-and-system-configuration.md)) |
 | 429 | `rate_limited` | Превышен лимит; заголовок `Retry-After` (§8 п.5) |
 | 500 | `internal_error` | Необработанная ошибка; без `detail`, подробности — в логе по `correlation_id` |
 | 502 | `provider_error` | Ошибка AI provider / источника |
 | 502 | `egress_denied` | Исходящее соединение заблокировано сетевой политикой во время выполнения (например, DNS указал на запрещённый адрес) ([ADR-007](adr/0007-network-access-and-local-llm.md)) |
 | 503 | `service_unavailable` | Зависимость недоступна (БД, Redis) |
+| 503 | `secrets_not_configured` | Операция сохраняет секрет, а key ring на сервере не настроен (`SECRETS_KEYRING_FILE`, [ADR-016](adr/0016-secret-encryption.md)) |
+| 503 | `secret_unavailable` | Сохранённый секрет нельзя расшифровать текущим key ring (ключ удалён или запись повреждена); значение и `key_id` в ответ не попадают |
 | 504 | `provider_timeout` | Timeout провайдера |
 
 ### 1.6 Pagination, фильтры, сортировка ([ADR-014](adr/0014-list-pagination.md), реализовано)
@@ -213,10 +220,11 @@
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
 | GET | `/api/v1/health/live` | Процесс жив | — | pub | — | — | — |
-| GET | `/api/v1/health/ready` | БД, Redis, storage, миграции применены | — | pub | — | — | — |
+| GET | `/api/v1/health/ready` | БД, Redis, storage, миграции применены, ключи всех сохранённых секретов есть в key ring | — | pub | — | — | — |
 
 Ответ `ready` не раскрывает версии, хосты и тексты ошибок зависимостей: `{"status":"ready"}` или
-`503 {"status":"not_ready","checks":{"database":"fail"}}`.
+`503 {"status":"not_ready","checks":{"database":"fail"}}`. Проверка `secrets` падает, если в БД есть секреты на
+ключе, которого нет в key ring, или секреты есть, а key ring не настроен ([ADR-016](adr/0016-secret-encryption.md)).
 
 ### 2.2 `auth` ([ADR-013](adr/0013-auth-session-strategy.md))
 
@@ -362,30 +370,32 @@
 
 Системные роли (§2) неизменяемы.
 
-### 2.7 `providers` (§5)
+### 2.7 `providers` (§5) — реализовано
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
-| GET | `/api/v1/providers` | Список конфигураций | `providers.read` | auth | — | — | — |
-| POST | `/api/v1/providers` | Создать (секрет шифруется до записи, §5) | `providers.manage` | auth | — | `provider.created` | — |
+| GET | `/api/v1/providers` | Список (cursor, `sort`: `name`, `-name`, `created_at`, `-created_at`) | `providers.read` | auth | — | — | — |
+| POST | `/api/v1/providers` | Создать (секрет шифруется до записи, [ADR-016](adr/0016-secret-encryption.md)) | `providers.manage` | auth | — | `provider.created` | — |
 | GET | `/api/v1/providers/{id}` | Карточка без секрета | `providers.read` | auth | — | — | — |
-| PATCH | `/api/v1/providers/{id}` | Изменить; замена секрета | `providers.manage` | auth | — | `provider.updated`, `provider.secret.rotated` | — |
-| DELETE | `/api/v1/providers/{id}` | Удалить (запрещено, если используется ассистентом/profile → `409`) | `providers.manage` | auth | — | `provider.deleted` | — |
+| PATCH | `/api/v1/providers/{id}` | Изменить; замена или удаление секрета | `providers.manage` | auth | — | `provider.updated`, `provider.secret.rotated` | — |
+| DELETE | `/api/v1/providers/{id}` | Мягкое удаление вместе с ключом и моделями; `409 provider_in_use`, пока есть embedding profile | `providers.manage` | auth | — | `provider.deleted` | — |
 | POST | `/api/v1/providers/{id}/test` | Connection test (§5) | `providers.manage` | auth | — | `provider.tested` | provider_test |
-| GET | `/api/v1/providers/{id}/models` | Модели (`model_configs`) | `providers.read` | auth | — | — | — |
+| GET | `/api/v1/providers/{id}/models` | Модели (`model_configs`), без пагинации | `providers.read` | auth | — | — | — |
 | POST | `/api/v1/providers/{id}/models` | Добавить model ID | `providers.manage` | auth | — | `model.created` | — |
-| PATCH / DELETE | `/api/v1/providers/{id}/models/{model_id}` | Изменить / удалить | `providers.manage` | auth | — | `model.updated` / `model.deleted` | — |
+| PATCH / DELETE | `/api/v1/providers/{id}/models/{config_id}` | Изменить / удалить; `config_id` — UUID записи `model_configs`, не model ID провайдера | `providers.manage` | auth | — | `model.updated` / `model.deleted` | — |
 
-**Секреты — write-only.**
+**Секреты — write-only** ([ADR-016](adr/0016-secret-encryption.md)): `api_key` принимается, но никогда не
+возвращается, не логируется и не пишется в audit.
 
 ```json
 // POST /api/v1/providers
 {
   "name": "OpenAI prod",
-  "provider_type": "openai",            // openai | anthropic | ollama | openai_compatible
-  "base_url": "https://api.openai.com/v1",
+  "provider_type": "openai",            // openai | anthropic | ollama | openai_compatible; не меняется
+  "base_url": null,                     // null → адрес по умолчанию (openai, anthropic)
   "api_key": "sk-…",                    // write-only
-  "settings": { "timeout_seconds": 60 }
+  "settings": { "timeout_seconds": 60 }, // 1–600, по умолчанию 60
+  "enabled": true
 }
 // 201
 {
@@ -394,33 +404,67 @@
   "provider_type": "openai",
   "base_url": "https://api.openai.com/v1",
   "has_secret": true,
-  "secret_hint": "••••a1b2",
+  "secret_hint": "••••a1b2",            // последние 4 символа ключа длиной ≥ 16, иначе null
   "enabled": true,
-  "last_test": null,
-  "created_at": "2026-11-17T12:00:00Z"
+  "settings": { "timeout_seconds": 60 },
+  "last_test": null,                    // или { "status": "ok"|"failed", "tested_at": "…", "error_code": "…"|null }
+  "created_at": "2026-11-17T12:00:00Z",
+  "updated_at": "2026-11-17T12:00:00Z"
 }
 ```
 
-`PATCH`: поле `api_key` отсутствует → секрет не меняется; строка → замена; `null` → удаление.
-`base_url` проверяется сетевой политикой инсталляции ([ADR-007](adr/0007-network-access-and-local-llm.md)) при
-создании/изменении (`422 endpoint_not_allowed`) и при каждом подключении (`egress_denied`). Облачные и локальные
-провайдеры (Ollama, локальный OpenAI-compatible) создаются одинаково; локальный адрес работает, только если
-владелец инсталляции добавил его в allowlist. Ошибки connection test не возвращают сырой ответ провайдера, только
-типизированный код:
+Правила:
+
+- `api_key` обязателен для `openai` и `anthropic` (`422`, `errors[].code = secret_required`); для `ollama` и
+  `openai_compatible` — необязателен. `base_url` обязателен для `ollama` и `openai_compatible`
+  (`base_url_required`); неверный URL — `invalid_url`. Без настроенного key ring сохранение ключа →
+  `503 secrets_not_configured`.
+- `PATCH`: поле `api_key` отсутствует → секрет не меняется; строка → замена (новый шифртекст, audit
+  `provider.secret.rotated` с `change = replaced | added`); `null` → удаление (`change = removed`; для типов,
+  которым ключ обязателен, — `422 secret_required`). Смена `base_url` или ключа сбрасывает `last_test`.
+- `base_url` проверяется сетевой политикой инсталляции ([ADR-007](adr/0007-network-access-and-local-llm.md)) при
+  создании и изменении: статическая проверка URL и одно разрешение DNS (назначение `llm`, для типов с embeddings —
+  также `embedding`). Отказ → `422 endpoint_not_allowed`, причина (`scheme_not_allowed`, `address_not_allowed`,
+  `address_never_allowed`, `invalid_url`) — в
+  `errors[].code` поля `body.base_url`. При каждом подключении адрес проверяется снова (`egress_denied`).
+- Облачные и локальные провайдеры (Ollama, локальный OpenAI-compatible) создаются одинаково; локальный адрес работает,
+  только если владелец инсталляции добавил его в allowlist.
+- Имя уникально без учёта регистра среди неудалённых провайдеров (`409 provider_name_taken`); model ID уникален в
+  пределах провайдера (`409 model_id_taken`) и не меняется — для другой модели создаётся новая запись.
+
+**Connection test** возвращает `200` и при неудаче: результат сохраняется в `last_test` и пишется в audit
+`provider.tested` (`outcome` success/failure, код ошибки, время ответа). Ответ провайдера и его тексты ошибок клиенту
+не передаются, только типизированный код и фиксированное сообщение. Сетевые вызовы выполняются вне транзакции БД.
 
 ```json
-{ "status": "failed", "error": { "code": "egress_denied", "message": "Endpoint is not allowed by instance network policy." } }
+// 200
+{ "status": "ok", "latency_ms": 412, "tested_at": "2026-11-17T12:00:00Z", "models": ["gpt-…"], "error": null }
+// 200
+{ "status": "failed", "latency_ms": 3, "tested_at": "…", "models": [],
+  "error": { "code": "egress_denied", "message": "Endpoint is not allowed by instance network policy." } }
 ```
 
-### 2.8 `embedding-profiles` (§5, §9)
+Коды `error.code`: `egress_denied`, `provider_auth_failed`, `provider_rate_limited`, `provider_timeout`,
+`provider_unavailable`, `provider_bad_request`, `provider_model_not_found`, `provider_content_filtered`,
+`provider_invalid_response`, `provider_cancelled`.
+
+### 2.8 `embedding-profiles` (§5, §9) — реализовано
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
-| GET | `/api/v1/embedding-profiles` | Список | `providers.read` | auth | — | — | — |
-| POST | `/api/v1/embedding-profiles` | Создать (provider, model ID, dimensions, metric) | `providers.manage` | auth | — | `embedding_profile.created` | — |
+| GET | `/api/v1/embedding-profiles` | Список (cursor, `sort` как у providers) | `providers.read` | auth | — | — | — |
+| POST | `/api/v1/embedding-profiles` | Создать (provider, model ID, dimensions, metric, normalize) | `providers.manage` | auth | — | `embedding_profile.created` | — |
 | GET | `/api/v1/embedding-profiles/{id}` | Карточка | `providers.read` | auth | — | — | — |
-| PATCH | `/api/v1/embedding-profiles/{id}` | Только `name`, `status`; изменение модели/размерности → `409 reindex_required` | `providers.manage` | auth | — | `embedding_profile.updated` | — |
+| PATCH | `/api/v1/embedding-profiles/{id}` | Только `name`, `status`; изменение provider/модели/размерности/метрики/normalize → `409 reindex_required` | `providers.manage` | auth | — | `embedding_profile.updated` | — |
 | POST | `/api/v1/embedding-profiles/{id}/test` | Тестовый embedding, проверка размерности | `providers.manage` | auth | — | — | provider_test |
+
+- `provider_id` должен указывать на существующего провайдера (`422`, `errors[].code = unknown_provider`) с
+  embeddings API: `openai`, `ollama`, `openai_compatible` (у `anthropic` — `capability_not_supported`).
+- `dimensions` 1–16000, `distance_metric`: `cosine` (по умолчанию) | `inner_product` | `l2`.
+- `status`: `active` → `deprecated` → `retired`; из `retired` вернуться нельзя (`409 invalid_state`). Имя уникально
+  без учёта регистра (`409 embedding_profile_name_taken`).
+- Тест отвечает `200`: `{ "status", "latency_ms", "tested_at", "expected_dimensions", "actual_dimensions", "error" }`;
+  несовпадение размерности — `error.code = dimension_mismatch`.
 
 ### 2.9 `data-sources` (§7)
 
@@ -597,11 +641,22 @@ Endpoints для **изменения** Instance Settings и allowlist **не с
   "public_url": "https://kb.example.test",
   "setup_mode": "web",
   "session": { "idle_ttl_seconds": 86400, "absolute_ttl_seconds": 604800, "cookie_secure": true },
-  "api_docs_enabled": false
+  "api_docs_enabled": false,
+  "secrets": { "configured": true, "primary_key_id": "2026-11", "keys": 2 },
+  "network": {
+    "allowlist": [
+      { "name": "local-ollama", "url": "http://ollama:11434", "purposes": ["llm", "embedding"],
+        "provider_types": ["ollama"], "allowed_cidrs": ["172.30.10.0/24"] }
+    ]
+  }
 }
 ```
 
-Целевая форма (**[Proposed]**, по мере появления лимитов, SMTP, storage и network allowlist):
+`secrets` — состояние key ring ([ADR-016](adr/0016-secret-encryption.md)) без значений ключей; `network.allowlist` —
+записи `[[network.allowlist]]` из `CONFIG_FILE` ([ADR-007](adr/0007-network-access-and-local-llm.md)), пустой
+список по умолчанию.
+
+Дополнительные разделы (**[Proposed]**, по мере появления лимитов, SMTP и storage):
 
 ```json
 {
@@ -609,13 +664,7 @@ Endpoints для **изменения** Instance Settings и allowlist **не с
   "setup_mode": "web",
   "limits": { "upload_max_bytes": 52428800, "max_concurrent_generations_per_user": 2 },
   "smtp": { "configured": false },
-  "storage": { "backend": "local" },
-  "network": {
-    "allowlist": [
-      { "name": "local-ollama", "url": "http://ollama:11434", "purposes": ["llm", "embedding"],
-        "provider_types": ["ollama"], "allowed_cidrs": ["172.30.10.0/24"] }
-    ]
-  }
+  "storage": { "backend": "local" }
 }
 ```
 
@@ -759,7 +808,7 @@ data: {"delta":"Перенос возможен "}
 
 ## 5. Rate limits (§5, §8 п.5)
 
-`login`, `setup` и `activation` реализованы ([ADR-013](adr/0013-auth-session-strategy.md),
+`login`, `setup`, `activation` и `provider_test` реализованы ([ADR-013](adr/0013-auth-session-strategy.md),
 [ADR-015](adr/0015-user-activation-links.md)); остальные значения — **[Proposed]** (по умолчанию, настраиваются).
 Хранилище счётчиков — Redis; при его недоступности эти endpoints отвечают `503`.
 

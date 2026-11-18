@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Статус | v0.2 — аутентификация, сессии и bootstrap реализованы (Фазы 2–3) |
+| Статус | v0.3 — аутентификация, сессии и bootstrap (Фазы 2–3), шифрование секретов и сетевая политика (Фаза 4) реализованы |
 | Источник | [PROJECT_BLUEPRINT.md](PROJECT_BLUEPRINT.md) §1, §2, §5, §7, §8, §11, §12, §13 (Фазы 3, 9, 10, 12), §18, §20 |
 | Решения | [ADR-005](adr/0005-assistant-access-model.md) … [ADR-008](adr/0008-unified-document-ingestion.md), [ADR-012](adr/0012-single-organization-deployment.md), [ADR-013](adr/0013-auth-session-strategy.md) (Accepted) |
 | Связанные документы | [ARCHITECTURE.md](ARCHITECTURE.md), [DATABASE_SCHEMA.md](DATABASE_SCHEMA.md), [API_CONTRACTS.md](API_CONTRACTS.md), [DEPLOYMENT.md](DEPLOYMENT.md) |
@@ -300,14 +300,24 @@ SAML/SCIM — позднее. Автоматической регистраци�
 контекста → 5. инструкции отделены от недоверенного контекста (§10) → 6. валидация citation IDs → 7. source viewer
 проверяет доступ заново.
 
-## 7. Секреты и шифрование (§5, §8 п.3)
+## 7. Секреты и шифрование (§5, §8 п.3, [ADR-016](adr/0016-secret-encryption.md) — реализовано)
 
-- Секреты (API keys провайдеров, OAuth refresh tokens и client secrets) шифруются **до записи в БД** (§5).
-- Ключ шифрования хранится **вне БД** (§5): переменная окружения или смонтированный файл; отсутствие ключа при
-  старте → отказ запуска с понятной диагностикой.
-- **[Proposed — ADR «Шифрование секретов» (планируется)]** AES-256-GCM, уникальный nonce на запись, associated data =
-  `secret_id` + `kind`; key ring с `key_id` для ротации ключа без простоя.
-- Секреты в API — **write-only**; в ответах только `has_secret` и `secret_hint` (§12).
+- Секреты (API keys провайдеров, позднее OAuth refresh tokens и client secrets) шифруются **до записи в БД** (§5)
+  и хранятся только в `secret_references` ([DATABASE_SCHEMA.md §4.1](DATABASE_SCHEMA.md)).
+- AES-256-GCM (`cryptography`), новый 96-битный nonce на каждое шифрование, associated data
+  `plummy-secret-v1|<secret_id>|<kind>`: шифртекст нельзя перенести в другую запись или выдать за секрет другого вида.
+- Ключи — в **key ring вне БД** (`SECRETS_KEYRING_FILE`, JSON `{primary, keys}`), каждый ключ с `key_id`. В
+  `production` key ring обязателен; невалидный файл → отказ старта API, worker и CLI без вывода значений ключей. Без
+  key ring операции, сохраняющие секрет, отвечают `503 secrets_not_configured`.
+- Ротация без простоя: новый ключ становится `primary` → `python -m plummy.cli secrets rotate` перешифровывает записи
+  на старых ключах (идемпотентно, audit `secrets.rotated`) → старый ключ удаляется. Readiness падает (`secrets`),
+  если ключ удалили раньше перешифрования.
+- Расшифровка — только в момент использования (connection test, вызов модели); значение живёт в `SecretValue`
+  (`repr`/`str` не раскрывают его) и не кэшируется. Ошибка расшифровки → `503 secret_unavailable` без подробностей; в
+  лог — только `secret_id`, `key_id` и тип ошибки.
+- Секреты в API — **write-only**; в ответах только `has_secret` и `secret_hint` (последние 4 символа ключа длиной ≥ 16)
+  (§12). Frontend держит введённый ключ только в состоянии формы: он не попадает в Redux store, `localStorage` и
+  `sessionStorage`.
 - Секреты не передаются в prompt (§8), не включаются в тексты ошибок, не пишутся в логи (secret redaction, §8 п.3):
   `SecretStr` в DTO/настройках, фильтр логирования, санитизация исключений SDK.
 - Backup БД содержит только шифртексты; ключ хранится и резервируется **отдельно** от backup БД.
@@ -343,6 +353,14 @@ OpenAI/Anthropic). Полный алгоритм — в ADR-007; здесь — 
 | userinfo/парсинг URL | Строгий разбор; `user@host` и нестандартные формы отклоняются |
 
 - Отказ → `egress_denied`, audit `network.egress.denied` (без тела запроса).
+- `base_url` провайдера проверяется уже при создании и изменении (статическая проверка и одно разрешение DNS для
+  каждого назначения типа провайдера) → `422 endpoint_not_allowed`; соединение всё равно проверяется заново при
+  каждом вызове.
+- Адаптеры AI-провайдеров — без SDK, только через `SafeHttpClient` (redirects не выполняются, ответы ограничены по
+  размеру и времени); тексты ошибок и тела ответов провайдера наружу не передаются — только типизированные коды
+  (`provider_auth_failed`, `provider_timeout`, …) с фиксированными сообщениями.
+- Connection test ограничен лимитом `provider_test` (10/мин на инсталляцию) и не держит транзакцию БД во время сетевого
+  вызова.
 - Коннекторы обращаются только к фиксированным хостам провайдеров (Google APIs, Microsoft Graph и login endpoints).
 - Парсер не выполняет сетевых запросов (внешние ресурсы в документах не загружаются).
 - Тела ответов внешних сервисов ограничены по размеру и времени.
@@ -390,13 +408,15 @@ OpenAI/Anthropic). Полный алгоритм — в ADR-007; здесь — 
 
 Журнал append-only (DATABASE_SCHEMA.md §7.3); не содержит секретов, токенов и содержимого документов.
 
-Реализованы события setup, аутентификации, пользователей, групп и ролей; остальные — **[Proposed]**.
+Реализованы события setup, аутентификации, пользователей, групп, ролей, провайдеров, моделей, embedding profiles,
+`secrets.rotated` и `network.egress.denied`; остальные — **[Proposed]**. В audit провайдеров нет значений ключей:
+`provider.secret.rotated` содержит только `change = added | replaced | removed`.
 
 **Критичные действия:**
 
 | Область | События |
 |---|---|
-| Setup / настройки | `setup.completed`, `setup.initialize.rejected`, `setup.token_issued`, `admin.created_via_cli`, `admin.password_reset_via_cli`, `settings.updated` |
+| Setup / настройки | `setup.completed`, `setup.initialize.rejected`, `setup.token_issued`, `admin.created_via_cli`, `admin.password_reset_via_cli`, `secrets.rotated`, `settings.updated` |
 | Аутентификация | `auth.login.succeeded`, `auth.login.failed`, `auth.logout`, `auth.session.revoked`, `auth.session.revoked_by_admin`, `auth.password.changed`, `auth.password.reset_requested`, `auth.password.reset` |
 | Пользователи и группы | `user.created`, `user.updated`, `user.disabled`, `user.deleted`, `user.activated`, `user.activation.reissued`, `user.activation.rejected`, `group.created`, `group.updated`, `group.deleted`, `group.members.changed` |
 | Роли и доступ | `role.assigned`, `role.revoked`, `role.created`, `role.updated`, `role.deleted`, `kb.access.granted`, `kb.access.revoked` |
@@ -504,7 +524,7 @@ OpenAI/Anthropic). Полный алгоритм — в ADR-007; здесь — 
 - [ ] KB / документ без доступа и чужой диалог недоступны;
 - [ ] unauthorized chunks не попадают в LLM;
 - [x] revoked sessions отклоняются (Фаза 3);
-- [ ] secrets не возвращаются;
+- [x] secrets не возвращаются (Фаза 4: API провайдеров, frontend store и storage);
 - [ ] malicious filenames не выходят из storage;
 - [ ] повторные jobs не дублируют chunks;
 - [ ] deleted docs не находятся;

@@ -4,7 +4,7 @@
 |---|---|
 | Статус | v0.1 |
 | Источник | [PROJECT_BLUEPRINT.md](PROJECT_BLUEPRINT.md) §13, §19, §21, §22 |
-| Решения | [ADR-001…013](adr/README.md) |
+| Решения | [ADR-001…016](adr/README.md) |
 | Связанные документы | [PRODUCT_SPEC.md](PRODUCT_SPEC.md), [ARCHITECTURE.md](ARCHITECTURE.md), [SECURITY_MODEL.md](SECURITY_MODEL.md) |
 
 Последовательность фаз 0–13 взята из blueprint без изменений. Документ добавляет к каждой фазе решения ADR-005…008,
@@ -99,10 +99,20 @@ security gate (проверки безопасности **внутри** фаз
 - **`SafeHttpClient`** и network allowlist в Instance Settings — до первого адаптера.
 - Адаптеры OpenAI, Anthropic, Ollama, OpenAI-compatible — через одни и те же интерфейсы.
 - Connection tests, encrypted secrets, timeout/retry/cancellation; contract tests.
-- **Предварительно:** ADR «Шифрование секретов».
+- **Предварительно:** ADR «Шифрование секретов» — [ADR-016](adr/0016-secret-encryption.md) (Accepted).
 - **Security gate:** SSRF-тесты по каждому классу адресов и альтернативным записям IP; SC-02 (`endpoint_not_allowed`),
   SC-06, SC-07; секреты не возвращаются и не логируются.
 - **Выход:** облачный и локальный (Ollama через allowlist) провайдеры проходят connection test и contract tests.
+- *(Текущее состояние: **фаза реализована.** Секреты: AES-256-GCM, key ring вне БД (`SECRETS_KEYRING_FILE`), CLI
+  `secrets init-keyring | generate-key | status | rotate`, проверка readiness ([ADR-016](adr/0016-secret-encryption.md),
+  миграция `0007`). Сеть: `[[network.allowlist]]` в `CONFIG_FILE`, `SafeHttpClient` с pinning проверенного IP,
+  audit `network.egress.denied`. Порты `LLMProvider`/`EmbeddingProvider` с typed errors, capabilities,
+  retry/timeout/cancellation; адаптеры OpenAI, Anthropic, Ollama, OpenAI-compatible на `httpx` без SDK. API
+  `providers`, моделей и `embedding-profiles` (миграция `0008`), connection test с лимитом `provider_test`;
+  frontend `/admin/providers`, `/admin/providers/:id`, `/admin/embedding-profiles`. Тесты: SSRF по классам адресов и
+  записям IP, SC-02, SC-06, SC-07, секреты не возвращаются; contract tests адаптеров — против локальных
+  fake-серверов. Живые проверки с реальными провайдерами и Ollama — `LIVE_PROVIDER_TESTS=1` с ключами, в CI не
+  запускаются.)*
 
 ### Фаза 5 — Local document ingestion (§13, ADR-008)
 

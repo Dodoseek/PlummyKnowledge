@@ -18,7 +18,7 @@
 |---|---|---|---|---|
 | `postgres` | `pgvector/pgvector:0.8.7-pg17` | PostgreSQL 17 + pgvector | — | `data` |
 | `redis` | `redis:8.6-alpine` | Redis (AOF) | — | `data` |
-| `migrate` | `apps/backend/Dockerfile` (`dev`) | Одноразово: `alembic upgrade head`, затем `python -m plummy.cli setup init-token` (§6); API стартует только после успешного завершения | — | `data` |
+| `migrate` | `apps/backend/Dockerfile` (`dev`) | Одноразово: `python -m plummy.cli secrets init-keyring` (только dev, §4), `alembic upgrade head`, затем `python -m plummy.cli setup init-token` (§6); API стартует только после успешного завершения | — | `data` |
 | `backend` | `apps/backend/Dockerfile` (`dev`) | FastAPI, `uvicorn --reload`; healthcheck = `/api/v1/health/ready` | `127.0.0.1:8000` | `data`, `edge` |
 | `worker` | `apps/backend/Dockerfile` (`dev`) | Celery worker, очередь `default`; healthcheck = `celery inspect ping`. Изменения кода — `docker compose restart worker` (без auto-reload) | — | `data` |
 | `frontend` | `apps/frontend/Dockerfile` (`dev`) | Vite dev server; `/api` проксируется на `backend` (same-origin, без CORS) | `127.0.0.1:5173` | `edge` |
@@ -33,7 +33,7 @@
 - `backend` (dev) перед `uvicorn --reload` выполняет `python -m plummy.check_config`: при невалидной конфигурации
   контейнер завершается с кодом 1 и не перезапускается (как `prod`-таргет).
 - Volumes: `postgres-data`, `redis-data`, `bootstrap-data` (файл setup token; монтируется только в `migrate`, не в
-  `backend`). Исходный код монтируется read-only (`src`, `alembic`, `tests`).
+  `backend`), `secrets-data` (key ring секретов; `migrate` — запись, `backend` и `worker` — только чтение). Исходный код монтируется read-only (`src`, `alembic`, `tests`).
 - `backend` (dev) доверяет `X-Forwarded-For` от Vite-прокси (`FORWARDED_ALLOW_IPS=*`, только разработка): по нему
   считаются лимиты попыток входа. В production доверенным прокси настраивается только Nginx.
 - Dockerfile backend содержит таргеты `dev` и `prod` (non-root, только runtime-зависимости); Dockerfile frontend —
@@ -69,6 +69,8 @@
 | `BOOTSTRAP_DIR` | `/var/lib/plummy/bootstrap` | Каталог файла `setup-token` (`0700`, файл `0600`) |
 | `BOOTSTRAP_TOKEN_TTL` | `86400` (24 ч) | Срок действия bootstrap token; от 10 мин до 30 дней |
 | `FORWARDED_ALLOW_IPS` | `127.0.0.1` (uvicorn) | Адреса прокси, которым доверяется `X-Forwarded-For` (IP клиента для rate limit и audit) |
+| `SECRETS_KEYRING_FILE` | — (обязателен в `production`; dev compose: `/var/lib/plummy/secrets/keyring.json`) | Key ring шифрования секретов ([ADR-016](adr/0016-secret-encryption.md), §4); без него сохранение API keys отвечает `503 secrets_not_configured` |
+| `CONFIG_FILE` | — (пустой allowlist) | TOML-файл Instance Settings со структурой, сейчас `[[network.allowlist]]` ([ADR-007](adr/0007-network-access-and-local-llm.md), §7.3); ≤ 256 КБ, невалидный файл → отказ старта |
 | `WORKER_CONCURRENCY` | `2` (dev compose) | Число процессов Celery worker (флаг `--concurrency` в команде сервиса, не настройка приложения) |
 
 `NAME` и `NAME_FILE` одновременно — ошибка конфигурации. Невалидная конфигурация → сообщение без значений секретов
@@ -111,7 +113,7 @@ docker compose run --rm migrate cat /var/lib/plummy/bootstrap/setup-token
 ## 3. Конфигурация окружения (Instance Settings, ADR-006)
 
 Источники по приоритету: переменные окружения → `*_FILE` (Docker secrets) → конфигурационный файл
-`PLUMMY_CONFIG_FILE` (TOML) для структурированных значений. Невалидная конфигурация → отказ старта с понятной
+`CONFIG_FILE` (TOML) для структурированных значений. Невалидная конфигурация → отказ старта с понятной
 ошибкой. `.env.example` содержит все переменные без секретных значений.
 
 | Группа | Переменные | Секрет |
@@ -119,7 +121,7 @@ docker compose run --rm migrate cat /var/lib/plummy/bootstrap/setup-token
 | Общие | `PUBLIC_URL`, `APP_ENV`, `LOG_LEVEL` (реализовано, §0) | — |
 | БД | `PLUMMY_DATABASE_URL_FILE`, `PLUMMY_DB_POOL_SIZE` | да |
 | Redis | `PLUMMY_REDIS_URL_FILE` | да |
-| Шифрование | `PLUMMY_SECRETS_KEY_FILE` (key ring с `key_id`) | **да, хранится вне БД и отдельно от backup** |
+| Шифрование | `SECRETS_KEYRING_FILE` (key ring с `key_id`, реализовано, §0; заменяет черновое `PLUMMY_SECRETS_KEY_FILE`) | **да, хранится вне БД и отдельно от backup** |
 | Storage | `PLUMMY_STORAGE_BACKEND` (`local` \| `s3`), `PLUMMY_STORAGE_PATH`, `PLUMMY_QUARANTINE_PATH`, `PLUMMY_S3_ENDPOINT`, `PLUMMY_S3_BUCKET`, `PLUMMY_S3_ACCESS_KEY_FILE`, `PLUMMY_S3_SECRET_KEY_FILE` | частично |
 | Setup | `SETUP_MODE` (`web` \| `cli_only`), `BOOTSTRAP_DIR`, `BOOTSTRAP_TOKEN_TTL` (реализовано, §0) | — |
 | Безопасность | `CORS_ORIGINS`, `SESSION_IDLE_TTL`, `SESSION_ABSOLUTE_TTL`, `SESSION_COOKIE_SECURE` (реализовано, §0); лимиты rate limit (пока константы, ADR-013 §4) | — |
@@ -127,17 +129,26 @@ docker compose run --rm migrate cat /var/lib/plummy/bootstrap/setup-token
 | Jobs | `WORKER_CONCURRENCY` (реализовано в dev compose, §0); retry/backoff — в определении каждой задачи | — |
 | SMTP | `PLUMMY_SMTP_HOST`, `PLUMMY_SMTP_USER`, `PLUMMY_SMTP_PASSWORD_FILE` | да |
 | Коннекторы | `PLUMMY_GOOGLE_CLIENT_ID`, `PLUMMY_GOOGLE_CLIENT_SECRET_FILE`, `PLUMMY_MS_CLIENT_ID`, `PLUMMY_MS_CLIENT_SECRET_FILE` | да |
-| Сеть | `[[network.allowlist]]` в конфигурационном файле (ADR-007) | — |
+| Сеть | `[[network.allowlist]]` в `CONFIG_FILE` (ADR-007, реализовано; заменяет черновое `PLUMMY_CONFIG_FILE`) | — |
 
 Изменение Instance Settings → перезапуск `api` и worker-сервисов. Через web-интерфейс Instance Settings не меняются.
 
 ## 4. Секреты
 
 - Все секреты — файлы (Docker secrets / смонтированные файлы с правами `0400`), а не значения в `.env`.
-- Ключ шифрования секретов генерируется при установке; его потеря делает недоступными все сохранённые API keys и
-  OAuth tokens. Резервная копия ключа хранится отдельно от backup БД.
-- Ротация ключа: добавить новый ключ в key ring → перешифровать секреты служебной командой → удалить старый ключ.
-- Секреты никогда не пишутся в логи; `GET /api/v1/system/settings` показывает только `configured: true|false`.
+- **Key ring секретов** ([ADR-016](adr/0016-secret-encryption.md)) — JSON-файл `SECRETS_KEYRING_FILE`:
+  `{"primary": "<key id>", "keys": {"<key id>": "<base64url, 32 байта>"}}`. В production создаётся при установке и
+  монтируется файлом с правами `0400`; в dev compose его создаёт `migrate` (`secrets init-keyring`, существующий файл
+  не перезаписывается). Потеря key ring делает недоступными все сохранённые API keys (их придётся ввести заново);
+  резервная копия хранится **отдельно** от backup БД.
+- Команды CLI (на сервере; в dev — `docker compose run --rm migrate python -m plummy.cli …`):
+  `secrets generate-key` (печатает новую запись key ring — единственная команда, выводящая ключ), `secrets status`
+  (число записей по `key_id`), `secrets rotate` (перешифровать записи на старых ключах), `secrets init-keyring`.
+- Ротация ключа: добавить новый ключ в key ring и сделать его `primary` → перезапустить `api` и worker →
+  `secrets rotate` → когда `secrets status` показывает 0 записей на старых ключах, удалить старый ключ из файла.
+  Readiness сообщает `secrets: fail`, если ключ удалили раньше.
+- Секреты никогда не пишутся в логи; `GET /api/v1/system/settings` показывает только `configured`, `primary_key_id` и
+  число ключей.
 
 ## 5. Persistent volumes
 
