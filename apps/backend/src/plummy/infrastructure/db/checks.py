@@ -36,3 +36,28 @@ class MigrationsCheck:
             applied = frozenset(result.scalars().all())
         if applied != self._expected_heads:
             raise MigrationsNotAppliedError("database revision does not match expected heads")
+
+
+class UnknownSecretKeyError(Exception):
+    pass
+
+
+class SecretsCheck:
+    """Every stored secret can be decrypted: its ``key_id`` is in the key ring (ADR-016 §2).
+
+    Fails when a key was removed from the key ring before ``secrets rotate`` re-encrypted its records, or when
+    secrets exist but no key ring is configured. Key ids and values are never part of the error.
+    """
+
+    name = "secrets"
+
+    def __init__(self, engine: AsyncEngine, key_ids: frozenset[str]) -> None:
+        self._engine = engine
+        self._key_ids = key_ids
+
+    async def check(self) -> None:
+        async with self._engine.connect() as connection:
+            result = await connection.execute(text("SELECT DISTINCT key_id FROM secret_references"))
+            used = frozenset(result.scalars().all())
+        if used - self._key_ids:
+            raise UnknownSecretKeyError("stored secrets use keys missing from the key ring")

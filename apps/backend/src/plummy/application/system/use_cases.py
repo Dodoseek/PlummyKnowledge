@@ -10,6 +10,15 @@ from plummy.domain.identity import Permission
 
 
 @dataclass(frozen=True, slots=True)
+class SecretsSettingsView:
+    """Key ring metadata only (ADR-016 §5): never key material."""
+
+    configured: bool
+    primary_key_id: str | None
+    keys: int
+
+
+@dataclass(frozen=True, slots=True)
 class InstanceSettingsView:
     """Only non-secret values; secrets and connection strings are never part of this view."""
 
@@ -20,6 +29,7 @@ class InstanceSettingsView:
     session_absolute_ttl: timedelta
     session_cookie_secure: bool
     api_docs_enabled: bool
+    secrets: SecretsSettingsView
 
 
 class GetInstanceSettings:

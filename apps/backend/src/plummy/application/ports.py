@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from types import TracebackType
 from typing import Protocol, Self
@@ -12,6 +12,7 @@ from uuid import UUID
 from plummy.application.pagination import Page, PageRequest
 from plummy.domain.audit import AuditEntry
 from plummy.domain.identity import Group, InstanceState, SessionRevokeReason, User, UserSession, UserStatus
+from plummy.domain.secrets import SecretKind, SecretValue
 
 
 class Clock(Protocol):
@@ -269,6 +270,77 @@ class AuditLog(Protocol):
     async def record(self, entry: AuditEntry) -> None: ...
 
 
+# --- secrets at rest (ADR-016) ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class EncryptedSecret:
+    """AEAD output; the bytes never appear in ``repr`` (and so never in logs or tracebacks)."""
+
+    key_id: str
+    algorithm: str
+    nonce: bytes = field(repr=False)
+    ciphertext: bytes = field(repr=False)
+
+
+class SecretDecryptionError(Exception):
+    """Unknown key, corrupted ciphertext or mismatched associated data. Never carries the value."""
+
+
+class SecretCipher(Protocol):
+    """Encrypts secrets bound to their record: ``secret_id`` and ``kind`` are authenticated, not encrypted."""
+
+    @property
+    def primary_key_id(self) -> str: ...
+
+    @property
+    def key_ids(self) -> frozenset[str]: ...
+
+    def encrypt(self, secret_id: UUID, kind: SecretKind, value: SecretValue) -> EncryptedSecret:
+        """Always with the primary key and a fresh random nonce."""
+        ...
+
+    def decrypt(self, secret_id: UUID, kind: SecretKind, encrypted: EncryptedSecret) -> SecretValue:
+        """Raises :class:`SecretDecryptionError`."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class SecretRecord:
+    id: UUID
+    kind: SecretKind
+    encrypted: EncryptedSecret
+    hint: str | None
+
+
+class SecretRepository(Protocol):
+    async def add(self, record: SecretRecord, *, at: datetime) -> None: ...
+
+    async def get(self, secret_id: UUID) -> SecretRecord | None: ...
+
+    async def get_for_update(self, secret_id: UUID) -> SecretRecord | None:
+        """Locks the row until the end of the transaction."""
+        ...
+
+    async def replace(
+        self, secret_id: UUID, encrypted: EncryptedSecret, *, hint: str | None, at: datetime
+    ) -> None:
+        """A new value for the same record (the old ciphertext is overwritten)."""
+        ...
+
+    async def reencrypt(self, secret_id: UUID, encrypted: EncryptedSecret, *, at: datetime) -> None:
+        """The same value under another key (rotation); sets ``rotated_at``."""
+        ...
+
+    async def delete(self, secret_id: UUID) -> None: ...
+
+    async def count_by_key_id(self) -> dict[str, int]: ...
+
+    async def ids_not_on_key(self, key_id: str, *, after: UUID | None, limit: int) -> list[UUID]:
+        """Ids of records encrypted with any other key, ordered by id, strictly after ``after``."""
+        ...
+
+
 class UnitOfWork(Protocol):
     """One database transaction. Leaving the context without ``commit()`` rolls back."""
 
@@ -278,6 +350,7 @@ class UnitOfWork(Protocol):
     activations: ActivationTokenRepository
     sessions: SessionRepository
     instance: InstanceStateRepository
+    secrets: SecretRepository
     audit: AuditLog
 
     async def __aenter__(self) -> Self: ...

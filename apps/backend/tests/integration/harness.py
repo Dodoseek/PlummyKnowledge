@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from plummy.composition import Resources, build_cli_services, build_resources
 from plummy.core.config import Settings
 from plummy.infrastructure.security.passwords import Argon2PasswordHasher
+from plummy.infrastructure.security.secret_cipher import create_keyring_file
 from plummy.main import create_app
 from tests.conftest import make_settings
 from tests.integration.conftest import FAST_HASHER_PARAMS, TEST_ORIGIN
@@ -29,6 +30,13 @@ def fast_hasher() -> Argon2PasswordHasher:
     return Argon2PasswordHasher(**FAST_HASHER_PARAMS)
 
 
+def make_keyring(directory: Path, key_id: str = "test-1") -> Path:
+    """A real key ring with a fresh random key (ADR-016: tests generate the key in a fixture)."""
+    path = directory / "keyring.json"
+    create_keyring_file(path, key_id)
+    return path
+
+
 def harness_settings(database_url: str, redis_url: str, bootstrap_dir: Path, **overrides: Any) -> Settings:
     values: dict[str, Any] = {
         "database_url": database_url,
@@ -37,6 +45,7 @@ def harness_settings(database_url: str, redis_url: str, bootstrap_dir: Path, **o
         "bootstrap_dir": bootstrap_dir,
         # Production-like cookie (``__Host-``); explicit so the dev compose value (false) does not leak in.
         "session_cookie_secure": True,
+        "secrets_keyring_file": make_keyring(bootstrap_dir.parent),
     }
     values.update(overrides)
     return make_settings(**values)

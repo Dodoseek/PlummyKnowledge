@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from plummy.api.errors import REQUEST_ID_HEADER, register_exception_handlers
 from plummy.api.middleware import RequestContextMiddleware
 from plummy.api.router import api_router
-from plummy.composition import Resources, build_resources
+from plummy.composition import Resources, build_resources, load_secret_cipher
 from plummy.core.config import ConfigurationError, Settings, get_settings
 from plummy.core.logging import configure_logging
 from plummy.core.version import get_version
@@ -46,7 +46,7 @@ def check_configuration() -> int:
     when the application fails to import, so a fatal configuration error would not stop the container.
     """
     try:
-        get_settings()
+        load_secret_cipher(get_settings())
     except ConfigurationError as exc:
         report_configuration_error(exc)
         return 1

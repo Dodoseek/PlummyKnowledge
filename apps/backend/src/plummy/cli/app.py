@@ -5,10 +5,14 @@
     admin create                  create an administrator (initializes an uninitialized instance)
     admin reset-password          set a new password and revoke all sessions of the user
     worker check                  send a diagnostic task to the Celery worker and wait for its result
+    secrets init-keyring          create SECRETS_KEYRING_FILE with one new key if it does not exist
+    secrets generate-key          print a new key ring entry (the only command that prints a key)
+    secrets status                show the key ring and how many secrets use each key
+    secrets rotate                re-encrypt all secrets with the primary key (safe to repeat)
 
 Secrets are never accepted as arguments (they would end up in shell history and ``ps``) and never printed:
 passwords are read with a hidden prompt or from stdin (``--password-stdin``), and the bootstrap token is only
-written to its file.
+written to its file. Key material is printed only by ``secrets generate-key``, run on the server.
 """
 
 from __future__ import annotations
@@ -16,6 +20,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import getpass
+import json
 import sys
 import time
 from collections.abc import Callable, Coroutine, Sequence
@@ -27,7 +32,15 @@ from plummy.application.setup.use_cases import TokenIssueOutcome
 from plummy.application.setup.validation import AdministratorInput
 from plummy.composition import CliServices, build_cli_services
 from plummy.core.config import ConfigurationError, Settings, get_settings
+from plummy.domain.secrets import is_valid_key_id
 from plummy.infrastructure.db.errors import DATABASE_UNAVAILABLE_ERRORS
+from plummy.infrastructure.security.secret_cipher import (
+    KeyRingError,
+    create_keyring_file,
+    default_key_id,
+    generate_key,
+    load_keyring,
+)
 from plummy.workers.app import close_celery_app, create_celery_app
 from plummy.workers.tasks.system import MAX_SIMULATED_FAILURES, PING_TASK
 
@@ -70,7 +83,54 @@ def _parser() -> argparse.ArgumentParser:
         metavar=f"0..{MAX_SIMULATED_FAILURES}",
         help="fail the first N attempts with a transient error to exercise retries",
     )
+
+    secrets_group = groups.add_parser("secrets", help="encryption keys of stored secrets (ADR-016)")
+    secrets_commands = secrets_group.add_subparsers(dest="command", required=True)
+    init_keyring = secrets_commands.add_parser(
+        "init-keyring", help="create SECRETS_KEYRING_FILE with one new key (never overwrites)"
+    )
+    init_keyring.add_argument("--key-id", type=_key_id, help="id of the first key (default: today's date)")
+    generate = secrets_commands.add_parser("generate-key", help="print a new key ring entry")
+    generate.add_argument("--key-id", type=_key_id, help="id of the new key (default: today's date)")
+    secrets_commands.add_parser("status", help="key ring and number of secrets per key")
+    secrets_commands.add_parser("rotate", help="re-encrypt secrets that are not on the primary key")
     return parser
+
+
+def _key_id(value: str) -> str:
+    if not is_valid_key_id(value):
+        raise argparse.ArgumentTypeError("must be 1-32 characters of [A-Za-z0-9._-]")
+    return value
+
+
+def _init_keyring(args: argparse.Namespace, settings: Settings, out: TextIO) -> None:
+    path = settings.secrets_keyring_file
+    if path is None:
+        raise CliError("SECRETS_KEYRING_FILE is not set")
+    key_id = args.key_id or default_key_id()
+    try:
+        created = create_keyring_file(path, key_id)
+        keyring = load_keyring(path)
+    except KeyRingError as exc:
+        raise CliError(f"key ring: {exc}") from None
+    if created:
+        print(f"Key ring created: {path} (primary key {keyring.primary}, mode 0400)", file=out)
+        print("Back it up separately from the database: without it stored secrets are lost.", file=out)
+    else:
+        print(
+            f"Key ring already exists: {path} (primary key {keyring.primary}, {len(keyring.keys)} key(s))",
+            file=out,
+        )
+
+
+def _generate_key(args: argparse.Namespace, out: TextIO, err: TextIO) -> None:
+    key_id = args.key_id or default_key_id()
+    print(json.dumps({key_id: generate_key()}), file=out)
+    print(
+        f'Add this entry to "keys" in the key ring, set "primary" to "{key_id}", restart the API and worker, '
+        "then run `secrets rotate`.",
+        file=err,
+    )
 
 
 def _positive_seconds(value: str) -> float:
@@ -156,6 +216,33 @@ async def _run(args: argparse.Namespace, services: CliServices, out: TextIO, std
             password = _read_password(from_stdin=args.password_stdin, stdin=stdin)
             revoked = await services.reset_password.execute(email=args.email, password=password)
             print(f"Password reset; {revoked} session(s) revoked.", file=out)
+        case ("secrets", "status"):
+            secrets = await services.secrets_status.execute()
+            if not secrets.configured:
+                print("key ring: not configured (SECRETS_KEYRING_FILE is not set)", file=out)
+            else:
+                print(f"key ring: {len(secrets.key_ids)} key(s), primary {secrets.primary_key_id}", file=out)
+            print(f"secrets: {secrets.total}", file=out)
+            for key_id in sorted(secrets.records_by_key):
+                note = " (primary)" if key_id == secrets.primary_key_id else ""
+                if key_id in secrets.unknown_key_ids:
+                    note = " (MISSING from the key ring: cannot be decrypted)"
+                print(f"  {key_id}: {secrets.records_by_key[key_id]}{note}", file=out)
+            print(f"on old keys: {secrets.on_old_keys}", file=out)
+            if secrets.unknown_key_ids:
+                raise CliError("some secrets use keys that are missing from the key ring")
+        case ("secrets", "rotate"):
+            if services.rotate_secrets is None:
+                raise CliError("SECRETS_KEYRING_FILE is not set")
+            report = await services.rotate_secrets.execute()
+            print(
+                f"Rotated {report.rotated} secret(s) to key {report.primary_key_id}; {report.failed} failed.",
+                file=out,
+            )
+            if report.failed:
+                raise CliError(
+                    f"{report.failed} secret(s) could not be decrypted; see the logs for their ids"
+                )
         case _:  # pragma: no cover - argparse rejects unknown commands
             raise CliError("unknown command")
 
@@ -183,7 +270,13 @@ def main(
     out, err, inp = stdout or sys.stdout, stderr or sys.stderr, stdin or sys.stdin
     args = _parser().parse_args(argv)
     try:
+        if (args.group, args.command) == ("secrets", "generate-key"):
+            _generate_key(args, out, err)
+            return 0
         resolved = settings if settings is not None else get_settings()
+        if (args.group, args.command) == ("secrets", "init-keyring"):
+            _init_keyring(args, resolved, out)
+            return 0
         if args.group == "worker":
             _worker_check(args, resolved, out, celery_app_factory)
             return 0

@@ -32,6 +32,7 @@ CONFIG_ENV_VARS = (
     "SESSION_IDLE_TTL",
     "SESSION_ABSOLUTE_TTL",
     "SESSION_COOKIE_SECURE",
+    "SECRETS_KEYRING_FILE",
 )
 
 DB_PASSWORD = "db-password-should-never-leak"
@@ -40,6 +41,8 @@ VALID_REDIS_URL = "redis://redis.internal:6379/0"
 VALID_SECRET_KEY = "s" * 40
 # PUBLIC_URL is required in production (ADR-013); the test client's origin.
 TEST_PUBLIC_URL = "https://testserver"
+# Required in production. Settings validate only its presence; the composition root reads the file.
+TEST_KEYRING_PATH = "/run/secrets/plummy-keyring.json"
 
 
 @pytest.fixture(autouse=True)
@@ -64,7 +67,11 @@ def make_settings(**overrides: Any) -> Settings:
         "database_url": VALID_DATABASE_URL,
         "redis_url": VALID_REDIS_URL,
         "public_url": TEST_PUBLIC_URL,
+        # Explicit, so the container's SECRETS_KEYRING_FILE does not leak into tests.
+        "secrets_keyring_file": None,
     }
+    if overrides.get("app_env") == "production":
+        values["secrets_keyring_file"] = TEST_KEYRING_PATH
     values.update(overrides)
     return load_settings(**values)
 

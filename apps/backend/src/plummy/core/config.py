@@ -150,6 +150,10 @@ class Settings(BaseSettings):
     # Secure cookies (`__Host-` prefix). May be false only outside production (plain-HTTP development).
     session_cookie_secure: bool = True
 
+    # Key ring for secrets stored in the database (ADR-016): a JSON file outside the database (Docker secret
+    # or a mounted volume). Required in production; elsewhere, without it, secrets cannot be saved.
+    secrets_keyring_file: Path | None = None
+
     _secret_key_generated: bool = PrivateAttr(default=False)
 
     @classmethod
@@ -259,6 +263,8 @@ class Settings(BaseSettings):
                 raise ValueError("PUBLIC_URL must use https when APP_ENV=production")
             if not self.session_cookie_secure:
                 raise ValueError("SESSION_COOKIE_SECURE must be true when APP_ENV=production")
+            if self.secrets_keyring_file is None:
+                raise ValueError("SECRETS_KEYRING_FILE is required when APP_ENV=production")
         elif self.secret_key is None:
             # Development/test convenience: an ephemeral key, never persisted or logged.
             self.secret_key = SecretStr(secrets.token_urlsafe(48))
@@ -301,6 +307,7 @@ class Settings(BaseSettings):
             "session_idle_ttl_seconds": int(self.session_idle_ttl.total_seconds()),
             "session_absolute_ttl_seconds": int(self.session_absolute_ttl.total_seconds()),
             "session_cookie_secure": self.session_cookie_secure,
+            "secrets_keyring_configured": self.secrets_keyring_file is not None,
         }
 
 

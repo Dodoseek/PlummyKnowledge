@@ -28,6 +28,8 @@ x-backend-env: &backend-env
   SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
   SETUP_MODE: ${SETUP_MODE:-web}
   BOOTSTRAP_DIR: /var/lib/plummy/bootstrap
+  # Key ring of stored secrets (ADR-016), created by `migrate` in the secrets-data volume on first start.
+  SECRETS_KEYRING_FILE: /var/lib/plummy/secrets/keyring.json
 
 services:
   postgres:
@@ -67,22 +69,28 @@ services:
       retries: 20
     restart: unless-stopped
 
-  # One-shot step: applies Alembic migrations before the API starts (schema is never changed by the API),
-  # then issues the one-time setup token into the bootstrap volume while the instance is not initialized
-  # (idempotent: a valid token is kept; after setup it does nothing). The token is never printed:
+  # One-shot step: creates the secrets key ring if the volume has none (development only; in production the
+  # key ring is provided as a file, DEPLOYMENT.md §4), applies Alembic migrations before the API starts
+  # (schema is never changed by the API), then issues the one-time setup token into the bootstrap volume
+  # while the instance is not initialized (idempotent: a valid token is kept; after setup it does nothing).
+  # Neither the key ring nor the token is ever printed:
   #   docker compose run --rm migrate cat /var/lib/plummy/bootstrap/setup-token
   migrate:
     build:
       context: .
       dockerfile: apps/backend/Dockerfile
       target: dev
-    command: ["sh", "-c", "alembic upgrade head && python -m plummy.cli setup init-token"]
+    command:
+      - sh
+      - -c
+      - python -m plummy.cli secrets init-keyring && alembic upgrade head && python -m plummy.cli setup init-token
     environment: *backend-env
     volumes:
       - ./apps/backend/alembic:/app/alembic:ro
       - ./apps/backend/src:/app/src:ro
       # Only migrate (the server-side CLI) sees the token; the API container does not mount it.
       - bootstrap-data:/var/lib/plummy/bootstrap
+      - secrets-data:/var/lib/plummy/secrets
     networks: [data]
     depends_on:
       postgres:
@@ -104,6 +112,7 @@ services:
       - ./apps/backend/tests:/app/tests:ro
       - ./apps/backend/pyproject.toml:/app/pyproject.toml:ro
       - ./VERSION:/VERSION:ro
+      - secrets-data:/var/lib/plummy/secrets:ro
     ports:
       - "127.0.0.1:8000:8000"
     networks: [data, edge]
@@ -146,6 +155,7 @@ services:
     volumes:
       - ./apps/backend/src:/app/src:ro
       - ./VERSION:/VERSION:ro
+      - secrets-data:/var/lib/plummy/secrets:ro
     networks: [data]
     depends_on:
       migrate:
@@ -196,3 +206,5 @@ volumes:
   postgres-data:
   redis-data:
   bootstrap-data:
+  # Development key ring only. `docker compose down -v` deletes it together with the database.
+  secrets-data:

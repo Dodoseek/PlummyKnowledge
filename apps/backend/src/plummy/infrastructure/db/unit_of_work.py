@@ -18,11 +18,14 @@ from plummy.application.ports import (
     ActivationRecord,
     ActivationTokenRepository,
     AuditLog,
+    EncryptedSecret,
     GroupRepository,
     InstanceStateRepository,
     PermissionInfo,
     RoleInfo,
     RoleRepository,
+    SecretRecord,
+    SecretRepository,
     SessionRepository,
     SessionWithUser,
     SetChange,
@@ -42,6 +45,7 @@ from plummy.domain.identity import (
     UserSession,
     UserStatus,
 )
+from plummy.domain.secrets import SecretKind
 from plummy.infrastructure.db.base import Base
 from plummy.infrastructure.db.models import (
     ActivationTokenModel,
@@ -52,6 +56,7 @@ from plummy.infrastructure.db.models import (
     PermissionModel,
     RoleModel,
     RolePermissionModel,
+    SecretReferenceModel,
     SessionModel,
     UserGroupModel,
     UserModel,
@@ -667,6 +672,101 @@ class SqlAuditLog:
         await self._db.flush()
 
 
+def _secret(row: SecretReferenceModel) -> SecretRecord:
+    return SecretRecord(
+        id=row.id,
+        kind=SecretKind(row.kind),
+        encrypted=EncryptedSecret(
+            key_id=row.key_id, algorithm=row.algorithm, nonce=row.nonce, ciphertext=row.ciphertext
+        ),
+        hint=row.hint,
+    )
+
+
+class SqlSecretRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def add(self, record: SecretRecord, *, at: datetime) -> None:
+        self._session.add(
+            SecretReferenceModel(
+                id=record.id,
+                kind=record.kind.value,
+                ciphertext=record.encrypted.ciphertext,
+                nonce=record.encrypted.nonce,
+                key_id=record.encrypted.key_id,
+                algorithm=record.encrypted.algorithm,
+                hint=record.hint,
+                created_at=at,
+                updated_at=at,
+            )
+        )
+        await self._session.flush()
+
+    async def get(self, secret_id: UUID) -> SecretRecord | None:
+        row = await self._session.get(SecretReferenceModel, secret_id)
+        return _secret(row) if row is not None else None
+
+    async def get_for_update(self, secret_id: UUID) -> SecretRecord | None:
+        row = await self._session.scalar(
+            select(SecretReferenceModel)
+            .where(SecretReferenceModel.id == secret_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return _secret(row) if row is not None else None
+
+    async def _write(self, secret_id: UUID, values: dict[str, Any]) -> None:
+        await self._session.execute(
+            update(SecretReferenceModel).where(SecretReferenceModel.id == secret_id).values(**values)
+        )
+
+    async def replace(
+        self, secret_id: UUID, encrypted: EncryptedSecret, *, hint: str | None, at: datetime
+    ) -> None:
+        await self._write(
+            secret_id,
+            {
+                "ciphertext": encrypted.ciphertext,
+                "nonce": encrypted.nonce,
+                "key_id": encrypted.key_id,
+                "algorithm": encrypted.algorithm,
+                "hint": hint,
+                "updated_at": at,
+            },
+        )
+
+    async def reencrypt(self, secret_id: UUID, encrypted: EncryptedSecret, *, at: datetime) -> None:
+        await self._write(
+            secret_id,
+            {
+                "ciphertext": encrypted.ciphertext,
+                "nonce": encrypted.nonce,
+                "key_id": encrypted.key_id,
+                "algorithm": encrypted.algorithm,
+                "rotated_at": at,
+            },
+        )
+
+    async def delete(self, secret_id: UUID) -> None:
+        await self._session.execute(delete(SecretReferenceModel).where(SecretReferenceModel.id == secret_id))
+
+    async def count_by_key_id(self) -> dict[str, int]:
+        rows = await self._session.execute(
+            select(SecretReferenceModel.key_id, func.count().label("total")).group_by(
+                SecretReferenceModel.key_id
+            )
+        )
+        return {row.key_id: row.total for row in rows}
+
+    async def ids_not_on_key(self, key_id: str, *, after: UUID | None, limit: int) -> list[UUID]:
+        statement = select(SecretReferenceModel.id).where(SecretReferenceModel.key_id != key_id)
+        if after is not None:
+            statement = statement.where(SecretReferenceModel.id > after)
+        result = await self._session.scalars(statement.order_by(SecretReferenceModel.id).limit(limit))
+        return list(result.all())
+
+
 class SqlAlchemyUnitOfWork:
     users: UserRepository
     roles: RoleRepository
@@ -674,6 +774,7 @@ class SqlAlchemyUnitOfWork:
     activations: ActivationTokenRepository
     sessions: SessionRepository
     instance: InstanceStateRepository
+    secrets: SecretRepository
     audit: AuditLog
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
@@ -690,6 +791,7 @@ class SqlAlchemyUnitOfWork:
         self.activations = SqlActivationTokenRepository(session)
         self.sessions = SqlSessionRepository(session)
         self.instance = SqlInstanceStateRepository(session)
+        self.secrets = SqlSecretRepository(session)
         self.audit = SqlAuditLog(session)
         return self
 

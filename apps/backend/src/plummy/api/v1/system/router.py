@@ -23,12 +23,19 @@ class SessionSettings(BaseModel):
     cookie_secure: bool
 
 
+class SecretsSettings(BaseModel):
+    configured: bool
+    primary_key_id: str | None
+    keys: int
+
+
 class InstanceSettingsResponse(BaseModel):
     app_env: str
     public_url: str | None
     setup_mode: str
     session: SessionSettings
     api_docs_enabled: bool
+    secrets: SecretsSettings
 
 
 @router.get("/settings", response_model=InstanceSettingsResponse)
@@ -44,4 +51,9 @@ async def get_instance_settings(context: Reader, resources: ResourcesDep) -> Ins
             cookie_secure=view.session_cookie_secure,
         ),
         api_docs_enabled=view.api_docs_enabled,
+        secrets=SecretsSettings(
+            configured=view.secrets.configured,
+            primary_key_id=view.secrets.primary_key_id,
+            keys=view.secrets.keys,
+        ),
     )

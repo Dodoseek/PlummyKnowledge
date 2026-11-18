@@ -26,8 +26,10 @@ from plummy.application.groups.use_cases import (
     UpdateGroup,
 )
 from plummy.application.health import CheckReadiness
-from plummy.application.ports import Clock, PasswordHasher
+from plummy.application.ports import Clock, PasswordHasher, SecretCipher
 from plummy.application.roles.use_cases import ListPermissions, ListRoles
+from plummy.application.secret_storage.use_cases import GetSecretsStatus, RotateSecrets
+from plummy.application.secret_storage.vault import SecretVault
 from plummy.application.setup.use_cases import (
     CreateAdministrator,
     GetSetupStatus,
@@ -35,7 +37,11 @@ from plummy.application.setup.use_cases import (
     IssueBootstrapToken,
     ResetPassword,
 )
-from plummy.application.system.use_cases import GetInstanceSettings, InstanceSettingsView
+from plummy.application.system.use_cases import (
+    GetInstanceSettings,
+    InstanceSettingsView,
+    SecretsSettingsView,
+)
 from plummy.application.users.use_cases import (
     ActivationLinks,
     CreateUser,
@@ -47,10 +53,10 @@ from plummy.application.users.use_cases import (
     SetUserRoles,
     UpdateUser,
 )
-from plummy.core.config import Settings, SetupMode
+from plummy.core.config import ConfigurationError, Settings, SetupMode
 from plummy.infrastructure.clock import SystemClock
 from plummy.infrastructure.db import create_engine, create_session_factory
-from plummy.infrastructure.db.checks import DatabaseCheck, MigrationsCheck
+from plummy.infrastructure.db.checks import DatabaseCheck, MigrationsCheck, SecretsCheck
 from plummy.infrastructure.db.migrations import get_expected_heads
 from plummy.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWorkFactory
 from plummy.infrastructure.redis import create_redis_client
@@ -58,6 +64,7 @@ from plummy.infrastructure.redis.checks import RedisCheck
 from plummy.infrastructure.redis.rate_limiter import RedisRateLimiter
 from plummy.infrastructure.security.bootstrap_store import FileBootstrapTokenStore
 from plummy.infrastructure.security.passwords import Argon2PasswordHasher
+from plummy.infrastructure.security.secret_cipher import AesGcmSecretCipher, KeyRingError, load_keyring
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +128,7 @@ class Resources:
     readiness: CheckReadiness
     auth: AuthServices
     admin: AdminServices
+    secrets: SecretVault
 
     async def aclose(self) -> None:
         """Release connections. Each resource is closed even if another one fails to close."""
@@ -138,7 +146,17 @@ def session_policy(settings: Settings) -> SessionPolicy:
     return SessionPolicy(idle_ttl=settings.session_idle_ttl, absolute_ttl=settings.session_absolute_ttl)
 
 
-def instance_settings_view(settings: Settings) -> InstanceSettingsView:
+def load_secret_cipher(settings: Settings) -> AesGcmSecretCipher | None:
+    """The key ring is read once per process; an invalid one stops the API, worker and CLI (ADR-016 §2)."""
+    if settings.secrets_keyring_file is None:
+        return None
+    try:
+        return AesGcmSecretCipher(load_keyring(settings.secrets_keyring_file))
+    except KeyRingError as exc:
+        raise ConfigurationError(f"Invalid configuration: SECRETS_KEYRING_FILE: {exc}") from None
+
+
+def instance_settings_view(settings: Settings, cipher: SecretCipher | None) -> InstanceSettingsView:
     return InstanceSettingsView(
         app_env=settings.app_env.value,
         public_url=settings.public_url,
@@ -147,6 +165,11 @@ def instance_settings_view(settings: Settings) -> InstanceSettingsView:
         session_absolute_ttl=settings.session_absolute_ttl,
         session_cookie_secure=settings.session_cookie_secure,
         api_docs_enabled=settings.docs_enabled,
+        secrets=SecretsSettingsView(
+            configured=cipher is not None,
+            primary_key_id=cipher.primary_key_id if cipher else None,
+            keys=len(cipher.key_ids) if cipher else 0,
+        ),
     )
 
 
@@ -157,11 +180,17 @@ def build_resources(
     clock: Clock | None = None,
 ) -> Resources:
     """Create clients without connecting; connectivity is verified by readiness checks."""
+    cipher = load_secret_cipher(settings)
     expected_heads = get_expected_heads()
     engine = create_engine(settings)
     redis = create_redis_client(settings)
     readiness = CheckReadiness(
-        [DatabaseCheck(engine), MigrationsCheck(engine, expected_heads), RedisCheck(redis)]
+        [
+            DatabaseCheck(engine),
+            MigrationsCheck(engine, expected_heads),
+            RedisCheck(redis),
+            SecretsCheck(engine, cipher.key_ids if cipher else frozenset()),
+        ]
     )
     session_factory = create_session_factory(engine)
     uow = SqlAlchemyUnitOfWorkFactory(session_factory)
@@ -207,7 +236,7 @@ def build_resources(
         ),
         roles=ListRoles(uow),
         permissions=ListPermissions(uow),
-        instance_settings=GetInstanceSettings(instance_settings_view(settings)),
+        instance_settings=GetInstanceSettings(instance_settings_view(settings, cipher)),
     )
     return Resources(
         engine=engine,
@@ -216,6 +245,7 @@ def build_resources(
         readiness=readiness,
         auth=auth,
         admin=admin,
+        secrets=SecretVault(cipher, clock),
     )
 
 
@@ -229,6 +259,8 @@ class CliServices:
     create_administrator: CreateAdministrator
     reset_password: ResetPassword
     token_location: str
+    secrets_status: GetSecretsStatus
+    rotate_secrets: RotateSecrets | None
 
     async def aclose(self) -> None:
         await self.engine.dispose()
@@ -237,6 +269,7 @@ class CliServices:
 def build_cli_services(
     settings: Settings, *, password_hasher: PasswordHasher | None = None, clock: Clock | None = None
 ) -> CliServices:
+    cipher = load_secret_cipher(settings)
     engine = create_engine(settings, application_name="plummy-cli")
     uow = SqlAlchemyUnitOfWorkFactory(create_session_factory(engine))
     clock = clock or SystemClock()
@@ -249,4 +282,6 @@ def build_cli_services(
         create_administrator=CreateAdministrator(uow, clock, hasher, store),
         reset_password=ResetPassword(uow, clock, hasher),
         token_location=store.location,
+        secrets_status=GetSecretsStatus(uow, cipher),
+        rotate_secrets=RotateSecrets(uow, cipher, clock) if cipher is not None else None,
     )

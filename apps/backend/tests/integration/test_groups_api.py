@@ -220,7 +220,15 @@ async def test_instance_settings_are_read_only_and_secret_free(
     assert body["setup_mode"] == "web"
     assert body["session"]["cookie_secure"] is True
     assert body["session"]["idle_ttl_seconds"] == int(harness.settings.session_idle_ttl.total_seconds())
-    text = json.dumps(body).lower()
+    # Key ring metadata only (ADR-016 §5): neither the key material nor the file path.
+    assert body["secrets"] == {"configured": True, "primary_key_id": "test-1", "keys": 1}
+    keyring_file = harness.settings.secrets_keyring_file
+    assert keyring_file is not None
+    key_material = json.loads(keyring_file.read_text())["keys"]["test-1"]
+    rendered = json.dumps(body)
+    assert key_material not in rendered
+    assert str(keyring_file) not in rendered
+    text = json.dumps({k: v for k, v in body.items() if k != "secrets"}).lower()
     for secret in ("database", "redis", "secret", "password"):
         assert secret not in text
     assert (await admin.patch("/api/v1/system/settings", json={"setup_mode": "cli"})).status_code == 405

@@ -46,7 +46,12 @@ async def test_not_ready_until_migrations_are_applied(
         after = await client.get("/api/v1/health/ready")
 
     assert before.status_code == 503
-    assert before.json()["checks"] == {"database": "ok", "migrations": "fail", "redis": "ok"}
+    assert before.json()["checks"] == {
+        "database": "ok",
+        "migrations": "fail",
+        "redis": "ok",
+        "secrets": "fail",
+    }
     assert after.status_code == 200
 
 
@@ -57,7 +62,7 @@ async def test_not_ready_when_redis_is_unreachable(migrator: Migrator, database_
         ready = await client.get("/api/v1/health/ready")
     assert live.status_code == 200  # the process itself is fine
     assert ready.status_code == 503
-    assert ready.json()["checks"] == {"database": "ok", "migrations": "ok", "redis": "fail"}
+    assert ready.json()["checks"] == {"database": "ok", "migrations": "ok", "redis": "fail", "secrets": "ok"}
     assert "127.0.0.1" not in ready.text
 
 
@@ -65,7 +70,12 @@ async def test_not_ready_when_database_is_unreachable(redis_url: str) -> None:
     async with running_app(UNREACHABLE_DATABASE, redis_url) as (_, client):
         ready = await client.get("/api/v1/health/ready")
     assert ready.status_code == 503
-    assert ready.json()["checks"] == {"database": "fail", "migrations": "fail", "redis": "ok"}
+    assert ready.json()["checks"] == {
+        "database": "fail",
+        "migrations": "fail",
+        "redis": "ok",
+        "secrets": "fail",
+    }
 
 
 async def test_session_dependency_rolls_back_uncommitted_work(

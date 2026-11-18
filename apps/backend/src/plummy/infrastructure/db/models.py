@@ -247,3 +247,32 @@ class AuditLogModel(Base):
     details: Mapped[dict[str, Any]] = mapped_column(
         JSONB(), nullable=False, server_default=text("'{}'::jsonb")
     )
+
+
+class SecretReferenceModel(Base):
+    """Encrypted secrets (ADR-016). Only ciphertext: the key ring lives outside the database."""
+
+    __tablename__ = "secret_references"
+    __table_args__ = (
+        CheckConstraint("kind IN ('ai_api_key', 'oauth_refresh_token', 'oauth_client_secret')", name="kind"),
+        CheckConstraint("backend = 'db_encrypted'", name="backend"),
+        CheckConstraint("algorithm = 'AES-256-GCM'", name="algorithm"),
+        CheckConstraint("octet_length(nonce) = 12", name="nonce_length"),
+        # GCM tag (16 bytes) plus at least one byte of plaintext.
+        CheckConstraint("octet_length(ciphertext) > 16", name="ciphertext_length"),
+        CheckConstraint("key_id ~ '^[A-Za-z0-9._-]{1,32}$'", name="key_id_format"),
+        CheckConstraint("hint IS NULL OR char_length(hint) = 4", name="hint_length"),
+        Index("ix_secret_references_key_id", "key_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    kind: Mapped[str] = mapped_column(Text(), nullable=False)
+    backend: Mapped[str] = mapped_column(Text(), nullable=False, server_default=text("'db_encrypted'"))
+    ciphertext: Mapped[bytes] = mapped_column(LargeBinary(), nullable=False)
+    nonce: Mapped[bytes] = mapped_column(LargeBinary(), nullable=False)
+    key_id: Mapped[str] = mapped_column(Text(), nullable=False)
+    algorithm: Mapped[str] = mapped_column(Text(), nullable=False)
+    hint: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    created_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
+    updated_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
+    rotated_at: Mapped[datetime | None] = _ts()

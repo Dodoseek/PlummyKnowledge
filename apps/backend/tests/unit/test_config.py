@@ -7,6 +7,7 @@ import pytest
 from plummy.core.config import AppEnv, ConfigurationError, LogLevel, get_settings, load_settings
 from tests.conftest import (
     DB_PASSWORD,
+    TEST_KEYRING_PATH,
     TEST_PUBLIC_URL,
     VALID_DATABASE_URL,
     VALID_REDIS_URL,
@@ -21,6 +22,7 @@ def _set_required_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DATABASE_URL", VALID_DATABASE_URL)
     monkeypatch.setenv("REDIS_URL", VALID_REDIS_URL)
     monkeypatch.setenv("PUBLIC_URL", TEST_PUBLIC_URL)
+    monkeypatch.setenv("SECRETS_KEYRING_FILE", TEST_KEYRING_PATH)
 
 
 # --- positive -------------------------------------------------------------------------------------------
@@ -111,6 +113,7 @@ def test_secret_values_are_read_from_files(clean_env: pytest.MonkeyPatch, tmp_pa
     clean_env.setenv("SECRET_KEY_FILE", str(key_file))
     clean_env.setenv("REDIS_URL", VALID_REDIS_URL)
     clean_env.setenv("PUBLIC_URL", TEST_PUBLIC_URL)
+    clean_env.setenv("SECRETS_KEYRING_FILE", TEST_KEYRING_PATH)
 
     settings = load_settings()
 
@@ -185,6 +188,17 @@ def test_invalid_redis_url_is_rejected(url: str) -> None:
 def test_production_requires_secret_key() -> None:
     with pytest.raises(ConfigurationError, match="SECRET_KEY"):
         make_settings(app_env="production")
+
+
+def test_production_requires_secrets_keyring_file() -> None:
+    with pytest.raises(ConfigurationError, match="SECRETS_KEYRING_FILE is required"):
+        make_settings(app_env="production", secret_key=VALID_SECRET_KEY, secrets_keyring_file=None)
+
+
+def test_secrets_keyring_file_is_optional_outside_production() -> None:
+    settings = make_settings(app_env="development")
+    assert settings.secrets_keyring_file is None
+    assert settings.safe_summary()["secrets_keyring_configured"] is False
 
 
 def test_production_forbids_debug() -> None:

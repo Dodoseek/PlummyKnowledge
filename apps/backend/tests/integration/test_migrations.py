@@ -108,6 +108,7 @@ async def test_identity_tables_are_created(migrator: Migrator, database_url: str
         "permissions",
         "role_permissions",
         "roles",
+        "secret_references",
         "sessions",
         "user_activation_tokens",
         "user_groups",
