@@ -134,3 +134,48 @@ class ActivationTokenInvalidError(ApplicationError):
     """The activation link is invalid, expired or already used."""
 
     code = "activation_token_invalid"
+
+
+class ProviderNameTakenError(ConflictError):
+    """Another AI provider already has this name."""
+
+    code = "provider_name_taken"
+
+
+class ProviderInUseError(ConflictError):
+    """The provider is still used by an embedding profile (later also by assistants)."""
+
+    code = "provider_in_use"
+
+
+class ModelIdTakenError(ConflictError):
+    """The provider already has a model config with this model ID."""
+
+    code = "model_id_taken"
+
+
+class EmbeddingProfileNameTakenError(ConflictError):
+    """Another embedding profile already has this name."""
+
+    code = "embedding_profile_name_taken"
+
+
+class ReindexRequiredError(ConflictError):
+    """Changing the model or vector space of an embedding profile needs a new profile and a reindex."""
+
+    code = "reindex_required"
+
+
+class InvalidStateError(ConflictError):
+    """The operation is not allowed in the current state of the resource."""
+
+    code = "invalid_state"
+
+
+class EndpointNotAllowedError(InvalidInputError):
+    """The provider ``base_url`` does not pass the instance network policy (ADR-007)."""
+
+    code = "endpoint_not_allowed"
+
+    def __init__(self, reason: str) -> None:
+        super().__init__("base_url", reason, "Endpoint is not allowed by instance network policy.")

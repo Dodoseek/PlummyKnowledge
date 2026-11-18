@@ -46,6 +46,16 @@ class AuditAction(StrEnum):
     GROUP_DELETED = "group.deleted"
     GROUP_MEMBERS_CHANGED = "group.members.changed"
     SECRETS_ROTATED = "secrets.rotated"
+    PROVIDER_CREATED = "provider.created"
+    PROVIDER_UPDATED = "provider.updated"
+    PROVIDER_DELETED = "provider.deleted"
+    PROVIDER_SECRET_ROTATED = "provider.secret.rotated"  # noqa: S105 - an event name, not a secret
+    PROVIDER_TESTED = "provider.tested"
+    MODEL_CREATED = "model.created"
+    MODEL_UPDATED = "model.updated"
+    MODEL_DELETED = "model.deleted"
+    EMBEDDING_PROFILE_CREATED = "embedding_profile.created"
+    EMBEDDING_PROFILE_UPDATED = "embedding_profile.updated"
     NETWORK_EGRESS_DENIED = "network.egress.denied"
 
 

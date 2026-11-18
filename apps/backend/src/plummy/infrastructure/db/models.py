@@ -16,9 +16,11 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     LargeBinary,
     SmallInteger,
     Text,
+    UniqueConstraint,
     text,
 )
 from sqlalchemy.dialects.postgresql import CITEXT, INET, JSONB
@@ -276,3 +278,113 @@ class SecretReferenceModel(Base):
     created_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
     updated_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
     rotated_at: Mapped[datetime | None] = _ts()
+
+
+class AIProviderModel(Base):
+    """AI providers (DATABASE_SCHEMA.md §4.2). The API key is only referenced (``secret_references``)."""
+
+    __tablename__ = "ai_providers"
+    __table_args__ = (
+        CheckConstraint(
+            "provider_type IN ('openai', 'anthropic', 'ollama', 'openai_compatible')", name="provider_type"
+        ),
+        CheckConstraint("char_length(name) BETWEEN 1 AND 100", name="name_length"),
+        CheckConstraint("char_length(base_url) BETWEEN 1 AND 2048", name="base_url_length"),
+        CheckConstraint(
+            "last_test_status IS NULL OR last_test_status IN ('ok', 'failed')", name="last_test_status"
+        ),
+        # Only a typed error code is stored, never provider output.
+        CheckConstraint(
+            "last_test_error IS NULL OR last_test_error ~ '^[a-z_]{1,64}$'", name="last_test_error_code"
+        ),
+        CheckConstraint("jsonb_typeof(settings) = 'object'", name="settings_object"),
+        Index(
+            "uq_ai_providers_name_active", "name", unique=True, postgresql_where=text("deleted_at IS NULL")
+        ),
+        Index("ix_ai_providers_created_at_id", "created_at", "id"),
+        Index("uq_ai_providers_secret_ref_id", "secret_ref_id", unique=True),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    name: Mapped[str] = mapped_column(CITEXT(), nullable=False)
+    provider_type: Mapped[str] = mapped_column(Text(), nullable=False)
+    base_url: Mapped[str] = mapped_column(Text(), nullable=False)
+    secret_ref_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("secret_references.id", ondelete="SET NULL"), nullable=True
+    )
+    settings: Mapped[dict[str, Any]] = mapped_column(
+        JSONB(), nullable=False, server_default=text("'{}'::jsonb")
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean(), nullable=False, server_default=text("true"))
+    last_test_at: Mapped[datetime | None] = _ts()
+    last_test_status: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    last_test_error: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    created_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
+    updated_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
+    deleted_at: Mapped[datetime | None] = _ts()
+
+
+class ModelConfigModel(Base):
+    """Chat models of a provider (DATABASE_SCHEMA.md §4.3)."""
+
+    __tablename__ = "model_configs"
+    __table_args__ = (
+        CheckConstraint("kind = 'chat'", name="kind"),
+        CheckConstraint("char_length(model_id) BETWEEN 1 AND 256", name="model_id_length"),
+        CheckConstraint(
+            "display_name IS NULL OR char_length(display_name) <= 200", name="display_name_length"
+        ),
+        CheckConstraint("context_window IS NULL OR context_window > 0", name="context_window"),
+        CheckConstraint("max_output_tokens IS NULL OR max_output_tokens > 0", name="max_output_tokens"),
+        UniqueConstraint("provider_id", "model_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    provider_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("ai_providers.id", ondelete="CASCADE"), nullable=False
+    )
+    model_id: Mapped[str] = mapped_column(Text(), nullable=False)
+    display_name: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    kind: Mapped[str] = mapped_column(Text(), nullable=False, server_default=text("'chat'"))
+    context_window: Mapped[int | None] = mapped_column(Integer(), nullable=True)
+    max_output_tokens: Mapped[int | None] = mapped_column(Integer(), nullable=True)
+    default_params: Mapped[dict[str, Any]] = mapped_column(
+        JSONB(), nullable=False, server_default=text("'{}'::jsonb")
+    )
+    capabilities: Mapped[dict[str, Any]] = mapped_column(
+        JSONB(), nullable=False, server_default=text("'{}'::jsonb")
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean(), nullable=False, server_default=text("true"))
+    created_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
+    updated_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
+
+
+class EmbeddingProfileModel(Base):
+    """Embedding profiles (DATABASE_SCHEMA.md §4.4). Immutable except ``name`` and ``status``."""
+
+    __tablename__ = "embedding_provider_configs"
+    __table_args__ = (
+        CheckConstraint("char_length(name) BETWEEN 1 AND 100", name="name_length"),
+        CheckConstraint("char_length(model_id) BETWEEN 1 AND 256", name="model_id_length"),
+        CheckConstraint("dimensions BETWEEN 1 AND 16000", name="dimensions"),
+        CheckConstraint("distance_metric IN ('cosine', 'inner_product', 'l2')", name="distance_metric"),
+        CheckConstraint("max_input_tokens IS NULL OR max_input_tokens > 0", name="max_input_tokens"),
+        CheckConstraint("status IN ('active', 'deprecated', 'retired')", name="status"),
+        UniqueConstraint("name"),
+        Index("ix_embedding_provider_configs_provider_id", "provider_id"),
+        Index("ix_embedding_provider_configs_created_at_id", "created_at", "id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    name: Mapped[str] = mapped_column(CITEXT(), nullable=False)
+    provider_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("ai_providers.id", ondelete="RESTRICT"), nullable=False
+    )
+    model_id: Mapped[str] = mapped_column(Text(), nullable=False)
+    dimensions: Mapped[int] = mapped_column(Integer(), nullable=False)
+    distance_metric: Mapped[str] = mapped_column(Text(), nullable=False, server_default=text("'cosine'"))
+    normalize: Mapped[bool] = mapped_column(Boolean(), nullable=False, server_default=text("false"))
+    max_input_tokens: Mapped[int | None] = mapped_column(Integer(), nullable=True)
+    status: Mapped[str] = mapped_column(Text(), nullable=False, server_default=text("'active'"))
+    created_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
+    updated_at: Mapped[datetime] = _ts(nullable=False, default_now=True)

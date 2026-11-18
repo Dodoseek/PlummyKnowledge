@@ -27,6 +27,7 @@ from plummy.application.ai.ports import (
     ProviderAuthError,
     ProviderBadRequestError,
     ProviderCancelledError,
+    ProviderConnection,
     ProviderEgressDeniedError,
     ProviderError,
     ProviderErrorCode,
@@ -44,7 +45,6 @@ from plummy.domain.secrets import SecretValue
 from plummy.infrastructure.http.safe_client import SafeHttpClient
 from plummy.infrastructure.integrations.ai.anthropic import ANTHROPIC_VERSION
 from plummy.infrastructure.integrations.ai.common import (
-    ProviderConnection,
     RetryPolicy,
     iter_sse,
     parse_retry_after,

@@ -29,6 +29,25 @@ from plummy.application.groups.use_cases import (
 )
 from plummy.application.health import CheckReadiness
 from plummy.application.ports import Clock, PasswordHasher, SecretCipher
+from plummy.application.providers.embedding_profiles import (
+    CreateEmbeddingProfile,
+    GetEmbeddingProfile,
+    ListEmbeddingProfiles,
+    TestEmbeddingProfile,
+    UpdateEmbeddingProfile,
+)
+from plummy.application.providers.use_cases import (
+    CreateModel,
+    CreateProvider,
+    DeleteModel,
+    DeleteProvider,
+    GetProvider,
+    ListModels,
+    ListProviders,
+    TestProvider,
+    UpdateModel,
+    UpdateProvider,
+)
 from plummy.application.roles.use_cases import ListPermissions, ListRoles
 from plummy.application.secret_storage.use_cases import GetSecretsStatus, RotateSecrets
 from plummy.application.secret_storage.vault import SecretVault
@@ -68,6 +87,7 @@ from plummy.infrastructure.db.migrations import get_expected_heads
 from plummy.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWorkFactory
 from plummy.infrastructure.http.egress_audit import EgressDenialAuditor
 from plummy.infrastructure.http.safe_client import SafeHttpClient
+from plummy.infrastructure.integrations.ai.factory import HttpProviderGateway
 from plummy.infrastructure.redis import create_redis_client
 from plummy.infrastructure.redis.checks import RedisCheck
 from plummy.infrastructure.redis.rate_limiter import RedisRateLimiter
@@ -117,11 +137,36 @@ class GroupServices:
 
 
 @dataclass(frozen=True, slots=True)
+class ProviderServices:
+    list: ListProviders
+    get: GetProvider
+    create: CreateProvider
+    update: UpdateProvider
+    delete: DeleteProvider
+    test: TestProvider
+    list_models: ListModels
+    create_model: CreateModel
+    update_model: UpdateModel
+    delete_model: DeleteModel
+
+
+@dataclass(frozen=True, slots=True)
+class EmbeddingProfileServices:
+    list: ListEmbeddingProfiles
+    get: GetEmbeddingProfile
+    create: CreateEmbeddingProfile
+    update: UpdateEmbeddingProfile
+    test: TestEmbeddingProfile
+
+
+@dataclass(frozen=True, slots=True)
 class AdminServices:
     """Administration use cases; each one checks the caller's permissions itself."""
 
     users: UserServices
     groups: GroupServices
+    providers: ProviderServices
+    embedding_profiles: EmbeddingProfileServices
     roles: ListRoles
     permissions: ListPermissions
     instance_settings: GetInstanceSettings
@@ -258,7 +303,11 @@ def build_resources(
     uow = SqlAlchemyUnitOfWorkFactory(session_factory)
     clock = clock or SystemClock()
     hasher = password_hasher or Argon2PasswordHasher()
-    throttle = AttemptThrottle(RedisRateLimiter(redis))
+    limiter = RedisRateLimiter(redis)
+    throttle = AttemptThrottle(limiter)
+    vault = SecretVault(cipher, clock)
+    http = SafeHttpClient(egress_policy, on_denied=EgressDenialAuditor(uow))
+    gateway = HttpProviderGateway(http)
     policy = session_policy(settings)
     issuer = SessionIssuer(policy)
     web_setup_enabled = settings.setup_mode is SetupMode.WEB
@@ -296,6 +345,25 @@ def build_resources(
             set_members=SetGroupMembers(uow),
             set_roles=SetGroupRoles(uow),
         ),
+        providers=ProviderServices(
+            list=ListProviders(uow),
+            get=GetProvider(uow),
+            create=CreateProvider(uow, clock, vault, gateway),
+            update=UpdateProvider(uow, clock, vault, gateway),
+            delete=DeleteProvider(uow, clock),
+            test=TestProvider(uow, clock, vault, gateway, limiter),
+            list_models=ListModels(uow),
+            create_model=CreateModel(uow, clock),
+            update_model=UpdateModel(uow, clock),
+            delete_model=DeleteModel(uow),
+        ),
+        embedding_profiles=EmbeddingProfileServices(
+            list=ListEmbeddingProfiles(uow),
+            get=GetEmbeddingProfile(uow),
+            create=CreateEmbeddingProfile(uow, clock),
+            update=UpdateEmbeddingProfile(uow, clock),
+            test=TestEmbeddingProfile(uow, clock, vault, gateway, limiter),
+        ),
         roles=ListRoles(uow),
         permissions=ListPermissions(uow),
         instance_settings=GetInstanceSettings(instance_settings_view(settings, cipher, egress_policy)),
@@ -307,8 +375,8 @@ def build_resources(
         readiness=readiness,
         auth=auth,
         admin=admin,
-        secrets=SecretVault(cipher, clock),
-        http=SafeHttpClient(egress_policy, on_denied=EgressDenialAuditor(uow)),
+        secrets=vault,
+        http=http,
     )
 
 

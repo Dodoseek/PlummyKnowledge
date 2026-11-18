@@ -100,11 +100,14 @@ async def test_identity_tables_are_created(migrator: Migrator, database_url: str
         database_url, "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename"
     )
     assert tables == [
+        "ai_providers",
         "alembic_version",
         "audit_logs",
+        "embedding_provider_configs",
         "group_roles",
         "groups",
         "instance_state",
+        "model_configs",
         "permissions",
         "role_permissions",
         "roles",

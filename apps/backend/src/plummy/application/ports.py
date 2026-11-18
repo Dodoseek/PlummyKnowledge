@@ -10,6 +10,7 @@ from typing import Protocol, Self
 from uuid import UUID
 
 from plummy.application.pagination import Page, PageRequest
+from plummy.domain.ai import AIProvider, EmbeddingProfile, ModelConfig, TestStatus
 from plummy.domain.audit import AuditEntry
 from plummy.domain.identity import Group, InstanceState, SessionRevokeReason, User, UserSession, UserStatus
 from plummy.domain.secrets import SecretKind, SecretValue
@@ -341,6 +342,64 @@ class SecretRepository(Protocol):
         ...
 
 
+class ProviderRepository(Protocol):
+    """Non-deleted AI providers. ``secret_hint`` is read from the referenced secret."""
+
+    async def add(self, provider: AIProvider) -> None:
+        """Raises :class:`UniqueViolationError` for a taken name."""
+        ...
+
+    async def get(self, provider_id: UUID) -> AIProvider | None: ...
+
+    async def get_for_update(self, provider_id: UUID) -> AIProvider | None: ...
+
+    async def get_by_name(self, name: str) -> AIProvider | None: ...
+
+    async def page(self, page: PageRequest) -> Page[AIProvider]: ...
+
+    async def update(self, provider: AIProvider, *, at: datetime) -> None:
+        """Writes every mutable column, including the last test result and ``deleted_at``."""
+        ...
+
+    async def record_test(
+        self, provider_id: UUID, *, at: datetime, status: TestStatus, error_code: str | None
+    ) -> None: ...
+
+
+class ModelConfigRepository(Protocol):
+    async def list_for_provider(self, provider_id: UUID) -> list[ModelConfig]: ...
+
+    async def get(self, provider_id: UUID, config_id: UUID) -> ModelConfig | None: ...
+
+    async def add(self, model: ModelConfig) -> None:
+        """Raises :class:`UniqueViolationError` for a model ID the provider already has."""
+        ...
+
+    async def update(self, model: ModelConfig, *, at: datetime) -> None: ...
+
+    async def delete(self, config_id: UUID) -> None: ...
+
+    async def delete_for_provider(self, provider_id: UUID) -> int: ...
+
+
+class EmbeddingProfileRepository(Protocol):
+    async def page(self, page: PageRequest) -> Page[EmbeddingProfile]: ...
+
+    async def get(self, profile_id: UUID) -> EmbeddingProfile | None: ...
+
+    async def get_by_name(self, name: str) -> EmbeddingProfile | None: ...
+
+    async def add(self, profile: EmbeddingProfile) -> None:
+        """Raises :class:`UniqueViolationError` for a taken name."""
+        ...
+
+    async def update(self, profile: EmbeddingProfile, *, at: datetime) -> None:
+        """Only ``name`` and ``status`` are mutable."""
+        ...
+
+    async def count_for_provider(self, provider_id: UUID) -> int: ...
+
+
 class UnitOfWork(Protocol):
     """One database transaction. Leaving the context without ``commit()`` rolls back."""
 
@@ -351,6 +410,9 @@ class UnitOfWork(Protocol):
     sessions: SessionRepository
     instance: InstanceStateRepository
     secrets: SecretRepository
+    providers: ProviderRepository
+    models: ModelConfigRepository
+    embedding_profiles: EmbeddingProfileRepository
     audit: AuditLog
 
     async def __aenter__(self) -> Self: ...

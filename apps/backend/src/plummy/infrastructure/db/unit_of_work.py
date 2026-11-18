@@ -18,10 +18,13 @@ from plummy.application.ports import (
     ActivationRecord,
     ActivationTokenRepository,
     AuditLog,
+    EmbeddingProfileRepository,
     EncryptedSecret,
     GroupRepository,
     InstanceStateRepository,
+    ModelConfigRepository,
     PermissionInfo,
+    ProviderRepository,
     RoleInfo,
     RoleRepository,
     SecretRecord,
@@ -35,6 +38,15 @@ from plummy.application.ports import (
 )
 from plummy.core.ids import new_id
 from plummy.core.logging import request_id_var
+from plummy.domain.ai import (
+    AIProvider,
+    DistanceMetric,
+    EmbeddingProfile,
+    EmbeddingProfileStatus,
+    ModelConfig,
+    ProviderType,
+    TestStatus,
+)
 from plummy.domain.audit import AuditEntry
 from plummy.domain.identity import (
     Group,
@@ -49,10 +61,13 @@ from plummy.domain.secrets import SecretKind
 from plummy.infrastructure.db.base import Base
 from plummy.infrastructure.db.models import (
     ActivationTokenModel,
+    AIProviderModel,
     AuditLogModel,
+    EmbeddingProfileModel,
     GroupModel,
     GroupRoleModel,
     InstanceStateModel,
+    ModelConfigModel,
     PermissionModel,
     RoleModel,
     RolePermissionModel,
@@ -767,6 +782,269 @@ class SqlSecretRepository:
         return list(result.all())
 
 
+# --- AI providers ---------------------------------------------------------------------------------------
+
+
+def _provider(row: AIProviderModel, hint: str | None) -> AIProvider:
+    timeout = row.settings.get("timeout_seconds")
+    return AIProvider(
+        id=row.id,
+        name=row.name,
+        provider_type=ProviderType(row.provider_type),
+        base_url=row.base_url,
+        secret_id=row.secret_ref_id,
+        secret_hint=hint,
+        timeout_seconds=timeout if isinstance(timeout, int) else 60,
+        enabled=row.enabled,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+        last_test_at=row.last_test_at,
+        last_test_status=TestStatus(row.last_test_status) if row.last_test_status else None,
+        last_test_error=row.last_test_error,
+        deleted_at=row.deleted_at,
+    )
+
+
+class SqlProviderRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._db = session
+
+    def _select(self) -> Select[AIProviderModel, str | None]:
+        return (
+            select(AIProviderModel, SecretReferenceModel.hint)
+            .outerjoin(SecretReferenceModel, SecretReferenceModel.id == AIProviderModel.secret_ref_id)
+            .where(AIProviderModel.deleted_at.is_(None))
+        )
+
+    async def _one(self, statement: Select[AIProviderModel, str | None]) -> AIProvider | None:
+        row = (await self._db.execute(statement)).first()
+        return _provider(row[0], row[1]) if row is not None else None
+
+    async def add(self, provider: AIProvider) -> None:
+        self._db.add(
+            AIProviderModel(
+                id=provider.id,
+                name=provider.name,
+                provider_type=str(provider.provider_type),
+                base_url=provider.base_url,
+                secret_ref_id=provider.secret_id,
+                settings={"timeout_seconds": provider.timeout_seconds},
+                enabled=provider.enabled,
+                created_at=provider.created_at,
+                updated_at=provider.updated_at,
+            )
+        )
+        await _flush_unique(self._db, "uq_ai_providers_name_active")
+
+    async def get(self, provider_id: UUID) -> AIProvider | None:
+        return await self._one(self._select().where(AIProviderModel.id == provider_id))
+
+    async def get_for_update(self, provider_id: UUID) -> AIProvider | None:
+        return await self._one(
+            self._select().where(AIProviderModel.id == provider_id).with_for_update(of=AIProviderModel)
+        )
+
+    async def get_by_name(self, name: str) -> AIProvider | None:
+        return await self._one(self._select().where(AIProviderModel.name == name))
+
+    async def page(self, page: PageRequest) -> Page[AIProvider]:
+        statement = select(AIProviderModel).where(AIProviderModel.deleted_at.is_(None))
+        result = await _paginate(self._db, statement, AIProviderModel, page, lambda row: row)
+        secret_ids = [row.secret_ref_id for row in result.items if row.secret_ref_id is not None]
+        hints: dict[UUID, str | None] = {}
+        if secret_ids:
+            rows = await self._db.execute(
+                select(SecretReferenceModel.id, SecretReferenceModel.hint).where(
+                    SecretReferenceModel.id.in_(secret_ids)
+                )
+            )
+            hints = dict(rows.all())
+        items = [
+            _provider(row, hints.get(row.secret_ref_id) if row.secret_ref_id else None)
+            for row in result.items
+        ]
+        return Page(items=items, next_cursor=result.next_cursor)
+
+    async def update(self, provider: AIProvider, *, at: datetime) -> None:
+        try:
+            await self._db.execute(
+                update(AIProviderModel)
+                .where(AIProviderModel.id == provider.id)
+                .values(
+                    name=provider.name,
+                    base_url=provider.base_url,
+                    secret_ref_id=provider.secret_id,
+                    settings={"timeout_seconds": provider.timeout_seconds},
+                    enabled=provider.enabled,
+                    last_test_at=provider.last_test_at,
+                    last_test_status=str(provider.last_test_status) if provider.last_test_status else None,
+                    last_test_error=provider.last_test_error,
+                    deleted_at=provider.deleted_at,
+                    updated_at=at,
+                )
+            )
+        except IntegrityError as exc:
+            if "uq_ai_providers_name_active" in str(exc.orig):
+                raise UniqueViolationError("uq_ai_providers_name_active") from None
+            raise
+
+    async def record_test(
+        self, provider_id: UUID, *, at: datetime, status: TestStatus, error_code: str | None
+    ) -> None:
+        await self._db.execute(
+            update(AIProviderModel)
+            .where(AIProviderModel.id == provider_id)
+            .values(last_test_at=at, last_test_status=str(status), last_test_error=error_code)
+        )
+
+
+def _model_config(row: ModelConfigModel) -> ModelConfig:
+    return ModelConfig(
+        id=row.id,
+        provider_id=row.provider_id,
+        model_id=row.model_id,
+        display_name=row.display_name,
+        context_window=row.context_window,
+        max_output_tokens=row.max_output_tokens,
+        enabled=row.enabled,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+        kind=row.kind,
+    )
+
+
+class SqlModelConfigRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._db = session
+
+    async def list_for_provider(self, provider_id: UUID) -> list[ModelConfig]:
+        rows = await self._db.scalars(
+            select(ModelConfigModel)
+            .where(ModelConfigModel.provider_id == provider_id)
+            .order_by(ModelConfigModel.model_id, ModelConfigModel.id)
+        )
+        return [_model_config(row) for row in rows]
+
+    async def get(self, provider_id: UUID, config_id: UUID) -> ModelConfig | None:
+        row = await self._db.scalar(
+            select(ModelConfigModel).where(
+                ModelConfigModel.id == config_id, ModelConfigModel.provider_id == provider_id
+            )
+        )
+        return _model_config(row) if row is not None else None
+
+    async def add(self, model: ModelConfig) -> None:
+        self._db.add(
+            ModelConfigModel(
+                id=model.id,
+                provider_id=model.provider_id,
+                model_id=model.model_id,
+                display_name=model.display_name,
+                kind=model.kind,
+                context_window=model.context_window,
+                max_output_tokens=model.max_output_tokens,
+                enabled=model.enabled,
+                created_at=model.created_at,
+                updated_at=model.updated_at,
+            )
+        )
+        await _flush_unique(self._db, "uq_model_configs_provider_id_model_id")
+
+    async def update(self, model: ModelConfig, *, at: datetime) -> None:
+        await self._db.execute(
+            update(ModelConfigModel)
+            .where(ModelConfigModel.id == model.id)
+            .values(
+                display_name=model.display_name,
+                context_window=model.context_window,
+                max_output_tokens=model.max_output_tokens,
+                enabled=model.enabled,
+                updated_at=at,
+            )
+        )
+
+    async def delete(self, config_id: UUID) -> None:
+        await self._db.execute(delete(ModelConfigModel).where(ModelConfigModel.id == config_id))
+
+    async def delete_for_provider(self, provider_id: UUID) -> int:
+        result = await self._db.execute(
+            delete(ModelConfigModel).where(ModelConfigModel.provider_id == provider_id)
+        )
+        return int(getattr(result, "rowcount", 0) or 0)
+
+
+def _embedding_profile(row: EmbeddingProfileModel) -> EmbeddingProfile:
+    return EmbeddingProfile(
+        id=row.id,
+        name=row.name,
+        provider_id=row.provider_id,
+        model_id=row.model_id,
+        dimensions=row.dimensions,
+        distance_metric=DistanceMetric(row.distance_metric),
+        normalize=row.normalize,
+        max_input_tokens=row.max_input_tokens,
+        status=EmbeddingProfileStatus(row.status),
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+class SqlEmbeddingProfileRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._db = session
+
+    async def page(self, page: PageRequest) -> Page[EmbeddingProfile]:
+        return await _paginate(
+            self._db, select(EmbeddingProfileModel), EmbeddingProfileModel, page, _embedding_profile
+        )
+
+    async def get(self, profile_id: UUID) -> EmbeddingProfile | None:
+        row = await self._db.get(EmbeddingProfileModel, profile_id)
+        return _embedding_profile(row) if row is not None else None
+
+    async def get_by_name(self, name: str) -> EmbeddingProfile | None:
+        row = await self._db.scalar(select(EmbeddingProfileModel).where(EmbeddingProfileModel.name == name))
+        return _embedding_profile(row) if row is not None else None
+
+    async def add(self, profile: EmbeddingProfile) -> None:
+        self._db.add(
+            EmbeddingProfileModel(
+                id=profile.id,
+                name=profile.name,
+                provider_id=profile.provider_id,
+                model_id=profile.model_id,
+                dimensions=profile.dimensions,
+                distance_metric=str(profile.distance_metric),
+                normalize=profile.normalize,
+                max_input_tokens=profile.max_input_tokens,
+                status=str(profile.status),
+                created_at=profile.created_at,
+                updated_at=profile.updated_at,
+            )
+        )
+        await _flush_unique(self._db, "uq_embedding_provider_configs_name")
+
+    async def update(self, profile: EmbeddingProfile, *, at: datetime) -> None:
+        try:
+            await self._db.execute(
+                update(EmbeddingProfileModel)
+                .where(EmbeddingProfileModel.id == profile.id)
+                .values(name=profile.name, status=str(profile.status), updated_at=at)
+            )
+        except IntegrityError as exc:
+            if "uq_embedding_provider_configs_name" in str(exc.orig):
+                raise UniqueViolationError("uq_embedding_provider_configs_name") from None
+            raise
+
+    async def count_for_provider(self, provider_id: UUID) -> int:
+        count = await self._db.scalar(
+            select(func.count())
+            .select_from(EmbeddingProfileModel)
+            .where(EmbeddingProfileModel.provider_id == provider_id)
+        )
+        return int(count or 0)
+
+
 class SqlAlchemyUnitOfWork:
     users: UserRepository
     roles: RoleRepository
@@ -775,6 +1053,9 @@ class SqlAlchemyUnitOfWork:
     sessions: SessionRepository
     instance: InstanceStateRepository
     secrets: SecretRepository
+    providers: ProviderRepository
+    models: ModelConfigRepository
+    embedding_profiles: EmbeddingProfileRepository
     audit: AuditLog
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
@@ -792,6 +1073,9 @@ class SqlAlchemyUnitOfWork:
         self.sessions = SqlSessionRepository(session)
         self.instance = SqlInstanceStateRepository(session)
         self.secrets = SqlSecretRepository(session)
+        self.providers = SqlProviderRepository(session)
+        self.models = SqlModelConfigRepository(session)
+        self.embedding_profiles = SqlEmbeddingProfileRepository(session)
         self.audit = SqlAuditLog(session)
         return self
 

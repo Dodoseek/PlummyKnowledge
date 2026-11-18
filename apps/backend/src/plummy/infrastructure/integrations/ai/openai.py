@@ -20,6 +20,7 @@ from plummy.application.ai.ports import (
     LLMCapabilities,
     ProviderAuthError,
     ProviderBadRequestError,
+    ProviderConnection,
     ProviderContentFilteredError,
     ProviderError,
     ProviderInvalidResponseError,
@@ -34,7 +35,6 @@ from plummy.infrastructure.http.safe_client import SafeHttpClient
 from plummy.infrastructure.integrations.ai.common import (
     MAX_EMBEDDING_RESPONSE_BYTES,
     NO_RETRY,
-    ProviderConnection,
     ProviderHttp,
     RetryPolicy,
     chunked,

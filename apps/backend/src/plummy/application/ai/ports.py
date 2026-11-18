@@ -12,6 +12,10 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Literal, Protocol
 
+from plummy.core.network.policy import EgressPurpose
+from plummy.domain.ai import ProviderType
+from plummy.domain.secrets import SecretValue
+
 # --- cancellation ---------------------------------------------------------------------------------------
 
 
@@ -224,3 +228,64 @@ class EmbeddingProvider(Protocol):
     ) -> list[list[float]]:
         """One vector per text, in order. Raises :class:`ProviderError`."""
         ...
+
+
+# --- configured providers -------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderConnection:
+    """Where and how to reach one configured provider. ``base_url`` has no trailing slash."""
+
+    provider_type: ProviderType
+    base_url: str
+    api_key: SecretValue | None = None
+    timeout_seconds: float = 60.0
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "base_url", self.base_url.rstrip("/"))
+
+
+class EndpointNotAllowed(Exception):  # noqa: N818 - a verdict, not a failure of the checker
+    """The base URL does not pass the instance network policy for any purpose. ``reason`` is a fixed code."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+class InvalidEndpoint(Exception):  # noqa: N818
+    """The base URL is not a valid endpoint (syntax, userinfo, query...)."""
+
+
+class ProviderGateway(Protocol):
+    """Builds adapters for configured providers and checks endpoints against the network policy (ADR-007)."""
+
+    def default_base_url(self, provider_type: ProviderType) -> str | None: ...
+
+    async def check_endpoint(self, base_url: str, provider_type: ProviderType) -> frozenset[EgressPurpose]:
+        """Purposes (``llm``/``embedding``) the endpoint is allowed for.
+
+        Raises :class:`InvalidEndpoint`, or :class:`EndpointNotAllowed` when it is allowed for none. Resolves
+        the name once, so a public-looking host that points inside the network is refused early; the real
+        enforcement is still per connection (``SafeHttpClient``).
+        """
+        ...
+
+    def llm(self, connection: ProviderConnection) -> LLMProvider: ...
+
+    def embedding(self, connection: ProviderConnection) -> EmbeddingProvider:
+        """Raises :class:`UnsupportedCapability` for providers without an embeddings API."""
+        ...
+
+    async def test_connection(
+        self,
+        connection: ProviderConnection,
+        *,
+        purpose: EgressPurpose,
+        timeout: float,  # noqa: ASYNC109 - overall budget of the test
+    ) -> ConnectionTestResult: ...
+
+
+class UnsupportedCapability(Exception):  # noqa: N818
+    """The provider type has no API for this (e.g. Anthropic has no embeddings)."""

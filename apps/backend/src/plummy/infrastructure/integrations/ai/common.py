@@ -31,6 +31,7 @@ from plummy.application.ai.ports import (
     ProviderAuthError,
     ProviderBadRequestError,
     ProviderCancelledError,
+    ProviderConnection,
     ProviderEgressDeniedError,
     ProviderError,
     ProviderInvalidResponseError,
@@ -42,7 +43,6 @@ from plummy.application.ai.ports import (
 from plummy.core.network.errors import EgressDeniedError, ResponseTooLargeError
 from plummy.core.network.policy import EgressPurpose
 from plummy.domain.ai import ProviderType
-from plummy.domain.secrets import SecretValue
 from plummy.infrastructure.http.safe_client import SafeHttpClient
 
 logger = logging.getLogger(__name__)
@@ -55,18 +55,6 @@ MAX_LISTED_MODELS: Final = 500
 MAX_MODEL_ID_LENGTH: Final = 256
 
 type Sleep = Callable[[float], Awaitable[None]]
-
-
-@dataclass(frozen=True, slots=True)
-class ProviderConnection:
-    """Where and how to reach one configured provider. ``base_url`` has no trailing slash."""
-
-    provider_type: ProviderType
-    base_url: str
-    api_key: SecretValue | None = None
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "base_url", self.base_url.rstrip("/"))
 
 
 @dataclass(frozen=True, slots=True)

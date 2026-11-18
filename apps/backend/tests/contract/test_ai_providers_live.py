@@ -19,13 +19,13 @@ from plummy.application.ai.ports import (
     ChatRequest,
     ContextDocument,
     Finished,
+    ProviderConnection,
     TextDelta,
 )
 from plummy.core.network.policy import EgressPolicy
 from plummy.domain.ai import ProviderType
 from plummy.domain.secrets import SecretValue
 from plummy.infrastructure.http.safe_client import SafeHttpClient
-from plummy.infrastructure.integrations.ai.common import ProviderConnection
 from plummy.infrastructure.integrations.ai.factory import (
     DEFAULT_BASE_URLS,
     build_embedding_provider,

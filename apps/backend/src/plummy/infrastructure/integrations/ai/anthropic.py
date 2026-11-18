@@ -19,6 +19,7 @@ from plummy.application.ai.ports import (
     LLMCapabilities,
     ProviderAuthError,
     ProviderBadRequestError,
+    ProviderConnection,
     ProviderError,
     ProviderInvalidResponseError,
     ProviderModelNotFoundError,
@@ -31,7 +32,6 @@ from plummy.core.network.policy import EgressPurpose
 from plummy.infrastructure.http.safe_client import SafeHttpClient
 from plummy.infrastructure.integrations.ai.common import (
     NO_RETRY,
-    ProviderConnection,
     ProviderHttp,
     RetryPolicy,
     check_chat_request,
