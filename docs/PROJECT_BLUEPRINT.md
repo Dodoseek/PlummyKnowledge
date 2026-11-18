@@ -2,13 +2,19 @@
 
 **Полная спецификация продукта, архитектуры и пошаговый план разработки**
 
-Версия 1.0 • 17 ноября 2026 года • Open-source self-hosted AI Knowledge Base
+Версия 1.1 (изменения — ADR-012) • 17 ноября 2026 года • Open-source self-hosted AI Knowledge Base
 
 > Источник: `PlummyKnowledge_Project_Blueprint_RU.docx`. Документ перенесён в Markdown без изменения содержания.
 > Рабочие спецификации, выведенные из него: [PRODUCT_SPEC.md](PRODUCT_SPEC.md), [ARCHITECTURE.md](ARCHITECTURE.md),
 > [DATABASE_SCHEMA.md](DATABASE_SCHEMA.md), [API_CONTRACTS.md](API_CONTRACTS.md), [SECURITY_MODEL.md](SECURITY_MODEL.md),
 > [DEVELOPMENT_ROADMAP.md](DEVELOPMENT_ROADMAP.md), [DEPLOYMENT.md](DEPLOYMENT.md), [../CLAUDE.md](../CLAUDE.md).
 > Уточнения и решения, принятые после v1.0, фиксируются в [ADR](adr/README.md) и имеют приоритет над этим документом.
+>
+> **Изменение v1.1 ([ADR-012](adr/0012-single-organization-deployment.md)).** По решению владельца проекта инсталляция
+> принадлежит **одной** организации и работает на её серверах или в её облаке. Multi-tenancy упразднена: сущности
+> Organization и `organization_id` нет, роли Platform Owner и Organization Admin объединены в Administrator,
+> Organization Settings стали Application Settings, «tenant isolation» заменена изоляцией данных по KB и пользователям.
+> Затронутые места ниже изменены по смыслу и помечены «изменено ADR-012».
 
 ---
 
@@ -38,8 +44,7 @@ PlummyKnowledge — self-hosted платформа корпоративной б
 
 ### Роли
 
-- **Platform Owner** — настройки инсталляции и организаций.
-- **Organization Admin** — пользователи, группы, провайдеры, источники и KB.
+- **Administrator** — пользователи, группы, провайдеры, источники и KB; видит настройки инсталляции (меняются на сервере). *(изменено [ADR-012](adr/0012-single-organization-deployment.md))*
 - **Knowledge Manager** — документы, базы знаний и синхронизация.
 - **Member** — работа с разрешёнными ассистентами.
 - **Auditor** — доступ к журналам аудита в рамках полномочий.
@@ -87,7 +92,7 @@ Browser → Nginx/TLS → React → FastAPI. FastAPI взаимодейству�
 ### Модули backend
 
 - **core** — settings, logging, exceptions, security primitives.
-- auth, users, organizations, groups, permissions.
+- auth, users, groups, permissions. *(изменено [ADR-012](adr/0012-single-organization-deployment.md))*
 - providers, assistants, conversations.
 - knowledge_bases, documents, data_sources.
 - ingestion, retrieval, synchronization, audit.
@@ -112,7 +117,7 @@ plummy-knowledge/ → apps/backend, apps/frontend, packages/ai-providers, packag
 - Безопасные cookies HttpOnly/Secure/SameSite и CSRF strategy.
 - Rate limiting login; password reset при наличии email infrastructure.
 - OIDC — следующая фаза; SAML/SCIM позднее.
-- Tenant context устанавливается сервером из проверенной сессии.
+- Контекст пользователя (роли, права) устанавливается сервером из проверенной сессии. *(изменено [ADR-012](adr/0012-single-organization-deployment.md))*
 - Backend проверяет permissions на каждом use case; frontend не является security boundary.
 
 ### AI providers
@@ -157,7 +162,7 @@ plummy-knowledge/ → apps/backend, apps/frontend, packages/ai-providers, packag
 - Vector search через pgvector.
 - Keyword search через PostgreSQL full-text search.
 - Hybrid fusion (например, Reciprocal Rank Fusion).
-- Фильтрация по tenant, KB, документам и версиям до передачи контекста LLM.
+- Фильтрация по KB, документам и версиям до передачи контекста LLM. *(изменено [ADR-012](adr/0012-single-organization-deployment.md))*
 - Top-k, context budget, deduplication; reranker — следующая фаза.
 
 ### Citations
@@ -204,7 +209,7 @@ DataSourceConnector должен предоставлять `validate_connection
 
 ### Threat model
 
-- Cross-tenant leakage и RBAC bypass.
+- Утечка данных между KB и пользователями и RBAC bypass. *(изменено [ADR-012](adr/0012-single-organization-deployment.md))*
 - Утечка API keys/OAuth tokens.
 - SSRF, malicious uploads, parser exploits, archive bombs.
 - Prompt injection в документах.
@@ -213,7 +218,7 @@ DataSourceConnector должен предоставлять `validate_connection
 
 ### Обязательные меры
 
-1. Tenant isolation в каждом API request и background job.
+1. Проверка доступа к данным (KB, личные данные пользователя) в каждом API request и background job. *(изменено [ADR-012](adr/0012-single-organization-deployment.md))*
 2. Authorization до retrieval и до передачи текста LLM.
 3. Шифрование credentials at rest; ключ вне БД; secret redaction.
 4. TLS, secure cookies, CSRF strategy, security headers.
@@ -238,21 +243,21 @@ MVP поддерживает доступ на уровне Knowledge Base. Ес
 
 ## 9. Модель данных
 
-- **Identity:** Organization, User, Group, UserGroup, Role, Permission, RolePermission, UserRole/GroupRole, Session/RefreshToken.
+- **Identity:** User, Group, UserGroup, Role, Permission, RolePermission, UserRole/GroupRole, Session. *(изменено [ADR-012](adr/0012-single-organization-deployment.md))*
 - **AI:** AIProvider, EmbeddingProviderConfig, ModelConfig, SecretReference.
 - **Knowledge:** KnowledgeBase, KnowledgeBaseAccess, Assistant, AssistantKnowledgeBase, DataSource, DataSourceCredential, KnowledgeBaseSource, Document, DocumentVersion, DocumentChunk, Embedding.
 - **Chat:** Conversation, Message, MessageCitation, GenerationRun.
 - **Jobs/audit:** IngestionJob, SyncJob, AuditLog, позднее UsageEvent.
 
-Использовать UUID, tenant-aware constraints, foreign keys, индексы по organization_id/status/source_id/document_id/timestamps, unique constraints для external IDs внутри source. Исключать deleted/failed/outdated versions из retrieval. Каждая vector row должна быть связана с embedding profile.
+Использовать UUID, foreign keys, индексы по status/source_id/document_id/timestamps *(изменено [ADR-012](adr/0012-single-organization-deployment.md))*, unique constraints для external IDs внутри source. Исключать deleted/failed/outdated versions из retrieval. Каждая vector row должна быть связана с embedding profile.
 
 ## 10. API и frontend
 
 API versioning: `/api/v1`. Использовать Pydantic DTO, единый формат ошибок, pagination, allowlisted filters/sorting, idempotency keys для чувствительных повторяемых операций. Не отдавать ORM entities напрямую.
 
-Группы endpoints: auth, organizations, users, groups, roles, providers, embedding-profiles, data-sources, knowledge-bases, documents, assistants, conversations, chat/stream, jobs, audit, health.
+Группы endpoints: auth, users, groups, roles, providers, embedding-profiles, data-sources, knowledge-bases, documents, assistants, conversations, chat/stream, jobs, audit, health; дополнительно setup, settings, system (ADR-006). *(изменено [ADR-012](adr/0012-single-organization-deployment.md))*
 
-Для каждого endpoint документировать назначение, permission, tenant scope, schemas, ошибки, side effects, idempotency, audit event и rate limits.
+Для каждого endpoint документировать назначение, permission, scope (`auth`/`public`), schemas, ошибки, side effects, idempotency, audit event и rate limits.
 
 Frontend sections: Login/Setup, Dashboard, Chat, Assistants, Knowledge Bases, Documents, Data Sources, Providers & Models, Users & Groups, Roles & Permissions, Jobs/Sync, Audit, System Settings.
 
@@ -270,11 +275,11 @@ Frontend sections: Login/Setup, Dashboard, Chat, Assistants, Knowledge Bases, Do
 - **Integration:** PostgreSQL/pgvector, Redis, storage, provider adapters.
 - **Contract:** AI providers и connectors.
 - **E2E:** основные пользовательские сценарии.
-- **Security:** tenant isolation, RBAC, SSRF, uploads, prompt injection.
+- **Security:** изоляция KB и пользователей, RBAC, SSRF, uploads, prompt injection. *(изменено [ADR-012](adr/0012-single-organization-deployment.md))*
 - **Performance:** retrieval, ingestion, concurrent chat.
 - **Recovery:** backup restore, worker restart, interrupted sync.
 
-Негативные тесты обязательны: чужой tenant/KB/document недоступен; unauthorized chunks не попадают в LLM; revoked sessions отклоняются; secrets не возвращаются; malicious filenames не выходят из storage; повторные jobs не дублируют chunks; deleted docs не находятся; выдуманные citation IDs отклоняются.
+Негативные тесты обязательны: KB/document без доступа и чужой диалог недоступны *(изменено [ADR-012](adr/0012-single-organization-deployment.md))*; unauthorized chunks не попадают в LLM; revoked sessions отклоняются; secrets не возвращаются; malicious filenames не выходят из storage; повторные jobs не дублируют chunks; deleted docs не находятся; выдуманные citation IDs отклоняются.
 
 **Definition of Done:** требования и permissions описаны; миграции проверены; реализация завершена; unit/integration tests добавлены; ошибки и пустые состояния обработаны; audit/observability учтены; документация обновлена; security review выполнен; lint/typecheck/CI проходят.
 
@@ -297,9 +302,9 @@ Frontend sections: Login/Setup, Dashboard, Chat, Assistants, Knowledge Bases, Do
 ### Фаза 2 — Core backend и data model
 
 - Async SQLAlchemy session lifecycle и transaction boundaries.
-- Organization, User, Group, Role, Permission и связи.
-- Tenant-aware query patterns, audit events, migrations.
-- Тесты изоляции двух организаций.
+- User, Group, Role, Permission и связи.
+- Query patterns с фильтрами доступа, audit events, migrations.
+- Тесты «чужие данные недоступны». *(изменено [ADR-012](adr/0012-single-organization-deployment.md))*
 
 ### Фаза 3 — Authentication/authorization
 
@@ -327,7 +332,7 @@ Frontend sections: Login/Setup, Dashboard, Chat, Assistants, Knowledge Bases, Do
 ### Фаза 6 — Retrieval и RAG evaluation
 
 - Vector search и PostgreSQL full-text search.
-- Hybrid fusion, tenant/KB/version filters, deduplication.
+- Hybrid fusion, KB/version filters, deduplication. *(изменено [ADR-012](adr/0012-single-organization-deployment.md))*
 - Bounded context assembly и citation ID validation.
 - Evaluation dataset и метрики Recall@K/citation precision.
 - Prompt injection test cases.
@@ -369,7 +374,7 @@ Frontend sections: Login/Setup, Dashboard, Chat, Assistants, Knowledge Bases, Do
 
 ### Фаза 12 — Security hardening
 
-- Threat model review и tenant/RBAC audit.
+- Threat model review и RBAC/KB-access audit. *(изменено [ADR-012](adr/0012-single-organization-deployment.md))*
 - OAuth, SSRF, upload/parser, archive bomb и prompt injection tests.
 - XSS/CSRF/CORS, rate limits, logs, deletion lifecycle.
 - Dependency/container scanning и security reporting.
@@ -471,7 +476,7 @@ This product includes software developed for the PlummyKnowledge project.
 - Upload PDF/DOCX и асинхронная индексация.
 - Hybrid retrieval и streamed chat.
 - Проверяемые citations и in-app source view.
-- Tenant isolation tests, базовый audit, документация и quick start.
+- Тесты изоляции KB и пользователей, базовый audit, документация и quick start. *(изменено [ADR-012](adr/0012-single-organization-deployment.md))*
 
 Дальнейшая примерная последовательность:
 
@@ -487,7 +492,7 @@ This product includes software developed for the PlummyKnowledge project.
 
 - [ ] Миграции проверены на чистой БД и upgrade path.
 - [ ] Нет известных критических/high security issues.
-- [ ] Tenant isolation и permission tests проходят.
+- [ ] Тесты изоляции KB/пользователей и permission tests проходят. *(изменено [ADR-012](adr/0012-single-organization-deployment.md))*
 - [ ] Secrets не попадают в logs/API responses.
 - [ ] Upload/parser limits и ingestion idempotency работают.
 - [ ] Deleted docs исключены из retrieval.
@@ -503,7 +508,7 @@ This product includes software developed for the PlummyKnowledge project.
 3. Инициализировать React + TypeScript + Vite, Chakra UI, Redux Toolkit, RTK Query и router.
 4. Поднять PostgreSQL + pgvector и Redis через Compose; настроить SQLAlchemy async и Alembic.
 5. Поднять Celery worker, тестовую задачу, retry и наблюдаемое состояние.
-6. Реализовать Organization и User, миграции и tenant isolation tests.
+6. Реализовать User и роли, миграции и тесты доступа. *(изменено [ADR-012](adr/0012-single-organization-deployment.md))*
 7. Реализовать минимальный auth flow и защищённый endpoint; обновить docs и зафиксировать milestone.
 
 Не начинать Google OAuth, Microsoft Graph и сложный RAG до стабильного запуска каркаса.

@@ -2,12 +2,12 @@
 
 | | |
 |---|---|
-| Статус | v0.2 — среда разработки реализована (Фаза 1, §0); production-профиль — целевая модель Фазы 11 |
+| Статус | v0.3 — среда разработки и первоначальная настройка реализованы (Фазы 1–3, §0, §6); production-профиль — целевая модель Фазы 11 |
 | Источник | [PROJECT_BLUEPRINT.md](PROJECT_BLUEPRINT.md) §3, §5, §8, §11, §13 (Фазы 1, 11) |
-| Решения | [ADR-006](adr/0006-initial-setup-and-system-configuration.md), [ADR-007](adr/0007-network-access-and-local-llm.md), [ADR-011](adr/0011-database-roles-and-extensions.md) |
+| Решения | [ADR-006](adr/0006-initial-setup-and-system-configuration.md), [ADR-007](adr/0007-network-access-and-local-llm.md), [ADR-011](adr/0011-database-roles-and-extensions.md), [ADR-013](adr/0013-auth-session-strategy.md) |
 | Связанные документы | [ARCHITECTURE.md §4, §10, §12](ARCHITECTURE.md), [SECURITY_MODEL.md](SECURITY_MODEL.md) |
 
-Раздел §0 описывает то, что реализовано. Остальные имена переменных, сервисов, volumes и CLI-команд — **[Proposed]**;
+Разделы §0 и §6 описывают то, что реализовано. Остальные имена переменных, сервисов, volumes и CLI-команд — **[Proposed]**;
 они фиксируются при реализации соответствующих фаз и обновляются здесь.
 
 ## 0. Среда разработки (реализовано, Фаза 1)
@@ -18,7 +18,7 @@
 |---|---|---|---|---|
 | `postgres` | `pgvector/pgvector:0.8.7-pg17` | PostgreSQL 17 + pgvector | — | `data` |
 | `redis` | `redis:8.6-alpine` | Redis (AOF) | — | `data` |
-| `migrate` | `apps/backend/Dockerfile` (`dev`) | Одноразово: `alembic upgrade head`; API стартует только после успешного завершения | — | `data` |
+| `migrate` | `apps/backend/Dockerfile` (`dev`) | Одноразово: `alembic upgrade head`, затем `python -m plummy.cli setup init-token` (§6); API стартует только после успешного завершения | — | `data` |
 | `backend` | `apps/backend/Dockerfile` (`dev`) | FastAPI, `uvicorn --reload`; healthcheck = `/api/v1/health/ready` | `127.0.0.1:8000` | `data`, `edge` |
 | `frontend` | `apps/frontend/Dockerfile` (`dev`) | Vite dev server; `/api` проксируется на `backend` (same-origin, без CORS) | `127.0.0.1:5173` | `edge` |
 
@@ -31,7 +31,10 @@
   подключаются под ролью приложения. Volume, созданный до ADR-011, пересоздаётся: `docker compose down -v`.
 - `backend` (dev) перед `uvicorn --reload` выполняет `python -m plummy.check_config`: при невалидной конфигурации
   контейнер завершается с кодом 1 и не перезапускается (как `prod`-таргет).
-- Volumes: `postgres-data`, `redis-data`. Исходный код монтируется read-only (`src`, `alembic`, `tests`).
+- Volumes: `postgres-data`, `redis-data`, `bootstrap-data` (файл setup token; монтируется только в `migrate`, не в
+  `backend`). Исходный код монтируется read-only (`src`, `alembic`, `tests`).
+- `backend` (dev) доверяет `X-Forwarded-For` от Vite-прокси (`FORWARDED_ALLOW_IPS=*`, только разработка): по нему
+  считаются лимиты попыток входа. В production доверенным прокси настраивается только Nginx.
 - Dockerfile backend содержит таргеты `dev` и `prod` (non-root, только runtime-зависимости); Dockerfile frontend —
   `dev`, `build` и `dist` (статические файлы для Nginx Фазы 11). Контекст сборки — корень репозитория (файл
   `VERSION`, ADR-009).
@@ -53,9 +56,27 @@
 | `CORS_ORIGINS` | пусто (CORS выключен) | Список origins через запятую; `*`, пути и credentials отклоняются |
 | `DB_POOL_SIZE`, `DB_MAX_OVERFLOW` | `5`, `5` | Ограничение пула соединений на процесс (§11) |
 | `API_DOCS_ENABLED` | вкл., кроме `production` | Swagger UI `/api/v1/docs` загружает JS/CSS с публичного CDN, поэтому в `production` выключен; `true` включает явно. `/api/v1/openapi.json` доступен всегда |
+| `PUBLIC_URL` | — (обязателен в `production`, только `https`) | Origin web-интерфейса. Небезопасные запросы (`POST`/`PUT`/`PATCH`/`DELETE`) принимаются только с `Origin`/`Referer` из `PUBLIC_URL` или `CORS_ORIGINS` (ADR-013). Dev compose: `http://localhost:5173` |
+| `SESSION_COOKIE_SECURE` | `true` (обязательно в `production`) | `true` → cookie `__Host-pk_session` с `Secure`; `false` → `pk_session` без `Secure` (только HTTP-разработка; dev compose задаёт `false`) |
+| `SESSION_IDLE_TTL` | `86400` (24 ч) | Срок простоя сессии: секунды или ISO 8601 (`PT24H`); от 5 мин до 30 дней |
+| `SESSION_ABSOLUTE_TTL` | `604800` (7 дней) | Абсолютный срок сессии; от 1 ч до 90 дней, не меньше idle |
+| `SETUP_MODE` | `web` | `web` — мастер `/setup` с bootstrap token; `cli_only` — web-инициализация отключена (`404`), первый администратор создаётся CLI |
+| `BOOTSTRAP_DIR` | `/var/lib/plummy/bootstrap` | Каталог файла `setup-token` (`0700`, файл `0600`) |
+| `BOOTSTRAP_TOKEN_TTL` | `86400` (24 ч) | Срок действия bootstrap token; от 10 мин до 30 дней |
+| `FORWARDED_ALLOW_IPS` | `127.0.0.1` (uvicorn) | Адреса прокси, которым доверяется `X-Forwarded-For` (IP клиента для rate limit и audit) |
 
 `NAME` и `NAME_FILE` одновременно — ошибка конфигурации. Невалидная конфигурация → сообщение без значений секретов
 и exit code 1. Frontend: `VITE_API_BASE_URL` (по умолчанию `/api/v1`) — публичное значение, попадает в bundle.
+
+**Первый запуск в разработке.** После `docker compose up --build` шаг `migrate` выпускает setup token. Прочитать его
+и открыть http://localhost:5173 (откроется `/setup`):
+
+```bash
+docker compose run --rm migrate cat /var/lib/plummy/bootstrap/setup-token
+```
+
+Повторные `up` действующий токен не меняют; после настройки `init-token` ничего не выпускает и удаляет файл.
+Полный сброс локальной инсталляции — `docker compose down -v` (удаляет все данные разработки).
 
 ## 1. Модель развёртывания
 
@@ -73,7 +94,7 @@
 | `worker-ingestion` | Parsing, chunking (очередь `ingestion`) | `data` | `quarantine`, `documents` (при local storage) |
 | `worker-io` | Embeddings, sync, maintenance (очереди `embeddings`, `sync`, `maintenance`) | `data`, `egress`, `llm`* | `quarantine`, `documents` |
 | `scheduler` | Расписания sync, reconciliation, cleanup | `data` | — |
-| `migrate` | Одноразовый шаг: Alembic + `plummy setup init-token` | `data` | `bootstrap` |
+| `migrate` | Одноразовый шаг: Alembic + `python -m plummy.cli setup init-token` | `data` | `bootstrap` |
 | `postgres` | PostgreSQL + pgvector | `data` | `postgres-data` |
 | `redis` | Брокер, кэш, rate limits, locks | `data` | `redis-data` |
 | `minio` | S3-compatible storage (`prod`) | `data` | `minio-data` |
@@ -89,13 +110,13 @@
 
 | Группа | Переменные | Секрет |
 |---|---|---|
-| Общие | `PLUMMY_PUBLIC_URL`, `PLUMMY_ENV`, `PLUMMY_LOG_LEVEL` | — |
+| Общие | `PUBLIC_URL`, `APP_ENV`, `LOG_LEVEL` (реализовано, §0) | — |
 | БД | `PLUMMY_DATABASE_URL_FILE`, `PLUMMY_DB_POOL_SIZE` | да |
 | Redis | `PLUMMY_REDIS_URL_FILE` | да |
 | Шифрование | `PLUMMY_SECRETS_KEY_FILE` (key ring с `key_id`) | **да, хранится вне БД и отдельно от backup** |
 | Storage | `PLUMMY_STORAGE_BACKEND` (`local` \| `s3`), `PLUMMY_STORAGE_PATH`, `PLUMMY_QUARANTINE_PATH`, `PLUMMY_S3_ENDPOINT`, `PLUMMY_S3_BUCKET`, `PLUMMY_S3_ACCESS_KEY_FILE`, `PLUMMY_S3_SECRET_KEY_FILE` | частично |
-| Setup | `PLUMMY_SETUP_MODE` (`web` \| `cli_only`), `PLUMMY_BOOTSTRAP_DIR`, `PLUMMY_BOOTSTRAP_TOKEN_TTL` | — |
-| Безопасность | `PLUMMY_CORS_ORIGINS`, TTL сессий, лимиты rate limit | — |
+| Setup | `SETUP_MODE` (`web` \| `cli_only`), `BOOTSTRAP_DIR`, `BOOTSTRAP_TOKEN_TTL` (реализовано, §0) | — |
+| Безопасность | `CORS_ORIGINS`, `SESSION_IDLE_TTL`, `SESSION_ABSOLUTE_TTL`, `SESSION_COOKIE_SECURE` (реализовано, §0); лимиты rate limit (пока константы, ADR-013 §4) | — |
 | Лимиты | `PLUMMY_UPLOAD_MAX_BYTES`, лимиты страниц/распаковки/времени парсинга, `PLUMMY_MAX_CONCURRENT_GENERATIONS_PER_USER` | — |
 | Jobs | `PLUMMY_WORKER_CONCURRENCY`, параметры retry/backoff | — |
 | SMTP | `PLUMMY_SMTP_HOST`, `PLUMMY_SMTP_USER`, `PLUMMY_SMTP_PASSWORD_FILE` | да |
@@ -121,23 +142,45 @@
 | `minio-data` | Object storage (`prod`) | **Да** | |
 | `quarantine` | Недоверенные файлы до проверки | Нет | Отдельный volume, `noexec`, ограниченные права, cleanup по TTL |
 | `redis-data` | Очереди и кэш | Нет | Состояние jobs восстанавливается из БД |
-| `bootstrap` | Файл bootstrap token (`0600`) | Нет | Монтируется только в `migrate`/CLI; удаляется после настройки |
+| `bootstrap` (dev: `bootstrap-data`) | Файл bootstrap token (`0600`, каталог `0700`) | Нет | Монтируется только в `migrate`/CLI, не в `api`; после настройки файл удаляет следующий запуск `init-token` (токен к тому времени уже погашен в БД) |
 | `certs` | TLS-сертификаты | По политике владельца | |
 
-## 6. Bootstrap (ADR-006)
+## 6. Bootstrap (ADR-006, реализовано)
 
-1. Подготовить `.env` из `.env.example` и файлы секретов; сгенерировать ключ шифрования.
-2. Запустить `postgres` и `redis`; подготовить роль приложения, БД и расширения (§6.1).
-3. Выполнить `migrate`: миграции Alembic и `plummy setup init-token`. Токен (≥ 256 бит, срок по умолчанию 24 ч)
-   записывается в `bootstrap/setup-token`; в лог попадает только путь.
-4. Запустить `api`, worker-сервисы, `scheduler`, `nginx`; дождаться readiness.
-5. Прочитать токен на сервере и открыть `PLUMMY_PUBLIC_URL` — мастер настройки (`/setup`).
-6. Ввести токен, название организации, данные администратора. После успеха web-setup закрыт навсегда.
-7. Удалить файл токена; настроить провайдеров и (при необходимости) allowlist.
+1. Подготовить окружение и секреты (`.env.example`); в production задать `PUBLIC_URL` (https) и `SECRET_KEY`.
+2. Подготовить роль приложения, БД и расширения (§6.1); запустить `postgres` и `redis`.
+3. Выполнить `migrate`: `alembic upgrade head` и `python -m plummy.cli setup init-token`. Токен (256 бит, срок
+   `BOOTSTRAP_TOKEN_TTL`, по умолчанию 24 ч) записывается в `BOOTSTRAP_DIR/setup-token` (`0600`); в БД хранится
+   только SHA-256, в вывод и логи попадает только путь к файлу.
+4. Запустить `api` (и остальные сервисы); дождаться readiness.
+5. Прочитать токен на сервере (`cat` файла в контейнере `migrate`) и открыть `PUBLIC_URL` — frontend перенаправит
+   на `/setup`.
+6. Ввести токен и данные первого администратора (email, имя, пароль 12–128 символов). Backend в одной транзакции с
+   блокировкой `instance_state` создаёт пользователя с ролью `admin`, отмечает инсталляцию настроенной, гасит токен
+   и открывает сессию. После этого `POST /setup/initialize` всегда отвечает `409`.
+7. Файл токена удаляется следующим запуском `init-token` (каждый `migrate`); вручную — `rm` в volume.
 
-Варианты: `PLUMMY_SETUP_MODE=cli_only` — шаги 5–6 заменяет `plummy admin create`. Токен истёк — повторить
-`plummy setup init-token`. Потерян доступ администратора — `plummy admin reset-password` / `plummy admin create` на
-сервере.
+**CLI на сервере** (`python -m plummy.cli`, запускается в контейнере `migrate`/`backend`; пароли — скрытым вводом или
+`--password-stdin`, никогда аргументом):
+
+| Команда | Назначение |
+|---|---|
+| `setup init-token` | Выпустить токен, если инсталляция не настроена; действующий токен, совпадающий с файлом, не меняется; потерянный файл или истёкший токен — перевыпуск |
+| `setup init-token --rotate` | Принудительно выпустить новый токен (старый перестаёт действовать) — токен утёк или потерян |
+| `setup status` | Настроена ли инсталляция, включён ли web-setup, есть ли файл токена |
+| `admin create --email … --display-name … [--password-stdin]` | Создать администратора. На ненастроенной инсталляции это и есть первоначальная настройка (токен гасится) |
+| `admin reset-password --email … [--password-stdin]` | Новый пароль; все сессии пользователя отзываются |
+
+Пример (dev compose): `docker compose run --rm migrate python -m plummy.cli setup init-token --rotate`.
+
+**Потерян токен до завершения настройки.** Публичного механизма нет: только доступ к серверу. Выполнить
+`setup init-token --rotate` и прочитать новый файл, либо создать администратора `admin create` (в том числе при
+`SETUP_MODE=cli_only`). Каждое действие пишется в audit (`setup.token_issued`, `setup.completed`,
+`admin.created_via_cli`).
+
+**Потерян доступ администратора после настройки.** `admin reset-password` или `admin create` на сервере (audit
+`admin.password_reset_via_cli` / `admin.created_via_cli`). Web-setup повторно не открывается: состояние хранится
+флагом `instance_state.initialized_at`, а не выводится из числа пользователей.
 
 ### 6.1 PostgreSQL: роли и расширения (ADR-011, реализовано)
 
@@ -204,7 +247,7 @@
    Для модели на хосте (`http://host.docker.internal:11434`) на Linux нужно сопоставление host-gateway и CIDR шлюза
    Docker bridge.
 3. Перезапустить `api` и `worker-io`.
-4. В организации создать провайдера с тем же `base_url` и выполнить connection test.
+4. В приложении (Administrator) создать провайдера с тем же `base_url` и выполнить connection test.
 
 Allowlist по умолчанию пуст; примеры выше не являются значениями по умолчанию.
 
@@ -239,7 +282,7 @@ Allowlist по умолчанию пуст; примеры выше не явл�
 |---|---|
 | Readiness не проходит | Логи `api`: БД, Redis, storage, неприменённые миграции, ошибки конфигурации |
 | `migrate`: `Required PostgreSQL extensions are not installed` | Расширения не установлены администратором → §6.1 |
-| `setup_token_invalid` | Токен истёк или погашен → `plummy setup init-token` |
+| `setup_token_invalid` | Токен истёк или погашен → `python -m plummy.cli setup init-token --rotate` (§6) |
 | Провайдер: `endpoint_not_allowed` / `egress_denied` | Запись allowlist: URL, `purposes`, `allowed_cidrs`; фактический IP сервиса |
 | Ответ чата приходит одним куском | Буферизация SSE в Nginx |
 | Документы зависли в `processing` | Jobs/Sync: очередь, состояние worker, лимиты ресурсов |

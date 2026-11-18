@@ -22,6 +22,12 @@ x-backend-env: &backend-env
   REDIS_URL: redis://redis:6379/0
   CORS_ORIGINS: ${CORS_ORIGINS:-}
   API_DOCS_ENABLED: ${API_DOCS_ENABLED:-}
+  # Origin of the web UI; state-changing requests from other origins are rejected (ADR-013).
+  PUBLIC_URL: ${PUBLIC_URL:-http://localhost:5173}
+  # Plain HTTP in development: the session cookie is `pk_session` without Secure (forbidden in production).
+  SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-false}
+  SETUP_MODE: ${SETUP_MODE:-web}
+  BOOTSTRAP_DIR: /var/lib/plummy/bootstrap
 
 services:
   postgres:
@@ -61,17 +67,22 @@ services:
       retries: 20
     restart: unless-stopped
 
-  # One-shot step: applies Alembic migrations before the API starts (schema is never changed by the API).
+  # One-shot step: applies Alembic migrations before the API starts (schema is never changed by the API),
+  # then issues the one-time setup token into the bootstrap volume while the instance is not initialized
+  # (idempotent: a valid token is kept; after setup it does nothing). The token is never printed:
+  #   docker compose run --rm migrate cat /var/lib/plummy/bootstrap/setup-token
   migrate:
     build:
       context: .
       dockerfile: apps/backend/Dockerfile
       target: dev
-    command: ["alembic", "upgrade", "head"]
+    command: ["sh", "-c", "alembic upgrade head && python -m plummy.cli setup init-token"]
     environment: *backend-env
     volumes:
       - ./apps/backend/alembic:/app/alembic:ro
       - ./apps/backend/src:/app/src:ro
+      # Only migrate (the server-side CLI) sees the token; the API container does not mount it.
+      - bootstrap-data:/var/lib/plummy/bootstrap
     networks: [data]
     depends_on:
       postgres:
@@ -83,7 +94,10 @@ services:
       context: .
       dockerfile: apps/backend/Dockerfile
       target: dev
-    environment: *backend-env
+    environment:
+      <<: *backend-env
+      # Trust X-Forwarded-For from the Vite proxy (development only; in production only Nginx is trusted).
+      FORWARDED_ALLOW_IPS: "*"
     volumes:
       - ./apps/backend/src:/app/src:ro
       - ./apps/backend/alembic:/app/alembic:ro
@@ -147,3 +161,4 @@ networks:
 volumes:
   postgres-data:
   redis-data:
+  bootstrap-data:

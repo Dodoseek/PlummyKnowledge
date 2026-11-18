@@ -95,6 +95,7 @@ def create_app(
         docs_url="/api/v1/docs" if settings.docs_enabled else None,
         redoc_url=None,
     )
+    app.state.settings = settings
     register_exception_handlers(app)
 
     if settings.cors_origins:

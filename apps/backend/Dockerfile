@@ -21,7 +21,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/app/src \
     PATH=/opt/venv/bin:$PATH
 RUN groupadd --system --gid 10001 app \
-    && useradd --system --uid 10001 --gid app --no-create-home --shell /usr/sbin/nologin app
+    && useradd --system --uid 10001 --gid app --no-create-home --shell /usr/sbin/nologin app \
+    && install -d -m 0700 -o app -g app /var/lib/plummy/bootstrap
+# /var/lib/plummy/bootstrap: one-time setup token (ADR-006). A named volume mounted here inherits the
+# owner and mode 0700, so only the `app` user can read the token file.
 WORKDIR /app
 
 # ---- runtime dependencies (locked) ----

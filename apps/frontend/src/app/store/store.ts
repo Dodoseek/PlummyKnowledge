@@ -2,9 +2,11 @@ import { combineReducers, configureStore } from '@reduxjs/toolkit';
 import { setupListeners } from '@reduxjs/toolkit/query';
 
 import { baseApi } from '../../shared/api/baseApi';
+import { csrfSlice } from '../../shared/auth/csrfSlice';
 
 const rootReducer = combineReducers({
   [baseApi.reducerPath]: baseApi.reducer,
+  [csrfSlice.name]: csrfSlice.reducer,
 });
 
 export type RootState = ReturnType<typeof rootReducer>;

@@ -130,7 +130,7 @@ parser-workers отдельно (§8 п.6). В deployment очереди обс�
 Правила:
 
 - Бизнес-логика не дублируется в routers и Celery tasks (§3). Router: парсинг DTO → контекст безопасности →
-  use case → DTO ответа. Task: десериализация payload → контекст tenant → use case.
+  use case → DTO ответа. Task: десериализация payload → проверка состояния ресурса → use case.
 - ORM entities не выходят за пределы infrastructure и никогда не отдаются из API (§10).
 - **[Proposed]** Правило слоёв проверяется автоматически (например, `import-linter` в CI) — требует обоснования
   зависимости (§15).
@@ -142,7 +142,8 @@ parser-workers отдельно (§8 п.6). В deployment очереди обс�
 | `core` | Settings (Instance Settings, [ADR-006](adr/0006-initial-setup-and-system-configuration.md)), logging, exceptions, security primitives, `SafeHttpClient` ([ADR-007](adr/0007-network-access-and-local-llm.md)) |
 | `setup` | Первоначальная настройка (`InitializeInstance`), bootstrap token, CLI администрирования ([ADR-006](adr/0006-initial-setup-and-system-configuration.md)) |
 | `auth` | Login/logout, sessions, access/refresh tokens, CSRF, rate limiting login |
-| `users`, `organizations`, `groups` | Identity и членство; Organization Settings ([ADR-006](adr/0006-initial-setup-and-system-configuration.md)) |
+| `users`, `groups` | Identity и членство в группах ([ADR-012](adr/0012-single-organization-deployment.md): одна организация на инсталляцию, сущности организации нет) |
+| `settings` | Application Settings ([ADR-006](adr/0006-initial-setup-and-system-configuration.md)) |
 | `permissions` | Роли, permissions, policy service (проверка в каждом use case) |
 | `providers` | Конфигурации AI providers, models, embedding profiles, connection test |
 | `assistants` | Instructions, LLM, embedding/retrieval profile, KB, context limits; доступность ассистента ([ADR-005](adr/0005-assistant-access-model.md)) |
@@ -349,25 +350,29 @@ capabilities. Для источника типа `upload` коннектор н�
 | Port | Назначение |
 |---|---|
 | `SecretCipher` | Шифрование/дешифрование секретов; ключ вне БД (§5, §8). См. [SECURITY_MODEL.md](SECURITY_MODEL.md). |
-| `PermissionPolicy` | Policy service: `authorize(actor, action, resource)`; вызывается в каждом use case (§5, §13 Фаза 3). |
+| `PermissionPolicy` | Policy service: `authorize(actor, action, resource)`; вызывается в каждом use case (§5, §13 Фаза 3). Пока ресурсов нет, use cases проверяют права через `SecurityContext.require(permission)`; policy service вводится с первым ресурсом с доступом по объекту (KB). |
 | `AuditSink` | Запись audit events (§8 п.9). |
 | `JobDispatcher` | Постановка Celery tasks из application без импорта Celery в application (§3). |
-| `Clock`, `IdGenerator` | Детерминируемость в тестах. **[Proposed]** |
+| `Clock`, `IdGenerator` | Детерминируемость в тестах. `Clock` реализован (`application/ports.py`); id — UUIDv7 `core/ids.new_id`. |
 | `SafeHttpClient` | Единственный путь исходящих HTTP-соединений: allowlist, проверка фактического IP, pinning, повторная проверка redirects (§8 п.7, [ADR-007](adr/0007-network-access-and-local-llm.md)). |
-| `SettingsProvider` | Чтение Instance Settings (только чтение) и effective Organization Settings ([ADR-006](adr/0006-initial-setup-and-system-configuration.md)). |
+| `SettingsProvider` | Чтение Instance Settings (только чтение) и effective Application Settings ([ADR-006](adr/0006-initial-setup-and-system-configuration.md)). |
 
 ## 9. Сквозные потоки
 
-### 9.1 Tenant context (§5, §8)
+### 9.1 Контекст безопасности (§5, §8, [ADR-012](adr/0012-single-organization-deployment.md), [ADR-013](adr/0013-auth-session-strategy.md))
 
-- **API:** middleware/dependency извлекает сессию из cookie, проверяет её (не отозвана, не истекла) и строит
-  `SecurityContext{user_id, organization_id, roles, permissions, session_id, correlation_id}`. `organization_id`
-  **никогда** не берётся из тела запроса, query или заголовков клиента (§5).
-- **Repositories** принимают `organization_id` обязательным аргументом; запрос без tenant-фильтра — ошибка
-  программиста, ловится тестами изоляции (§13 Фаза 2).
-- **Jobs:** payload задачи содержит `organization_id`, id ресурса и `correlation_id`. Worker заново загружает ресурс
-  с tenant-фильтром и проверяет, что он не удалён и принадлежит организации (§8 п.1). Права пользователя-инициатора
-  проверяются при постановке задачи; worker выполняет только системные действия над ресурсом своего tenant.
+- **API** (реализовано): зависимость `CurrentContext` (`api/security.py`) читает cookie сессии, use case
+  `AuthenticateSession` проверяет сессию в PostgreSQL (не отозвана, не истекла по простою и абсолютному сроку,
+  пользователь активен, сессия не старше смены пароля) и строит `SecurityContext{user_id, session_id, email,
+  display_name, roles, permissions}`. Пользователь и права **никогда** не берутся из тела запроса, query или
+  заголовков клиента (§5). Нет сессии → `401`; `require_permission("…")` даёт ранний `403`, но не заменяет проверку
+  прав в use case (`SecurityContext.require`, далее `PermissionPolicy`).
+- **Repositories** доступа к данным KB принимают вычисленный policy service набор разрешённых KB/источников; запрос
+  без фильтра доступа — ошибка программиста, ловится тестами «KB без доступа недоступна».
+- **Jobs:** payload задачи содержит id ресурса и `correlation_id`. Worker заново загружает ресурс и проверяет, что он
+  не удалён и источник активен (§8 п.1). Права пользователя-инициатора проверяются при постановке задачи; worker
+  выполняет только системные действия над ресурсом.
+- Организации в контексте нет: инсталляция принадлежит одной организации (ADR-012).
 
 ### 9.2 Ingestion pipeline (§6, [ADR-008](adr/0008-unified-document-ingestion.md))
 
@@ -378,7 +383,7 @@ capabilities. Для источника типа `upload` коннектор н�
 flowchart LR
     U[Upload API] --> Q[(quarantine)]
     S[Sync job: get_changes] --> D[download_file / export] --> Q
-    Q --> A[2. права и tenant] --> T[3. тип и размер] --> SEC[4. безопасность файла]
+    Q --> A[2. права и состояние] --> T[3. тип и размер] --> SEC[4. безопасность файла]
     SEC --> ST[5. оригинал в storage + DocumentVersion] --> P[6. ParserProvider] --> N[7. нормализация]
     N --> C[8. chunking] --> E[9. embeddings] --> SV[10. chunks и индексы] --> STA[11. статус] --> EV[12. события и логи]
 ```
@@ -386,7 +391,7 @@ flowchart LR
 | # | Стадия (ADR-008) | Шаг blueprint §6 | Где | Идемпотентность / примечание |
 |---|---|---|---|---|
 | 1 | Получение документа из источника | 1, 2 | API (upload) / worker (коннектор) | Upload: `Idempotency-Key`; коннектор: `(data_source_id, external_id)` + ETag |
-| 2 | Проверка разрешений и принадлежности к организации | — (§8 п.1–2) | worker | Источник активен и принадлежит tenant job; KB/документ не удалены; файл в выбранной области |
+| 2 | Проверка разрешений и состояния ресурсов | — (§8 п.1–2) | worker | Источник активен и не удалён; KB/документ не удалены; файл в выбранной области |
 | 3 | Проверка типа и размера | 3 | worker | Тип по содержимому |
 | 4 | Проверка безопасности файла | 3 | worker | Лимиты страниц, распаковки, macro-форматы |
 | 5 | Сохранение оригинала в storage | 2, 5 | worker | Unique `(document_id, checksum_sha256)` — тот же контент не создаёт новую версию |
@@ -436,7 +441,7 @@ sequenceDiagram
     A->>P: authorize(user, use assistant, KBs)
     P-->>A: allowed KB ids (пересечение assistant KB и доступа пользователя)
     A->>E: embed(query) по embedding profile ассистента
-    A->>DB: vector search + full-text search с фильтрами tenant/KB/document/version/profile
+    A->>DB: vector search + full-text search с фильтрами KB/document/version/profile
     A->>A: RRF fusion, dedup, top-k, context budget
     A->>A: выдать временные citation IDs только найденным chunks
     A-->>U: SSE message_start
@@ -454,7 +459,7 @@ sequenceDiagram
 0. Доступность ассистента проверяется на **каждом** сообщении: пользователь должен иметь доступ ко всем KB
    ассистента ([ADR-005](adr/0005-assistant-access-model.md)). Chat API не принимает идентификаторы KB или источников от
    клиента — список разрешённых источников backend вычисляет сам.
-1. Авторизация до retrieval и до передачи текста LLM (§8 п.2). Фильтрация по tenant, KB, документам и версиям —
+1. Авторизация до retrieval и до передачи текста LLM (§8 п.2). Фильтрация по KB, источникам, документам и версиям —
    **в SQL-запросе**, а не пост-фильтрацией результата (§6).
 2. В retrieval участвуют только `ready`-версии, являющиеся текущими; deleted/failed/outdated исключены (§9).
 3. Hybrid fusion — Reciprocal Rank Fusion (§6); параметры (k RRF, top-k для каждой ветки, итоговый top-k, context
@@ -490,14 +495,14 @@ worker с ретрансляцией через Redis pub/sub — требует
 
 ### 10.1 Два уровня настроек
 
-| | Instance Settings | Organization Settings |
+| | Instance Settings | Application Settings |
 |---|---|---|
-| Кто управляет | Владелец инсталляции (доступ к серверу) | Organization Admin |
-| Где | env, `*_FILE`-секреты, конфигурационный файл; Pydantic Settings | `organizations.settings` (типизированная модель, версия схемы) |
-| API | Только чтение для Platform Owner (`GET /api/v1/system/settings`) | `GET/PATCH /api/v1/organizations/current/settings` |
+| Кто управляет | Владелец инсталляции (доступ к серверу) | Administrator (`settings.manage`) |
+| Где | env, `*_FILE`-секреты, конфигурационный файл; Pydantic Settings | Строка-синглтон (типизированная модель, версия схемы); появится в фазе Application Settings |
+| API | Только чтение для Administrator (`GET /api/v1/system/settings`) | `GET/PATCH /api/v1/settings` |
 | Применение | При старте процессов | Сразу |
 
-Organization Settings могут только сужать instance policy; effective value — более строгое из двух значений.
+Application Settings могут только сужать instance policy; effective value — более строгое из двух значений.
 Сеть, storage, ключи и системные лимиты задаются только на уровне инсталляции.
 
 - `.env.example` без секретов (§5); безопасные defaults: secure cookies включены, debug выключен, CORS закрыт,
@@ -517,11 +522,11 @@ sequenceDiagram
     Op->>CLI: миграции + setup init-token
     CLI->>DB: instance_state: hash(token), expires_at
     CLI-->>Op: токен в файле 0600 (в логах только путь)
-    Op->>W: вводит токен, организацию, email, пароль
+    Op->>W: вводит токен, email, имя, пароль администратора
     W->>A: POST /api/v1/setup/initialize
     A->>DB: BEGIN; SELECT instance_state FOR UPDATE
     A->>A: не инициализировано? токен валиден? Origin?
-    A->>DB: организация, пользователь, роли, initialized_at, токен погашен, audit
+    A->>DB: пользователь, роль admin, initialized_at, токен погашен, audit, сессия
     A-->>W: 201 + сессия
 ```
 
@@ -538,7 +543,7 @@ sequenceDiagram
 
 | Что | Как |
 |---|---|
-| Logs | Структурированные (JSON), уровень настраивается; поля `correlation_id`, `job_id`, `organization_id`, `user_id` (где применимо) |
+| Logs | Структурированные (JSON), уровень настраивается; поля `correlation_id`, `job_id`, `user_id` (где применимо) |
 | Correlation | `X-Request-ID` принимается/генерируется на входе, прокидывается в jobs и в audit log |
 | Health | `GET /api/v1/health/live` (процесс жив), `GET /api/v1/health/ready` (БД, Redis, storage, миграции применены) |
 | Метрики | API latency, retrieval latency, time-to-first-token, ingestion throughput, queue depth, worker memory, DB latency (§11) |
@@ -562,8 +567,8 @@ sequenceDiagram
 - Разделы (§10): Login/Setup, Dashboard, Chat, Assistants, Knowledge Bases, Documents, Data Sources,
   Providers & Models, Users & Groups, Roles & Permissions, Jobs/Sync, Audit, System Settings.
 - Setup wizard работает только при `GET /setup/status = uninitialized`, но решение о допуске принимает backend
-  (ADR-006). System Settings: настройки организации (редактирование) и настройки инсталляции (только чтение для
-  Platform Owner).
+  (ADR-006). System Settings: настройки приложения (редактирование) и настройки инсталляции (только чтение для
+  Administrator).
 - SSE-клиент с типизированными событиями и остановкой генерации (§13 Фаза 8). Поскольку отправка сообщения —
   `POST`, используется `fetch` + чтение `ReadableStream` (нативный `EventSource` поддерживает только `GET`).
 - Citation display и защищённый in-app viewer — открываются через internal viewer route, а не внешнюю ссылку
@@ -580,7 +585,7 @@ sequenceDiagram
 | Integration | PostgreSQL/pgvector, Redis, storage, provider adapters |
 | Contract | AI providers и connectors (общий набор тестов на каждый адаптер) |
 | E2E | Основные пользовательские сценарии (Playwright) |
-| Security | Tenant isolation, RBAC, SSRF, uploads, prompt injection |
+| Security | Изоляция KB и пользователей, RBAC, sessions/CSRF, SSRF, uploads, prompt injection |
 | Performance | Retrieval, ingestion, concurrent chat |
 | Recovery | Backup restore, worker restart, interrupted sync |
 
@@ -593,8 +598,9 @@ RAG evaluation (§6): 30–50 документов, 50–100 вопросов (�
 
 | Механизм | Где в архитектуре | Решение |
 |---|---|---|
-| Tenant isolation | `SecurityContext` из сессии, repositories с обязательным `organization_id`, составные FK, tenant в job payload | [ADR-004](adr/0004-tenant-isolation-and-kb-level-access.md) |
-| RBAC и KB-level доступ | `PermissionPolicy` в каждом use case | [ADR-004](adr/0004-tenant-isolation-and-kb-level-access.md) |
+| Модель развёртывания | Одна организация на инсталляцию; изоляция организаций — отдельными инсталляциями | [ADR-012](adr/0012-single-organization-deployment.md) |
+| Аутентификация | Серверные сессии (хэш токена в БД), HttpOnly cookie, CSRF-токен из сессии + `Origin`, Argon2id, лимиты входа | [ADR-013](adr/0013-auth-session-strategy.md) |
+| RBAC и KB-level доступ | `SecurityContext` из сессии, `PermissionPolicy` в каждом use case, фильтры доступа к KB в SQL | [ADR-012](adr/0012-single-organization-deployment.md) |
 | Доступ к ассистентам | `PermissionPolicy.can_use_assistant` на каждом запросе | [ADR-005](adr/0005-assistant-access-model.md) |
 | Защита RAG | Фильтры в SQL до LLM, повторная проверка chunks, валидация citation IDs, разделение инструкций и контекста | §9.4 |
 | Bootstrap | Одноразовый токен, атомарная инициализация | [ADR-006](adr/0006-initial-setup-and-system-configuration.md) |
@@ -627,14 +633,18 @@ ADR хранятся в [`docs/adr/`](adr/README.md) с индексом (§13 �
 | [ADR-001](adr/0001-record-architecture-decisions.md) | Record architecture decisions | Accepted |
 | [ADR-002](adr/0002-modular-monolith-and-layering.md) | Modular Monolith и правило зависимостей слоёв | Accepted |
 | [ADR-003](adr/0003-technology-stack.md) | Базовый технологический стек | Accepted |
-| [ADR-004](adr/0004-tenant-isolation-and-kb-level-access.md) | Tenant isolation и доступ на уровне KB | Accepted |
+| [ADR-004](adr/0004-tenant-isolation-and-kb-level-access.md) | Tenant isolation и доступ на уровне KB | Superseded by ADR-012 |
 | [ADR-005](adr/0005-assistant-access-model.md) | Assistant Access Model | Accepted |
 | [ADR-006](adr/0006-initial-setup-and-system-configuration.md) | Initial Setup and System Configuration | Accepted |
 | [ADR-007](adr/0007-network-access-and-local-llm.md) | Network Access and Local LLM Providers | Accepted |
 | [ADR-008](adr/0008-unified-document-ingestion.md) | Unified Document Ingestion | Accepted |
 | [ADR-009](adr/0009-automatic-versioning.md) | Automatic Versioning | Accepted |
+| [ADR-010](adr/0010-api-error-format.md) | API Error Format (RFC 9457) | Accepted |
+| [ADR-011](adr/0011-database-roles-and-extensions.md) | PostgreSQL Roles and Extensions | Accepted |
+| [ADR-012](adr/0012-single-organization-deployment.md) | Single-Organization Deployment | Accepted |
+| [ADR-013](adr/0013-auth-session-strategy.md) | Auth and Session Strategy | Accepted |
 
-Темы будущих ADR (tenant membership, auth/session strategy, шифрование секретов, хранение векторов, формат ошибок и
+Темы будущих ADR (шифрование секретов, хранение векторов, формат ошибок и
 пагинация, место генерации ответа, RLS, FTS-конфигурация) перечислены в [adr/README.md](adr/README.md).
 
 ## 18. Открытые вопросы

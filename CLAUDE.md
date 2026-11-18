@@ -8,12 +8,15 @@
 
 PlummyKnowledge — open-source **self-hosted** платформа корпоративной базы знаний с AI-интерфейсом: подключает
 источники документов, индексирует их, даёт безопасный поиск и отвечает на вопросы с **проверяемыми цитатами**.
-Лицензия — Apache License 2.0.
+Лицензия — Apache License 2.0. Одна инсталляция принадлежит **одной** организации и работает на её серверах или в её
+облаке: multi-tenancy, сущности Organization и `organization_id` нет ([ADR-012](docs/adr/0012-single-organization-deployment.md)).
 
-**Текущее состояние:** Этап 1 (Foundation) — каркас: `apps/backend` (FastAPI, Pydantic Settings, SQLAlchemy async,
-Alembic с расширениями `vector`/`citext`, Redis, health live/ready), `apps/frontend` (React 18, Chakra UI, Redux
-Toolkit/RTK Query, router, технический экран статуса), `compose.yaml` для разработки. Бизнес-сущностей, Celery,
-Nginx и prod-compose ещё нет. Следующие шаги — сессии 5–7 ([DEVELOPMENT_ROADMAP.md §4](docs/DEVELOPMENT_ROADMAP.md)).
+**Текущее состояние:** Этап 1 (Foundation) и Этап 2 (Bootstrap & Authentication). Backend: FastAPI, Pydantic
+Settings, SQLAlchemy async, Alembic (`vector`/`citext`, users, instance_state, RBAC-каталог, sessions, audit_logs),
+Redis (rate limit), health live/ready; первоначальная настройка по bootstrap token и CLI `python -m plummy.cli`;
+login/logout/me на серверных сессиях ([ADR-013](docs/adr/0013-auth-session-strategy.md)); `SecurityContext` и
+`require_permission`. Frontend: React 18, Chakra UI, RTK Query, страницы `/setup` и `/login`, guard, выход.
+Управления пользователями, KB, Celery, Nginx и prod-compose ещё нет ([DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md)).
 Не начинать Google OAuth, Microsoft Graph и сложный RAG до стабильного запуска каркаса.
 
 ## Приоритет источников
@@ -40,7 +43,7 @@ Nginx и prod-compose ещё нет. Следующие шаги — сесси�
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Слои, модули, интерфейсы, pipelines, конфигурация |
 | [docs/DATABASE_SCHEMA.md](docs/DATABASE_SCHEMA.md) | Любые модели, миграции, запросы |
 | [docs/API_CONTRACTS.md](docs/API_CONTRACTS.md) | Любые endpoints, DTO, SSE, frontend-интеграция |
-| [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md) | Auth, permissions, tenant isolation, uploads, секреты, сеть, LLM — практически всегда |
+| [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md) | Auth, sessions, permissions, изоляция данных, uploads, секреты, сеть, LLM — практически всегда |
 | [docs/DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md) | Порядок работ, security gate фазы, критерии выхода |
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Compose, окружение, секреты, volumes, bootstrap, сеть |
 
@@ -92,10 +95,12 @@ Nginx и prod-compose ещё нет. Следующие шаги — сесси�
 
 - Никогда не обходить backend authorization; проверка прав — в каждом use case.
 - Не доверять frontend permissions: frontend не является security boundary.
-- Проверять tenant isolation на backend: tenant только из проверенной сессии; каждый запрос к БД и каждый job
-  фильтруется по `organization_id` ([ADR-004](docs/adr/0004-tenant-isolation-and-kb-level-access.md)).
+- Пользователь, роли и права — только из проверенной сессии (`SecurityContext`); от клиента не принимаются.
+  Данные KB фильтруются по доступу пользователя, личные данные (диалоги, сессии) — по владельцу
+  ([ADR-012](docs/adr/0012-single-organization-deployment.md), [ADR-013](docs/adr/0013-auth-session-strategy.md)).
+- Не вводить multi-tenancy (`organizations`, `organization_id`, роли «платформы») без нового ADR.
 - Не передавать недоступные документы в LLM: авторизация **до** retrieval и **до** передачи текста LLM; фильтры
-  tenant/KB/document/version — в SQL; удалённые, failed и outdated версии не участвуют.
+  KB/document/version — в SQL; удалённые, failed и outdated версии не участвуют.
 - Доступ к ассистенту — только при доступе ко всем его KB, проверка на каждом запросе; идентификаторы KB от frontend
   не принимаются ([ADR-005](docs/adr/0005-assistant-access-model.md)).
 - Citation IDs выдаёт и валидирует backend; выдуманные ID отклоняются.
@@ -128,14 +133,14 @@ Nginx и prod-compose ещё нет. Следующие шаги — сесси�
 - граничные случаи;
 - сценарии ошибок;
 - проверка авторизации, если задача связана с доступом к данным;
-- проверка отсутствия доступа к чужим tenant-данным;
+- проверка отсутствия доступа к чужим данным (KB без доступа, чужие диалоги и сессии);
 - обновление существующих тестов, если поведение намеренно изменилось.
 
 Нельзя считать задачу завершённой только потому, что код написан. Если тест невозможно запустить — явно сообщить
 причину и не утверждать, что он пройден.
 
 Уровни (§12): unit, integration, contract (AI providers, connectors), E2E, security, performance, recovery.
-Обязательные негативные тесты: чужой tenant/KB/document недоступен; unauthorized chunks не попадают в LLM; revoked
+Обязательные негативные тесты: KB/document без доступа и чужой диалог недоступны; unauthorized chunks не попадают в LLM; revoked
 sessions отклоняются; secrets не возвращаются; malicious filenames не выходят из storage; повторные jobs не дублируют
 chunks; deleted docs не находятся; выдуманные citation IDs отклоняются. Контрольные сценарии SC-01…SC-09 —
 [SECURITY_MODEL.md §18.1](docs/SECURITY_MODEL.md).
@@ -206,7 +211,16 @@ npm ci && npm test && npm run lint && npm run typecheck && npm run format:check 
 Backend локально без Docker (в `apps/backend`): `uv sync` и `uv run pytest` (integration-тесты пропускаются без
 `DATABASE_URL`/`REDIS_URL`), `uv run ruff check .`, `uv run mypy`.
 
-Ещё не существуют: E2E (Playwright), CI (GitHub Actions), CLI `plummy`, Celery worker. **Не выдумывать команды** —
+CLI на сервере (dev — в контейнере `migrate`, подробности — [DEPLOYMENT.md §6](docs/DEPLOYMENT.md)):
+
+```bash
+docker compose run --rm migrate cat /var/lib/plummy/bootstrap/setup-token        # прочитать setup token
+docker compose run --rm migrate python -m plummy.cli setup status
+docker compose run --rm migrate python -m plummy.cli setup init-token --rotate   # новый токен
+docker compose run --rm -it migrate python -m plummy.cli admin reset-password --email admin@example.com
+```
+
+Ещё не существуют: E2E (Playwright), CI (GitHub Actions), Celery worker. **Не выдумывать команды** —
 сверяться с фактическими конфигурациями в репозитории.
 
 ## Definition of Done (§12)
@@ -214,7 +228,7 @@ Backend локально без Docker (в `apps/backend`): `uv sync` и `uv run
 - [ ] Требования и permissions описаны
 - [ ] Миграции проверены (чистая БД и upgrade path)
 - [ ] Реализация завершена в рамках согласованного scope
-- [ ] Unit/integration tests добавлены (позитивные, негативные, граничные, ошибки, tenant isolation)
+- [ ] Unit/integration tests добавлены (позитивные, негативные, граничные, ошибки, изоляция данных)
 - [ ] Ошибки и пустые состояния обработаны
 - [ ] Audit/observability учтены
 - [ ] Документация обновлена

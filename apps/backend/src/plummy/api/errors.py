@@ -16,9 +16,31 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from plummy.api.cookies import clear_session_cookie
+from plummy.application.errors import (
+    ApplicationError,
+    AuthenticationRequiredError,
+    ConflictError,
+    InvalidCredentialsError,
+    InvalidInputError,
+    NotFoundError,
+    PermissionDeniedError,
+    RateLimitedError,
+    ServiceUnavailableError,
+    SetupAlreadyCompletedError,
+    SetupTokenInvalidError,
+)
+from plummy.infrastructure.db.errors import DATABASE_UNAVAILABLE_ERRORS
+
 logger = logging.getLogger(__name__)
 
 PROBLEM_JSON = "application/problem+json"
+
+
+class CsrfFailedError(Exception):
+    """Missing or wrong ``Origin``/``Referer`` or ``X-CSRF-Token`` (ADR-013 §2)."""
+
+
 REQUEST_ID_HEADER = "X-Request-ID"
 
 _CODES_BY_STATUS: dict[int, str] = {
@@ -63,6 +85,8 @@ def problem_response(
     if errors is not None:
         body["errors"] = errors
     response_headers = dict(headers or {})
+    # Error responses are never cacheable (some carry authentication state).
+    response_headers["Cache-Control"] = "no-store"
     if request_id is not None:
         response_headers[REQUEST_ID_HEADER] = request_id
     return JSONResponse(body, status_code=status, headers=response_headers, media_type=PROBLEM_JSON)
@@ -105,7 +129,68 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
     return problem_response(request, status=500, code="internal_error")
 
 
+# Most specific first: the first matching class wins.
+_APPLICATION_STATUS: tuple[tuple[type[ApplicationError], int], ...] = (
+    (AuthenticationRequiredError, 401),
+    (InvalidCredentialsError, 401),
+    (PermissionDeniedError, 403),
+    (SetupTokenInvalidError, 403),
+    (NotFoundError, 404),
+    (SetupAlreadyCompletedError, 409),
+    (ConflictError, 409),
+    (InvalidInputError, 422),
+    (RateLimitedError, 429),
+    (ServiceUnavailableError, 503),
+)
+
+
+def _status_for(exc: ApplicationError) -> int:
+    for error_type, status in _APPLICATION_STATUS:
+        if isinstance(exc, error_type):
+            return status
+    return 400
+
+
+async def application_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    app_exc = cast(ApplicationError, exc)
+    status = _status_for(app_exc)
+    headers: dict[str, str] = {}
+    if isinstance(app_exc, RateLimitedError):
+        headers["Retry-After"] = str(app_exc.retry_after_seconds)
+    if isinstance(app_exc, InvalidInputError):
+        response = problem_response(
+            request,
+            status=422,
+            code="validation_error",
+            detail="Request validation failed.",
+            errors=[{"field": f"body.{app_exc.field}", "code": app_exc.error_code, "message": str(app_exc)}],
+        )
+    else:
+        detail = app_exc.message if status < 500 else None
+        response = problem_response(request, status=status, code=app_exc.code, detail=detail, headers=headers)
+    if isinstance(app_exc, AuthenticationRequiredError):
+        # An invalid session cookie is useless: tell the browser to drop it (ADR-013).
+        clear_session_cookie(response, request.app.state.settings)
+    return response
+
+
+async def csrf_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    logger.warning("csrf check failed", extra={"method": request.method, "path": request.url.path})
+    return problem_response(
+        request, status=403, code="csrf_failed", detail="The request origin or CSRF token is not valid."
+    )
+
+
+async def database_unavailable_handler(request: Request, exc: Exception) -> JSONResponse:
+    logger.error("database unavailable", extra={"error_type": type(exc).__name__})
+    return problem_response(request, status=503, code="service_unavailable")
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(StarletteHTTPException, http_exception_handler)
     app.add_exception_handler(RequestValidationError, validation_exception_handler)
+    app.add_exception_handler(ApplicationError, application_exception_handler)
+    app.add_exception_handler(CsrfFailedError, csrf_exception_handler)
+    for error_type in DATABASE_UNAVAILABLE_ERRORS:
+        app.add_exception_handler(error_type, database_unavailable_handler)
     app.add_exception_handler(Exception, unhandled_exception_handler)

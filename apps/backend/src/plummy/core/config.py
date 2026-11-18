@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import secrets
+from datetime import timedelta
 from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
@@ -28,6 +29,16 @@ from pydantic_settings import (
 
 MIN_SECRET_KEY_LENGTH = 32
 
+# Session lifetime bounds (ADR-013). Values outside them are configuration errors.
+MIN_SESSION_IDLE_TTL = timedelta(minutes=5)
+MAX_SESSION_IDLE_TTL = timedelta(days=30)
+MIN_SESSION_ABSOLUTE_TTL = timedelta(hours=1)
+MAX_SESSION_ABSOLUTE_TTL = timedelta(days=90)
+MIN_BOOTSTRAP_TOKEN_TTL = timedelta(minutes=10)
+MAX_BOOTSTRAP_TOKEN_TTL = timedelta(days=30)
+
+DEFAULT_BOOTSTRAP_DIR = Path("/var/lib/plummy/bootstrap")
+
 # Secret fields that may also be provided as ``<NAME>_FILE`` (path to a file with the value).
 FILE_SECRET_FIELDS: tuple[str, ...] = ("database_url", "redis_url", "secret_key")
 
@@ -40,6 +51,13 @@ class AppEnv(StrEnum):
     DEVELOPMENT = "development"
     TEST = "test"
     PRODUCTION = "production"
+
+
+class SetupMode(StrEnum):
+    """How the first administrator is created (ADR-006)."""
+
+    WEB = "web"  # setup wizard with a bootstrap token (and the CLI)
+    CLI_ONLY = "cli_only"  # web initialization is disabled; only `python -m plummy.cli admin create`
 
 
 class LogLevel(StrEnum):
@@ -117,6 +135,21 @@ class Settings(BaseSettings):
     # The OpenAPI schema (/api/v1/openapi.json) is always served.
     api_docs_enabled: bool | None = None
 
+    # Public URL of the web application (scheme://host[:port]). Its origin is trusted for state-changing
+    # requests (Origin check, ADR-013). Required in production, where it must use https.
+    public_url: str | None = None
+
+    # First-run setup (ADR-006).
+    setup_mode: SetupMode = SetupMode.WEB
+    bootstrap_dir: Path = DEFAULT_BOOTSTRAP_DIR
+    bootstrap_token_ttl: timedelta = timedelta(hours=24)
+
+    # Sessions (ADR-013). Durations accept seconds ("86400") or ISO 8601 ("PT24H").
+    session_idle_ttl: timedelta = timedelta(hours=24)
+    session_absolute_ttl: timedelta = timedelta(days=7)
+    # Secure cookies (`__Host-` prefix). May be false only outside production (plain-HTTP development).
+    session_cookie_secure: bool = True
+
     _secret_key_generated: bool = PrivateAttr(default=False)
 
     @classmethod
@@ -175,13 +208,57 @@ class Settings(BaseSettings):
             raise ValueError("wildcard '*' is not allowed; list explicit origins")
         return list(dict.fromkeys(_validate_origin(origin) for origin in value))
 
+    @field_validator("public_url")
+    @classmethod
+    def _check_public_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _validate_origin(value.strip())
+
+    @field_validator("bootstrap_token_ttl", "session_idle_ttl", "session_absolute_ttl", mode="before")
+    @classmethod
+    def _parse_seconds(cls, value: object) -> object:
+        # Environment variables are strings: "86400" means seconds (ISO 8601 "PT24H" is also accepted).
+        if isinstance(value, str) and value.strip().isdigit():
+            return int(value.strip())
+        return value
+
+    @field_validator("bootstrap_token_ttl")
+    @classmethod
+    def _check_bootstrap_token_ttl(cls, value: timedelta) -> timedelta:
+        if not MIN_BOOTSTRAP_TOKEN_TTL <= value <= MAX_BOOTSTRAP_TOKEN_TTL:
+            raise ValueError("must be between 10 minutes and 30 days")
+        return value
+
+    @field_validator("session_idle_ttl")
+    @classmethod
+    def _check_session_idle_ttl(cls, value: timedelta) -> timedelta:
+        if not MIN_SESSION_IDLE_TTL <= value <= MAX_SESSION_IDLE_TTL:
+            raise ValueError("must be between 5 minutes and 30 days")
+        return value
+
+    @field_validator("session_absolute_ttl")
+    @classmethod
+    def _check_session_absolute_ttl(cls, value: timedelta) -> timedelta:
+        if not MIN_SESSION_ABSOLUTE_TTL <= value <= MAX_SESSION_ABSOLUTE_TTL:
+            raise ValueError("must be between 1 hour and 90 days")
+        return value
+
     @model_validator(mode="after")
     def _check_environment_policy(self) -> Self:
+        if self.session_absolute_ttl < self.session_idle_ttl:
+            raise ValueError("SESSION_ABSOLUTE_TTL must not be shorter than SESSION_IDLE_TTL")
         if self.app_env is AppEnv.PRODUCTION:
             if self.app_debug:
                 raise ValueError("APP_DEBUG must be false when APP_ENV=production")
             if self.secret_key is None:
                 raise ValueError("SECRET_KEY (or SECRET_KEY_FILE) is required when APP_ENV=production")
+            if self.public_url is None:
+                raise ValueError("PUBLIC_URL is required when APP_ENV=production")
+            if not self.public_url.startswith("https://"):
+                raise ValueError("PUBLIC_URL must use https when APP_ENV=production")
+            if not self.session_cookie_secure:
+                raise ValueError("SESSION_COOKIE_SECURE must be true when APP_ENV=production")
         elif self.secret_key is None:
             # Development/test convenience: an ephemeral key, never persisted or logged.
             self.secret_key = SecretStr(secrets.token_urlsafe(48))
@@ -200,6 +277,14 @@ class Settings(BaseSettings):
     def secret_key_generated(self) -> bool:
         return self._secret_key_generated
 
+    @property
+    def trusted_origins(self) -> frozenset[str]:
+        """Origins allowed to send state-changing requests: PUBLIC_URL and CORS_ORIGINS (ADR-013)."""
+        origins = set(self.cors_origins)
+        if self.public_url is not None:
+            origins.add(self.public_url)
+        return frozenset(origins)
+
     def safe_summary(self) -> dict[str, object]:
         """Non-secret settings for startup diagnostics."""
         return {
@@ -211,6 +296,11 @@ class Settings(BaseSettings):
             "db_max_overflow": self.db_max_overflow,
             "api_docs_enabled": self.docs_enabled,
             "secret_key_generated": self.secret_key_generated,
+            "public_url": self.public_url,
+            "setup_mode": self.setup_mode.value,
+            "session_idle_ttl_seconds": int(self.session_idle_ttl.total_seconds()),
+            "session_absolute_ttl_seconds": int(self.session_absolute_ttl.total_seconds()),
+            "session_cookie_secure": self.session_cookie_secure,
         }
 
 

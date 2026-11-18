@@ -2,16 +2,16 @@
 
 | | |
 |---|---|
-| Статус | Draft v0.1 (до первой миграции) |
+| Статус | v0.2 — identity-таблицы реализованы (Фазы 2–3); остальное — рабочий проект |
 | Источник | [PROJECT_BLUEPRINT.md](PROJECT_BLUEPRINT.md) §5, §6, §7, §8, §9, §12, §20 |
 | СУБД | PostgreSQL + pgvector (§3) |
 | Миграции | Alembic (§3) |
-| Решения | [ADR-004](adr/0004-tenant-isolation-and-kb-level-access.md), [ADR-005](adr/0005-assistant-access-model.md), [ADR-006](adr/0006-initial-setup-and-system-configuration.md), [ADR-008](adr/0008-unified-document-ingestion.md) |
+| Решения | [ADR-012](adr/0012-single-organization-deployment.md), [ADR-013](adr/0013-auth-session-strategy.md), [ADR-005](adr/0005-assistant-access-model.md), [ADR-006](adr/0006-initial-setup-and-system-configuration.md), [ADR-008](adr/0008-unified-document-ingestion.md) |
 | Связанные документы | [ARCHITECTURE.md](ARCHITECTURE.md), [API_CONTRACTS.md](API_CONTRACTS.md), [SECURITY_MODEL.md](SECURITY_MODEL.md) |
 
 **Как читать.** Состав сущностей и общие правила (§9) нормативны. Колонки, типы, enum-значения и индексы —
 **рабочий проект**: они выведены из требований blueprint и уточняются в Фазах 2–10. Пункты **[Proposed]**
-требуют подтверждения; изменение tenant model или DB — только через ADR (§15). Элементы, закреплённые Accepted ADR,
+требуют подтверждения; изменение модели развёртывания (ADR-012) или DB — только через ADR (§15). Элементы, закреплённые Accepted ADR,
 помечены ссылкой на ADR.
 
 ---
@@ -20,34 +20,29 @@
 
 | Правило | Реализация |
 |---|---|
-| Идентификаторы | `id uuid PRIMARY KEY` во всех таблицах (§9). **[Proposed]** UUIDv7 (сортируемые по времени) генерирует приложение. |
-| Tenant scope | Каждая tenant-таблица содержит `organization_id uuid NOT NULL`. Исключения: глобальные справочники (`permissions`) и таблицы уровня инсталляции. |
-| Tenant-aware constraints | Каждая tenant-таблица имеет `UNIQUE (organization_id, id)`; внешние ключи между tenant-таблицами — **составные** `(organization_id, <fk>) REFERENCES parent(organization_id, id)`. Это не позволяет на уровне БД связать объекты разных организаций (§9). |
+| Идентификаторы | `id uuid PRIMARY KEY` во всех таблицах (§9). UUIDv7 (сортируемые по времени) генерирует приложение (`plummy.core.ids.new_id`). Исключение — синглтон `instance_state` (`smallint`). |
+| Организация | Инсталляция принадлежит одной организации ([ADR-012](adr/0012-single-organization-deployment.md)): таблицы `organizations` и колонок `organization_id` нет; внешние ключи — обычные `(<fk>) REFERENCES parent(id)`. |
 | Foreign keys | Обязательны (§9). `ON DELETE` по умолчанию `RESTRICT`; каскад — только для чисто зависимых связующих таблиц. Удаление данных идёт через lifecycle-jobs, а не каскады. |
-| Индексы | По `organization_id`, `status`, `source_id` (`data_source_id`), `document_id`, timestamps (§9). |
+| Индексы | По `status`, `source_id` (`data_source_id`), `document_id`, timestamps (§9). |
 | External IDs | Unique в пределах source: `UNIQUE (data_source_id, external_id)` (§9). |
 | Timestamps | `created_at timestamptz NOT NULL DEFAULT now()`, `updated_at timestamptz NOT NULL`; все времена — UTC. |
 | Soft delete | `deleted_at timestamptz NULL`. Soft delete **не должен** оставлять данные доступными для retrieval (§8 Retention). |
-| Enum | **[Proposed]** `text` + `CHECK (... IN (...))` вместо PostgreSQL `ENUM` — проще миграции. |
+| Enum | `text` + `CHECK (... IN (...))` вместо PostgreSQL `ENUM` — проще миграции. |
 | Секреты | Хранятся только в `secret_references` в зашифрованном виде; ключ вне БД (§5, §8). Ни одна другая таблица не содержит секретов в открытом виде. |
 | Именование | `snake_case`, таблицы во множественном числе; связующие таблицы — `<a>_<b>`. |
 
-### 1.1 Модель tenant **[Proposed — ADR «Tenant membership» (планируется)]**
+### 1.1 Модель развёртывания ([ADR-012](adr/0012-single-organization-deployment.md))
 
-- `organizations` — tenant.
-- Пользователь принадлежит **одной** организации (`users.organization_id`). Email уникален глобально в пределах
-  инсталляции, чтобы логин не требовал выбора организации.
-- **Platform Owner** (§2) — роль уровня инсталляции (`roles.scope = 'platform'`), назначаемая через `user_roles`.
-  Platform Owner управляет организациями и настройками инсталляции, но не получает автоматически доступ к
-  документам и диалогам организаций.
-- Многочленство пользователя в нескольких организациях — вне MVP; потребует таблицы membership и ADR.
+- Одна инсталляция = одна организация. Сведения об организации в БД не хранятся; нескольким организациям —
+  несколько инсталляций (отдельные БД, storage, ключи).
+- Пользователи принадлежат инсталляции; email уникален (`citext`), логин не требует выбора организации.
+- Администрирование приложения — системная роль `admin` (Administrator), назначаемая через `user_roles`.
+- Доступ к документам — на уровне Knowledge Base (§5.2); личные данные (диалоги, сессии) — только владельцу.
 
 ## 2. Обзор сущностей (§9)
 
 ```mermaid
 erDiagram
-    organizations ||--o{ users : has
-    organizations ||--o{ groups : has
     users ||--o{ user_groups : ""
     groups ||--o{ user_groups : ""
     roles ||--o{ role_permissions : ""
@@ -57,7 +52,6 @@ erDiagram
     roles ||--o{ user_roles : ""
     roles ||--o{ group_roles : ""
     users ||--o{ sessions : ""
-    sessions ||--o{ refresh_tokens : ""
 
     secret_references ||--o| ai_providers : "credentials"
     ai_providers ||--o{ model_configs : ""
@@ -84,31 +78,32 @@ erDiagram
 
     documents ||--o{ ingestion_jobs : ""
     data_sources ||--o{ sync_jobs : ""
-    organizations ||--o{ audit_logs : ""
 ```
 
 | Группа (§9) | Таблицы |
 |---|---|
-| Identity | `organizations`, `users`, `groups`, `user_groups`, `roles`, `permissions`, `role_permissions`, `user_roles`, `group_roles`, `sessions`, `refresh_tokens` |
+| Identity | `users`, `groups`, `user_groups`, `roles`, `permissions`, `role_permissions`, `user_roles`, `group_roles`, `sessions` |
 | AI | `ai_providers`, `embedding_provider_configs`, `model_configs`, `secret_references` |
 | Knowledge | `knowledge_bases`, `knowledge_base_access`, `assistants`, `assistant_knowledge_bases`, `data_sources`, `data_source_credentials`, `knowledge_base_sources`, `documents`, `document_versions`, `document_chunks`, `embeddings` |
 | Chat | `conversations`, `messages`, `message_citations`, `generation_runs` |
 | Jobs / audit | `ingestion_jobs`, `sync_jobs`, `audit_logs`; позднее `usage_events` |
-| Система ([ADR-006](adr/0006-initial-setup-and-system-configuration.md)) | `instance_state` |
+| Система ([ADR-006](adr/0006-initial-setup-and-system-configuration.md)) | `instance_state`; позднее строка Application Settings (§3.1) |
 | Служебные **[Proposed]** | `idempotency_keys` (§10) |
 
 **Термины.** *Document Source* ([ADR-008](adr/0008-unified-document-ingestion.md)) — это сущность `DataSource`
 (таблица `data_sources`). *Embedding profile* — сущность `EmbeddingProviderConfig` (таблица
 `embedding_provider_configs`). Отдельных таблиц под эти названия нет.
 
-Ниже для краткости не повторяются стандартные колонки: `id`, `organization_id` (если tenant-таблица),
-`created_at`, `updated_at`, а также ограничение `UNIQUE (organization_id, id)`.
+Ниже для краткости не повторяются стандартные колонки: `id`, `created_at`, `updated_at`.
 
 ---
 
 ## 3. Система, Identity и настройки
 
-### 3.0 `instance_state` ([ADR-006](adr/0006-initial-setup-and-system-configuration.md))
+Таблицы §3.0–§3.2, §3.4–§3.6 реализованы миграциями `0002`–`0005` (Фазы 2–3). `groups`, `user_groups`,
+`group_roles` (§3.3) появятся на этапе «Users & RBAC».
+
+### 3.0 `instance_state` ([ADR-006](adr/0006-initial-setup-and-system-configuration.md)) — реализовано, `0002`
 
 Единственная строка с системным состоянием инсталляции. Не таблица настроек: Instance Settings в БД **не хранятся**
 (они задаются конфигурацией сервера и читаются при старте).
@@ -117,117 +112,93 @@ erDiagram
 |---|---|---|
 | `id` | `smallint` | PK, `CHECK (id = 1)` — синглтон |
 | `initialized_at` | `timestamptz` | NULL = инсталляция не настроена. Через API не сбрасывается |
-| `initialized_by_user_id` | `uuid` | Первый администратор |
-| `bootstrap_token_hash` | `bytea` | Хэш одноразового bootstrap token; открытое значение не хранится |
+| `initialized_by_user_id` | `uuid` | FK `users`; первый администратор |
+| `bootstrap_token_hash` | `bytea` | SHA-256 одноразового bootstrap token; открытое значение не хранится. Обнуляется при инициализации |
 | `bootstrap_token_expires_at` | `timestamptz` | |
 | `bootstrap_token_used_at` | `timestamptz` | Токен погашен |
 | `updated_at` | `timestamptz` | |
 
-Строка создаётся миграцией. `POST /setup/initialize` блокирует её (`SELECT … FOR UPDATE`) и выполняет всю
-инициализацию в одной транзакции — второй параллельный запрос ждёт блокировку и видит `initialized_at IS NOT NULL`.
-Признак «настроено» **не** выводится из количества пользователей.
+`CHECK (initialized_at IS NULL OR initialized_by_user_id IS NOT NULL)`. Строка создаётся миграцией.
+`POST /setup/initialize` блокирует её (`SELECT … FOR UPDATE`) и выполняет всю инициализацию в одной транзакции —
+второй параллельный запрос ждёт блокировку и видит `initialized_at IS NOT NULL`. Признак «настроено» **не**
+выводится из количества пользователей.
 
-### 3.1 `organizations`
+### 3.1 Application Settings ([ADR-006](adr/0006-initial-setup-and-system-configuration.md), [ADR-012](adr/0012-single-organization-deployment.md)) — не реализовано
 
-| Колонка | Тип | Ограничения / описание |
-|---|---|---|
-| `name` | `text` | NOT NULL |
-| `slug` | `text` | NOT NULL, UNIQUE |
-| `status` | `text` | `active` \| `suspended`; NOT NULL |
-| `settings` | `jsonb` | Organization Settings — типизированная модель `OrganizationSettingsV1` ([ADR-006](adr/0006-initial-setup-and-system-configuration.md)); неизвестные поля отклоняются; без секретов и сетевых параметров |
-| `settings_version` | `integer` | Версия схемы настроек для миграции значений |
-| `deleted_at` | `timestamptz` | Soft delete |
+Таблицы `organizations` нет: инсталляция принадлежит одной организации, сведения о ней в БД не хранятся (ADR-012).
+Настройки, которые Administrator меняет через API (бывшие Organization Settings), будут храниться в строке-синглтоне
+как типизированная версионированная модель `ApplicationSettingsV1` (`settings jsonb`, `settings_version integer`);
+неизвестные поля отклоняются, секретов и сетевых параметров нет. Значения валидируются при записи против текущих
+Instance Settings и при чтении ограничиваются ими (effective value — более строгое). Пример состава
+**[Proposed]**: `default_locale`, `chat_retention_days` (≤ instance max), `password_min_length` (≥ instance min),
+`max_output_tokens_cap` (≤ instance cap), `allowed_provider_types` (⊆ instance-разрешённых). Таблица создаётся в
+фазе, где появятся эти настройки.
 
-Не содержит `organization_id` (сама является tenant).
-
-**Organization Settings vs Instance Settings.** Значения организации валидируются при записи против текущих
-Instance Settings и при чтении ограничиваются ими (effective value — более строгое). Пример
-`OrganizationSettingsV1` **[Proposed — состав полей]**: `display_name`, `default_locale`, `chat_retention_days`
-(≤ instance max), `password_min_length` (≥ instance min), `max_output_tokens_cap` (≤ instance cap),
-`allowed_provider_types` (⊆ instance-разрешённых).
-
-### 3.2 `users`
+### 3.2 `users` — реализовано, `0002`
 
 | Колонка | Тип | Ограничения / описание |
 |---|---|---|
-| `email` | `citext` | NOT NULL, UNIQUE (глобально — см. §1.1) |
-| `display_name` | `text` | |
-| `password_hash` | `text` | Argon2id (§5); NULL для будущих внешних identity (OIDC) |
-| `status` | `text` | `active` \| `disabled` \| `invited` |
+| `email` | `citext` | NOT NULL, UNIQUE в инсталляции ([ADR-012](adr/0012-single-organization-deployment.md)); хранится в нижнем регистре |
+| `display_name` | `text` | NOT NULL, 1–200 символов |
+| `password_hash` | `text` | Argon2id ([ADR-013](adr/0013-auth-session-strategy.md)); NULL для будущих внешних identity (OIDC) |
+| `status` | `text` | `active` \| `disabled` \| `invited`; NOT NULL, по умолчанию `active` |
 | `last_login_at` | `timestamptz` | |
-| `password_changed_at` | `timestamptz` | Сессии, выданные раньше, отзываются |
-| `deleted_at` | `timestamptz` | |
+| `password_changed_at` | `timestamptz` | Сессии, созданные раньше, отклоняются |
+| `deleted_at` | `timestamptz` | Soft delete; удалённый пользователь не может войти |
 
-Индексы: `(organization_id, status)`.
+Индексы: `(status)`.
 
-### 3.3 `groups`, `user_groups`
+### 3.3 `groups`, `user_groups` — этап «Users & RBAC»
 
-`groups`: `name text NOT NULL`, `description text`, `deleted_at`; `UNIQUE (organization_id, lower(name))`.
+`groups`: `name text NOT NULL`, `description text`, `deleted_at`; `UNIQUE (lower(name)) WHERE deleted_at IS NULL`.
 
-`user_groups`: `organization_id`, `user_id`, `group_id`, `created_at`; PK `(user_id, group_id)`;
-составные FK на `users` и `groups`; индекс `(organization_id, group_id)`.
+`user_groups`: `user_id`, `group_id`, `created_at`; PK `(user_id, group_id)`; индекс `(group_id)`.
 
-### 3.4 `roles`, `permissions`, `role_permissions`, `user_roles`, `group_roles`
+### 3.4 `permissions`, `roles`, `role_permissions`, `user_roles`, `group_roles` — реализовано, `0003` (кроме `group_roles`)
 
-`permissions` — **глобальный** справочник, заполняется миграцией:
+`permissions` — справочник, заполняется миграцией данных; каталог — [SECURITY_MODEL.md §3](SECURITY_MODEL.md#3-roles-и-permissions):
 
 | Колонка | Тип | Описание |
 |---|---|---|
-| `key` | `text` | UNIQUE, например `kb.manage`; каталог — в [SECURITY_MODEL.md §3](SECURITY_MODEL.md#3-roles-и-permissions) |
-| `description` | `text` | |
-| `scope` | `text` | `platform` \| `organization` |
+| `key` | `text` | NOT NULL, UNIQUE, например `knowledge_bases.manage` |
+| `description` | `text` | NOT NULL |
 
-Platform-permissions не дают права изменять Instance Settings: есть только `platform.settings.read`
+Permission на изменение Instance Settings не существует: есть только `system.settings.read`
 ([ADR-006](adr/0006-initial-setup-and-system-configuration.md)).
 
 `roles`:
 
 | Колонка | Тип | Описание |
 |---|---|---|
-| `organization_id` | `uuid` | **NULL** для системных ролей (Platform Owner, Organization Admin, Knowledge Manager, Member, Auditor) |
-| `key` | `text` | Например `org_admin`; два partial unique: `(key) WHERE organization_id IS NULL` и `(organization_id, key) WHERE organization_id IS NOT NULL` |
-| `name`, `description` | `text` | |
-| `scope` | `text` | `platform` \| `organization` |
-| `is_system` | `boolean` | Системные роли нельзя изменить/удалить через API |
+| `key` | `text` | NOT NULL, UNIQUE: `admin`, `knowledge_manager`, `member`, `auditor` |
+| `name`, `description` | `text` | NOT NULL |
+| `is_system` | `boolean` | Системные роли создаются миграцией и не изменяются/не удаляются через API |
 
-`role_permissions`: PK `(role_id, permission_id)`.
+`role_permissions`: `role_id`, `permission_id`; PK `(role_id, permission_id)`; `ON DELETE CASCADE` (связующая).
 
-`user_roles`: `organization_id`, `user_id`, `role_id`, `granted_by uuid`, `created_at`; PK `(user_id, role_id)`.
+`user_roles`: `user_id`, `role_id`, `granted_by uuid NULL` (FK `users`), `created_at`; PK `(user_id, role_id)`;
+индекс `(role_id)`.
 
-`group_roles`: `organization_id`, `group_id`, `role_id`, `granted_by`, `created_at`; PK `(group_id, role_id)`.
+`group_roles` (этап «Users & RBAC»): `group_id`, `role_id`, `granted_by`, `created_at`; PK `(group_id, role_id)`.
 
-Ограничение: роль со `scope = 'platform'` может назначаться только через `user_roles` (проверка в use case и
-`CHECK`/trigger **[Proposed]**).
-
-### 3.5 `sessions`, `refresh_tokens` (§5, §13 Фаза 3)
-
-`sessions`:
+### 3.5 `sessions` ([ADR-013](adr/0013-auth-session-strategy.md)) — реализовано, `0004`
 
 | Колонка | Тип | Описание |
 |---|---|---|
-| `user_id` | `uuid` | FK |
-| `expires_at` | `timestamptz` | Абсолютный срок жизни сессии |
-| `last_seen_at` | `timestamptz` | |
-| `revoked_at` | `timestamptz` | NULL = активна |
-| `revoke_reason` | `text` | `logout` \| `admin` \| `password_change` \| `refresh_reuse` \| `user_disabled` |
-| `user_agent` | `text` | Усечённый |
+| `user_id` | `uuid` | NOT NULL, FK `users` |
+| `token_hash` | `bytea` | NOT NULL, UNIQUE; SHA-256 токена сессии. Сам токен не хранится |
+| `last_seen_at` | `timestamptz` | NOT NULL; срок простоя = `last_seen_at + SESSION_IDLE_TTL` |
+| `expires_at` | `timestamptz` | NOT NULL; абсолютный срок жизни |
+| `revoked_at` | `timestamptz` | NULL = не отозвана |
+| `revoke_reason` | `text` | `logout` \| `superseded` \| `admin` \| `password_change` \| `user_disabled`; `CHECK ((revoked_at IS NULL) = (revoke_reason IS NULL))` |
+| `user_agent` | `text` | Усечённый до 512 символов |
 | `ip_address` | `inet` | Персональные данные — retention по политике (SECURITY_MODEL.md) |
 
-Индексы: `(organization_id, user_id)`, `(user_id) WHERE revoked_at IS NULL`.
+Индексы: `(user_id) WHERE revoked_at IS NULL`, `(expires_at)` (очистка). Таблицы `refresh_tokens` нет (ADR-013).
 
-`refresh_tokens` (rotation с reuse detection):
+### 3.6 `audit_logs` (§8 п.9) — реализовано, `0005`
 
-| Колонка | Тип | Описание |
-|---|---|---|
-| `session_id` | `uuid` | FK |
-| `token_hash` | `bytea` | SHA-256 от токена; сам токен не хранится. UNIQUE |
-| `issued_at`, `expires_at` | `timestamptz` | |
-| `used_at` | `timestamptz` | Момент ротации |
-| `replaced_by_id` | `uuid` | Следующий токен в цепочке |
-| `revoked_at` | `timestamptz` | |
-
-Повторное предъявление уже использованного refresh token → отзыв всей сессии (`revoke_reason = 'refresh_reuse'`)
-и audit event.
+См. §7.3.
 
 ---
 
@@ -247,14 +218,14 @@ Platform-permissions не дают права изменять Instance Settings
 | `rotated_at` | `timestamptz` | |
 
 Правила: значение никогда не возвращается API (§12 «secrets не возвращаются»); `ciphertext` не попадает в логи;
-associated data для AEAD включает `organization_id` и `id`, чтобы шифртекст нельзя было «пересадить» в другую
+associated data для AEAD включает `id` и `kind`, чтобы шифртекст нельзя было «пересадить» в другую
 запись **[Proposed]**.
 
 ### 4.2 `ai_providers` (§5)
 
 | Колонка | Тип | Описание |
 |---|---|---|
-| `name` | `text` | NOT NULL; `UNIQUE (organization_id, lower(name))` |
+| `name` | `text` | NOT NULL; `UNIQUE (lower(name))` |
 | `provider_type` | `text` | `openai` \| `anthropic` \| `ollama` \| `openai_compatible` |
 | `base_url` | `text` | Endpoint; проходит SSRF-валидацию (§8 п.7) |
 | `secret_ref_id` | `uuid` | FK `secret_references`, NULL для провайдеров без ключа (Ollama) |
@@ -269,7 +240,7 @@ associated data для AEAD включает `organization_id` и `id`, чтоб
 
 | Колонка | Тип | Описание |
 |---|---|---|
-| `provider_id` | `uuid` | Составной FK |
+| `provider_id` | `uuid` | FK |
 | `model_id` | `text` | Идентификатор модели у провайдера (§5 «model ID») |
 | `display_name` | `text` | |
 | `kind` | `text` | `chat` (embedding-модели описываются в `embedding_provider_configs`) |
@@ -287,8 +258,8 @@ associated data для AEAD включает `organization_id` и `id`, чтоб
 
 | Колонка | Тип | Описание |
 |---|---|---|
-| `name` | `text` | `UNIQUE (organization_id, lower(name))` |
-| `provider_id` | `uuid` | Составной FK на `ai_providers` |
+| `name` | `text` | `UNIQUE (lower(name))` |
+| `provider_id` | `uuid` | FK `ai_providers` |
 | `model_id` | `text` | |
 | `dimensions` | `integer` | NOT NULL |
 | `distance_metric` | `text` | `cosine` \| `inner_product` \| `l2` |
@@ -307,7 +278,7 @@ associated data для AEAD включает `organization_id` и `id`, чтоб
 
 | Колонка | Тип | Описание |
 |---|---|---|
-| `name` | `text` | `UNIQUE (organization_id, lower(name)) WHERE deleted_at IS NULL` |
+| `name` | `text` | `UNIQUE (lower(name)) WHERE deleted_at IS NULL` |
 | `description` | `text` | |
 | `embedding_config_id` | `uuid` | Активный embedding profile для индексации KB |
 | `chunking_settings` | `jsonb` | **[Proposed]** |
@@ -320,7 +291,7 @@ associated data для AEAD включает `organization_id` и `id`, чтоб
 
 | Колонка | Тип | Описание |
 |---|---|---|
-| `knowledge_base_id` | `uuid` | Составной FK |
+| `knowledge_base_id` | `uuid` | FK |
 | `principal_type` | `text` | `user` \| `group` |
 | `user_id` | `uuid` | NULL, если `principal_type = 'group'` |
 | `group_id` | `uuid` | NULL, если `principal_type = 'user'` |
@@ -350,7 +321,7 @@ MVP: доступ только на уровне KB; document-level ACL отсу
 | `created_by` | `uuid` | |
 | `deleted_at` | `timestamptz` | |
 
-`assistant_knowledge_bases`: `organization_id`, `assistant_id`, `knowledge_base_id`; PK
+`assistant_knowledge_bases`: `assistant_id`, `knowledge_base_id`; PK
 `(assistant_id, knowledge_base_id)`.
 
 **Доступ к ассистенту — [ADR-005](adr/0005-assistant-access-model.md).** Отдельной таблицы доступа нет: доступ
@@ -366,15 +337,15 @@ MVP: доступ только на уровне KB; document-level ACL отсу
 ```sql
 SELECT NOT EXISTS (
   SELECT 1 FROM assistant_knowledge_bases akb
-  WHERE akb.organization_id = :org_id AND akb.assistant_id = :assistant_id
+  WHERE akb.assistant_id = :assistant_id
     AND NOT EXISTS (                                   -- нет эффективного доступа к этой KB
       SELECT 1 FROM knowledge_base_access a
       LEFT JOIN user_groups ug ON ug.group_id = a.group_id AND ug.user_id = :user_id
-      WHERE a.organization_id = :org_id AND a.knowledge_base_id = akb.knowledge_base_id
+      WHERE a.knowledge_base_id = akb.knowledge_base_id
         AND (a.user_id = :user_id OR ug.user_id IS NOT NULL))
     AND NOT :has_kb_manage_all                         -- knowledge_bases.manage даёт доступ ко всем KB
 ) AND EXISTS (SELECT 1 FROM assistant_knowledge_bases
-             WHERE organization_id = :org_id AND assistant_id = :assistant_id);
+             WHERE assistant_id = :assistant_id);
 ```
 
 При удалении KB её строки в `assistant_knowledge_bases` удаляются (связующая таблица, `ON DELETE CASCADE` допустим);
@@ -400,7 +371,7 @@ SELECT NOT EXISTS (
 Локальная загрузка тоже является источником ([ADR-008](adr/0008-unified-document-ingestion.md)): при создании KB
 автоматически создаётся `data_sources(type='upload')` и связь в `knowledge_base_sources`. Upload-источник нельзя
 подключить к другой KB, создать или удалить через API отдельно — он живёт и удаляется вместе со своей KB. Это сохраняет
-KB-level доступ (ADR-004), обеспечивает один ingestion pipeline (§22 п.3) и единое правило
+KB-level доступ (ADR-012), обеспечивает один ingestion pipeline (§22 п.3) и единое правило
 `UNIQUE (data_source_id, external_id)`. Для `upload` `external_id` генерирует сервер; credentials и cursor не
 используются.
 
@@ -412,7 +383,7 @@ credentials удаляются немедленно; строки `knowledge_bas
 
 | Колонка | Тип | Описание |
 |---|---|---|
-| `data_source_id` | `uuid` | Составной FK |
+| `data_source_id` | `uuid` | FK |
 | `secret_ref_id` | `uuid` | Зашифрованный refresh token (§13 Фаза 9) |
 | `account_label` | `text` | Учётная запись/tenant у провайдера (персональные данные) |
 | `granted_scopes` | `text[]` | Фактически выданные scopes — для честного отображения (§7) |
@@ -421,8 +392,8 @@ credentials удаляются немедленно; строки `knowledge_bas
 
 ### 5.6 `knowledge_base_sources` (§5)
 
-`organization_id`, `knowledge_base_id`, `data_source_id`, `created_at`; PK `(knowledge_base_id, data_source_id)`;
-индекс `(organization_id, data_source_id)`.
+`knowledge_base_id`, `data_source_id`, `created_at`; PK `(knowledge_base_id, data_source_id)`;
+индекс `(data_source_id)`.
 
 ### 5.7 `documents` (§5)
 
@@ -442,14 +413,13 @@ credentials удаляются немедленно; строки `knowledge_bas
 | `deletion_reason` | `text` | `user` \| `remote_deleted` \| `out_of_scope` \| `source_deleted` \| `kb_deleted` |
 | `purged_at` | `timestamptz` | Производные данные удалены по retention |
 
-Индексы: `(organization_id, data_source_id)`, `(organization_id, processing_status)`,
-`(organization_id, deleted_at)`, `(organization_id, updated_at)`.
+Индексы: `(data_source_id)`, `(processing_status)`, `(deleted_at)`, `(updated_at)`.
 
 ### 5.8 `document_versions` (§5, §6)
 
 | Колонка | Тип | Описание |
 |---|---|---|
-| `document_id` | `uuid` | Составной FK |
+| `document_id` | `uuid` | FK |
 | `version_number` | `integer` | `UNIQUE (document_id, version_number)` |
 | `checksum_sha256` | `bytea` | `UNIQUE (document_id, checksum_sha256)` — идемпотентность ingestion (§6) |
 | `mime_type` | `text` | |
@@ -469,14 +439,14 @@ credentials удаляются немедленно; строки `knowledge_bas
 Версия **неизменяема** по контенту (`checksum_sha256`, `storage_key`); меняются только статус и результат обработки.
 Повторная загрузка того же контента в документ возвращает существующую версию.
 
-Индексы: `(organization_id, status)`, `(document_id, status)`.
+Индексы: `(status)`, `(document_id, status)`.
 
 ### 5.9 `document_chunks` (§6)
 
 | Колонка | Тип | Описание |
 |---|---|---|
 | `document_id` | `uuid` | Денормализация для фильтров/удаления |
-| `document_version_id` | `uuid` | Составной FK |
+| `document_version_id` | `uuid` | FK |
 | `data_source_id` | `uuid` | Денормализация для фильтра по KB |
 | `chunk_set` | `integer` | Номер набора chunks версии; новый набор строится при смене chunking settings ([ADR-008](adr/0008-unified-document-ingestion.md)) **[Proposed — имя]** |
 | `chunk_index` | `integer` | `UNIQUE (document_version_id, chunk_set, chunk_index)` — повтор job не дублирует chunks (§12) |
@@ -489,13 +459,13 @@ credentials удаляются немедленно; строки `knowledge_bas
 | `row_start`, `row_end` | `integer` | XLSX/CSV |
 | `search_vector` | `tsvector` | `GENERATED ALWAYS AS (to_tsvector(<config>, content)) STORED`; конфигурация — открытый вопрос |
 
-Индексы: `GIN (search_vector)`, `(organization_id, document_version_id)`, `(organization_id, data_source_id)`.
+Индексы: `GIN (search_vector)`, `(document_version_id)`, `(data_source_id)`.
 
 ### 5.10 `embeddings` (§6, §9)
 
 | Колонка | Тип | Описание |
 |---|---|---|
-| `chunk_id` | `uuid` | Составной FK |
+| `chunk_id` | `uuid` | FK |
 | `embedding_config_id` | `uuid` | **Обязателен** — каждая vector row связана с embedding profile (§9) |
 | `document_version_id` | `uuid` | Денормализация |
 | `data_source_id` | `uuid` | Денормализация |
@@ -520,8 +490,7 @@ CREATE INDEX CONCURRENTLY embeddings_hnsw_<profile>
 Retrieval-запрос (vector и FTS-ветки) обязан содержать **все** условия:
 
 ```sql
-WHERE c.organization_id = :org_id                       -- tenant (из сессии)
-  AND c.data_source_id = ANY(:allowed_source_ids)       -- источники KB, доступных пользователю и ассистенту
+WHERE c.data_source_id = ANY(:allowed_source_ids)       -- источники KB, доступных пользователю и ассистенту
   AND d.deleted_at IS NULL                              -- удалённые документы исключены
   AND d.current_version_id = c.document_version_id     -- только текущая версия
   AND c.chunk_set = v.active_chunk_set                  -- только активный набор chunks
@@ -531,7 +500,7 @@ WHERE c.organization_id = :org_id                       -- tenant (из сесс
 
 `allowed_source_ids` вычисляется policy service до запроса (§8 п.2): источники KB ассистента ∩ источники KB,
 доступных пользователю ([ADR-005](adr/0005-assistant-access-model.md)). Значения от клиента в расчёте не участвуют. **[Proposed — ADR «PostgreSQL RLS» (планируется)]** PostgreSQL Row
-Level Security по `organization_id` как второй рубеж.
+Level Security по доступным KB как второй рубеж (нужна ли — решается в Фазе 12).
 
 ---
 
@@ -547,13 +516,13 @@ Level Security по `organization_id` как второй рубеж.
 | `last_message_at` | `timestamptz` | |
 | `deleted_at` | `timestamptz` | |
 
-Индексы: `(organization_id, user_id, last_message_at DESC)`.
+Индексы: `(user_id, last_message_at DESC)`.
 
 ### 6.2 `messages`
 
 | Колонка | Тип | Описание |
 |---|---|---|
-| `conversation_id` | `uuid` | Составной FK |
+| `conversation_id` | `uuid` | FK |
 | `sequence` | `integer` | `UNIQUE (conversation_id, sequence)` |
 | `role` | `text` | `user` \| `assistant` |
 | `content` | `text` | |
@@ -566,7 +535,7 @@ Snapshot metadata на момент ответа, чтобы история ос
 
 | Колонка | Тип | Описание |
 |---|---|---|
-| `message_id` | `uuid` | Составной FK |
+| `message_id` | `uuid` | FK |
 | `citation_key` | `text` | Временный citation ID, выданный backend в этой генерации |
 | `ordinal` | `integer` | Порядок отображения |
 | `document_id`, `document_version_id`, `chunk_id` | `uuid` | |
@@ -608,7 +577,7 @@ Snapshot metadata на момент ответа, чтобы история ос
 | `kind` | `text` | `ingest` \| `reindex` \| `delete` \| `purge` |
 | `status` | `text` | `queued` \| `running` \| `succeeded` \| `failed` \| `cancelled` \| `dead` |
 | `stage` | `text` | Стадия pipeline ([ADR-008](adr/0008-unified-document-ingestion.md)): `fetch`, `authorize`, `validate_type`, `security_check`, `store_original`, `parse`, `normalize`, `chunk`, `embed`, `persist`, `finalize`, `report` |
-| `idempotency_key` | `text` | `UNIQUE (organization_id, idempotency_key)`; состав: версия (или элемент источника) + `kind` + хэш chunking settings + embedding profile |
+| `idempotency_key` | `text` | `UNIQUE (idempotency_key)`; состав: версия (или элемент источника) + `kind` + хэш chunking settings + embedding profile |
 | `result` | `text` | `processed` \| `skipped_already_processed` \| `skipped_unchanged` — для наблюдаемости идемпотентных повторов |
 | `attempt`, `max_attempts` | `integer` | |
 | `celery_task_id` | `text` | |
@@ -617,7 +586,7 @@ Snapshot metadata на момент ответа, чтобы история ос
 | `requested_by` | `uuid` | NULL для системных |
 | `queued_at`, `started_at`, `finished_at` | `timestamptz` | |
 
-Индексы: `(organization_id, status)`, `(document_id)`, `(organization_id, queued_at)`.
+Индексы: `(status)`, `(document_id)`, `(queued_at)`.
 
 ### 7.2 `sync_jobs` (§7)
 
@@ -645,21 +614,21 @@ CREATE UNIQUE INDEX sync_jobs_one_active_per_source
 
 | Колонка | Тип | Описание |
 |---|---|---|
-| `organization_id` | `uuid` | NULL для событий уровня инсталляции |
-| `actor_type` | `text` | `user` \| `system` \| `worker` |
-| `actor_user_id` | `uuid` | |
+| `actor_type` | `text` | `user` \| `anonymous` \| `system` \| `worker` |
+| `actor_user_id` | `uuid` | Без FK: запись переживает удаление пользователя |
 | `action` | `text` | Например `kb.access.granted`; каталог — SECURITY_MODEL.md |
 | `target_type`, `target_id` | `text`, `uuid` | |
 | `outcome` | `text` | `success` \| `denied` \| `failure` |
 | `correlation_id` | `text` | |
 | `ip_address` | `inet` | |
 | `user_agent` | `text` | |
-| `details` | `jsonb` | Без секретов, токенов и содержимого документов |
+| `details` | `jsonb` | NOT NULL, по умолчанию `{}`; без секретов, токенов, паролей, email в открытом виде и содержимого документов |
 | `created_at` | `timestamptz` | |
 
 Append-only: роль БД приложения не имеет `UPDATE`/`DELETE` на `audit_logs`; удаление — только retention-job под
-отдельной ролью **[Proposed]**. Индексы: `(organization_id, created_at DESC)`, `(organization_id, action)`,
-`(target_type, target_id)`.
+отдельной ролью **[Proposed]** — пока роль приложения владеет таблицей, это обеспечивается кодом (только `INSERT`);
+защита на уровне БД появится с разделением ролей (ADR-011). Индексы: `(created_at DESC)`, `(action, created_at)`,
+`(target_type, target_id)`, `(actor_user_id, created_at)`. Реализовано, `0005`.
 
 ### 7.4 `usage_events` (позднее, §9)
 
@@ -667,15 +636,15 @@ Append-only: роль БД приложения не имеет `UPDATE`/`DELETE
 
 ### 7.5 `idempotency_keys` **[Proposed]** (§10)
 
-`organization_id`, `user_id`, `key`, `endpoint`, `request_hash`, `response_status`, `response_body jsonb`,
-`expires_at`; `UNIQUE (organization_id, user_id, endpoint, key)`. Альтернатива — Redis с TTL; выбор в ADR «Формат ошибок, пагинация, idempotency» (планируется).
+`user_id`, `key`, `endpoint`, `request_hash`, `response_status`, `response_body jsonb`,
+`expires_at`; `UNIQUE (user_id, endpoint, key)`. Альтернатива — Redis с TTL; выбор в ADR «Формат ошибок, пагинация, idempotency» (планируется).
 
 ---
 
 ## 8. Retention и lifecycle удаления (§8)
 
 Blueprint требует **определить** lifecycle и сроки; конкретные сроки ниже — **[Proposed]** по умолчанию,
-настраиваются на уровне инсталляции/организации.
+настраиваются в Instance Settings и Application Settings.
 
 | Класс данных | При удалении объекта | Срок хранения по умолчанию |
 |---|---|---|
@@ -705,18 +674,20 @@ Blueprint требует **определить** lifecycle и сроки; ко�
 - Сид системных `permissions` и системных `roles` — миграцией данных.
 - Каждая миграция проверяется на **чистой БД** и на **upgrade path** с предыдущего релиза (§20).
 - Тяжёлые индексы (HNSW, GIN) — `CREATE INDEX CONCURRENTLY` в отдельной ревизии.
-- Изменение схемы, затрагивающее tenant model, — только после ADR (§15).
+- Изменение модели развёртывания (ADR-012: одна организация на инсталляцию) — только после ADR (§15).
+- Реализованы: `0001` (проверка расширений), `0002` (`users`, `instance_state`), `0003` (`permissions`, `roles`,
+  `role_permissions`, `user_roles` + сид каталога и системных ролей), `0004` (`sessions`), `0005` (`audit_logs`).
 
 ## 10. Открытые вопросы
 
-1. Tenant membership: один пользователь — одна организация; глобальная уникальность email (планируемый ADR).
-2. Хранение векторов разной размерности (планируемый ADR).
-3. FTS-конфигурация для русского/английского контента.
-4. Idempotency keys: PostgreSQL или Redis (планируемый ADR).
-5. RLS как второй рубеж (планируемый ADR).
-6. Конкретные сроки retention и политика для chat history.
-7. Состав полей `OrganizationSettingsV1` и соответствующих instance-границ.
+1. Хранение векторов разной размерности (планируемый ADR).
+2. FTS-конфигурация для русского/английского контента.
+3. Idempotency keys: PostgreSQL или Redis (планируемый ADR).
+4. RLS как второй рубеж доступа на уровне KB (планируемый ADR).
+5. Конкретные сроки retention и политика для chat history.
+6. Состав полей `ApplicationSettingsV1` и соответствующих instance-границ.
 
-Решено: доступ к ассистентам ([ADR-005](adr/0005-assistant-access-model.md)), хранение настроек и состояние setup
+Решено: одна организация на инсталляцию ([ADR-012](adr/0012-single-organization-deployment.md)), сессии
+([ADR-013](adr/0013-auth-session-strategy.md)), доступ к ассистентам ([ADR-005](adr/0005-assistant-access-model.md)), хранение настроек и состояние setup
 ([ADR-006](adr/0006-initial-setup-and-system-configuration.md)), Document Source и разделение
 источник/документ/версия/результат ([ADR-008](adr/0008-unified-document-ingestion.md)).

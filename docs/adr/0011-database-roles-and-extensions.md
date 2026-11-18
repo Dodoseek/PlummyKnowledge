@@ -2,6 +2,8 @@
 
 - **Status:** Accepted
 - **Date:** 2026-11-17
+- **Amended by:** [ADR-012](0012-single-organization-deployment.md) — tenant isolation упразднена; RLS, если будет
+  введена, служит вторым рубежом для доступа на уровне KB, а не для изоляции организаций.
 
 ## Context
 
@@ -88,5 +90,5 @@ PostgreSQL (RDS, Cloud SQL, Azure) у клиента вообще нет суп�
 ## Related documents
 
 [DATABASE_SCHEMA.md §9](../DATABASE_SCHEMA.md) · [DEPLOYMENT.md §0, §6](../DEPLOYMENT.md) ·
-[SECURITY_MODEL.md §5](../SECURITY_MODEL.md) · [ADR-004](0004-tenant-isolation-and-kb-level-access.md) ·
+[SECURITY_MODEL.md §5](../SECURITY_MODEL.md) · [ADR-012](0012-single-organization-deployment.md) ·
 [ADR-006](0006-initial-setup-and-system-configuration.md)

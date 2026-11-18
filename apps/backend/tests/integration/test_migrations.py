@@ -94,9 +94,91 @@ async def test_downgrade_to_base_keeps_extensions_and_upgrade_again(
     assert len(await _query(database_url, "SELECT version_num FROM alembic_version")) == 1
 
 
-async def test_no_application_tables_are_created_yet(migrator: Migrator, database_url: str) -> None:
+async def test_identity_tables_are_created(migrator: Migrator, database_url: str) -> None:
     await migrator.upgrade()
     tables = await _query(
         database_url, "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename"
     )
+    assert tables == [
+        "alembic_version",
+        "audit_logs",
+        "instance_state",
+        "permissions",
+        "role_permissions",
+        "roles",
+        "sessions",
+        "user_roles",
+        "users",
+    ]
+    # Single-organization deployment (ADR-012): no tenant table and no tenant column anywhere.
+    assert "organizations" not in tables
+    columns = await _query(
+        database_url,
+        "SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' "
+        "AND column_name = 'organization_id'",
+    )
+    assert columns == []
+
+
+async def test_models_match_migrated_schema(migrator: Migrator, database_url: str) -> None:
+    from alembic.autogenerate import compare_metadata
+    from alembic.migration import MigrationContext
+
+    from plummy.infrastructure.db import models  # noqa: F401 - registers the tables
+    from plummy.infrastructure.db.base import Base
+
+    await migrator.upgrade()
+    engine = create_async_engine(database_url)
+    try:
+        async with engine.connect() as connection:
+            diff = await connection.run_sync(
+                lambda sync: compare_metadata(
+                    MigrationContext.configure(sync, opts={"compare_type": True}), Base.metadata
+                )
+            )
+    finally:
+        await engine.dispose()
+    assert diff == []
+
+
+async def test_rbac_seed_matches_domain_catalog(migrator: Migrator, database_url: str) -> None:
+    from plummy.domain.identity import SYSTEM_ROLE_PERMISSIONS, Permission
+
+    await migrator.upgrade()
+    permissions = set(await _query(database_url, "SELECT key FROM permissions"))
+    assert permissions == {p.value for p in Permission}
+    engine = create_async_engine(database_url)
+    try:
+        async with engine.connect() as connection:
+            rows = (
+                await connection.execute(
+                    text(
+                        "SELECT r.key, p.key FROM role_permissions rp JOIN roles r ON r.id = rp.role_id "
+                        "JOIN permissions p ON p.id = rp.permission_id"
+                    )
+                )
+            ).all()
+    finally:
+        await engine.dispose()
+    seeded: dict[str, set[str]] = {}
+    for role, permission in rows:
+        seeded.setdefault(role, set()).add(permission)
+    assert seeded == {role.value: {p.value for p in perms} for role, perms in SYSTEM_ROLE_PERMISSIONS.items()}
+
+
+async def test_instance_state_is_a_singleton(migrator: Migrator, database_url: str) -> None:
+    await migrator.upgrade()
+    assert await _query(database_url, "SELECT count(*) FROM instance_state WHERE initialized_at IS NULL") == [
+        1
+    ]
+    with pytest.raises(DBAPIError, match=r"ck_instance_state_singleton|duplicate key"):
+        await _query(database_url, "INSERT INTO instance_state (id) VALUES (2) RETURNING id")
+
+
+async def test_upgrade_from_foundation_revision(migrator: Migrator, database_url: str) -> None:
+    await migrator.upgrade("0001")  # the Foundation release schema
+    await migrator.upgrade()
+    assert await _query(database_url, "SELECT count(*) FROM roles") == [4]
+    await migrator.downgrade("0001")
+    tables = await _query(database_url, "SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
     assert tables == ["alembic_version"]

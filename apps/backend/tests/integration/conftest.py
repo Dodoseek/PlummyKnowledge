@@ -13,6 +13,8 @@ import os
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 from alembic import command
@@ -22,6 +24,9 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from plummy.core.config import get_settings
 from plummy.core.version import BACKEND_ROOT
+
+if TYPE_CHECKING:
+    from tests.integration.harness import Harness
 
 
 def _base_url() -> str:
@@ -94,3 +99,48 @@ class Migrator:
 @pytest.fixture
 def migrator(database_url: str, monkeypatch: pytest.MonkeyPatch) -> Migrator:
     return Migrator(database_url, monkeypatch)
+
+
+# --- setup / auth harness --------------------------------------------------------------------------------
+
+# Real Argon2id with minimal cost so the suite stays fast; production parameters are covered by unit tests.
+FAST_HASHER_PARAMS = {"time_cost": 1, "memory_cost_kib": 8, "parallelism": 1}
+TEST_ORIGIN = "https://testserver"
+
+
+@pytest.fixture
+async def migrated_database_url(migrator: Migrator, database_url: str) -> str:
+    await migrator.upgrade()
+    return database_url
+
+
+@pytest.fixture
+async def clean_rate_limits(redis_url: str) -> AsyncIterator[None]:
+    """Rate-limit counters are shared Redis state: start and finish every test with none."""
+    from redis.asyncio import Redis
+
+    from plummy.infrastructure.redis.rate_limiter import KEY_PREFIX
+
+    client = Redis.from_url(redis_url, decode_responses=True)
+
+    async def flush() -> None:
+        keys = [key async for key in client.scan_iter(match=f"{KEY_PREFIX}*")]
+        if keys:
+            await client.delete(*keys)
+
+    try:
+        await flush()
+        yield
+        await flush()
+    finally:
+        await client.aclose()
+
+
+@pytest.fixture
+async def harness(
+    migrated_database_url: str, redis_url: str, clean_rate_limits: None, tmp_path: Path
+) -> AsyncIterator[Harness]:
+    from tests.integration.harness import running_auth_app
+
+    async with running_auth_app(migrated_database_url, redis_url, tmp_path / "bootstrap") as running:
+        yield running

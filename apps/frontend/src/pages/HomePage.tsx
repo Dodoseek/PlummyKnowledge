@@ -8,7 +8,7 @@ export function HomePage() {
     <Stack spacing={6}>
       <Stack spacing={2}>
         <Heading size="lg">PlummyKnowledge</Heading>
-        <Text color="gray.500">Self-hosted AI knowledge base. Development build — foundation stage.</Text>
+        <Text color="gray.500">Self-hosted AI knowledge base. Development build — authentication stage.</Text>
       </Stack>
       <SystemStatusCard />
     </Stack>

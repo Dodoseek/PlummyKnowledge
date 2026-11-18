@@ -20,7 +20,7 @@
 | [ADR-001](0001-record-architecture-decisions.md) | Record architecture decisions | Accepted | 2026-11-17 |
 | [ADR-002](0002-modular-monolith-and-layering.md) | Modular Monolith и правило зависимостей слоёв | Accepted | 2026-11-17 |
 | [ADR-003](0003-technology-stack.md) | Базовый технологический стек | Accepted | 2026-11-17 |
-| [ADR-004](0004-tenant-isolation-and-kb-level-access.md) | Tenant isolation и доступ на уровне Knowledge Base | Accepted | 2026-11-17 |
+| [ADR-004](0004-tenant-isolation-and-kb-level-access.md) | Tenant isolation и доступ на уровне Knowledge Base | Superseded by ADR-012 | 2026-11-17 |
 | [ADR-005](0005-assistant-access-model.md) | Assistant Access Model | Accepted | 2026-11-17 |
 | [ADR-006](0006-initial-setup-and-system-configuration.md) | Initial Setup and System Configuration | Accepted | 2026-11-17 |
 | [ADR-007](0007-network-access-and-local-llm.md) | Network Access and Local LLM Providers | Accepted | 2026-11-17 |
@@ -28,8 +28,12 @@
 | [ADR-009](0009-automatic-versioning.md) | Automatic Versioning | Accepted | 2026-11-17 |
 | [ADR-010](0010-api-error-format.md) | API Error Format (RFC 9457) | Accepted | 2026-11-17 |
 | [ADR-011](0011-database-roles-and-extensions.md) | PostgreSQL Roles and Extensions | Accepted | 2026-11-17 |
+| [ADR-012](0012-single-organization-deployment.md) | Single-Organization Deployment | Accepted | 2026-11-17 |
+| [ADR-013](0013-auth-session-strategy.md) | Auth and Session Strategy | Accepted | 2026-11-17 |
 
-ADR-001…004 оформляют решения, уже зафиксированные в blueprint v1.0; новых решений они не вводят.
+ADR-001…004 оформляют решения, уже зафиксированные в blueprint v1.0; новых решений они не вводят. ADR-012 изменяет
+блупринт: инсталляция принадлежит одной организации (multi-tenancy упразднена); ADR-005…008, 010, 011 содержат
+пометки «Amended by ADR-012».
 
 ## Планируемые ADR (номер присваивается при создании)
 
@@ -37,14 +41,12 @@ ADR-001…004 оформляют решения, уже зафиксирован
 
 | Тема | Нужен к | Где описан черновик |
 |---|---|---|
-| Tenant membership: пользователь принадлежит одной организации, глобально уникальный email | Фаза 2 | [DATABASE_SCHEMA.md §1.1](../DATABASE_SCHEMA.md) |
-| Auth/session strategy: TTL, формат access token, cookies, CSRF | Фаза 3 | [SECURITY_MODEL.md §4](../SECURITY_MODEL.md) |
 | Шифрование секретов: алгоритм, key ring, ротация | Фаза 4 | [SECURITY_MODEL.md §7](../SECURITY_MODEL.md) |
 | Хранение векторов разной размерности в pgvector | Фаза 5 | [DATABASE_SCHEMA.md §5.10](../DATABASE_SCHEMA.md) |
 | Пагинация, хранилище idempotency keys | Фаза 2–3 | [API_CONTRACTS.md §1.6, §1.7](../API_CONTRACTS.md) |
 | Разделение роли миграций и runtime-роли API/worker | Фаза 2 / 12 | [ADR-011](0011-database-roles-and-extensions.md) |
 | Генерация ответа в процессе API или в worker | Фаза 8 | [ARCHITECTURE.md §9.4](../ARCHITECTURE.md) |
-| PostgreSQL Row Level Security как второй рубеж tenant isolation | Фаза 2 / 12 | [SECURITY_MODEL.md §5](../SECURITY_MODEL.md) |
+| PostgreSQL Row Level Security как второй рубеж доступа на уровне KB (нужна ли без multi-tenancy) | Фаза 12 | [SECURITY_MODEL.md §5](../SECURITY_MODEL.md) |
 | Конфигурация full-text search для русского и английского | Фаза 6 | [DATABASE_SCHEMA.md §5.9](../DATABASE_SCHEMA.md) |
 
 ## Шаблон

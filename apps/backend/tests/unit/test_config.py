@@ -7,6 +7,7 @@ import pytest
 from plummy.core.config import AppEnv, ConfigurationError, LogLevel, get_settings, load_settings
 from tests.conftest import (
     DB_PASSWORD,
+    TEST_PUBLIC_URL,
     VALID_DATABASE_URL,
     VALID_REDIS_URL,
     VALID_SECRET_KEY,
@@ -19,6 +20,7 @@ pytestmark = pytest.mark.usefixtures("clean_env")
 def _set_required_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DATABASE_URL", VALID_DATABASE_URL)
     monkeypatch.setenv("REDIS_URL", VALID_REDIS_URL)
+    monkeypatch.setenv("PUBLIC_URL", TEST_PUBLIC_URL)
 
 
 # --- positive -------------------------------------------------------------------------------------------
@@ -108,6 +110,7 @@ def test_secret_values_are_read_from_files(clean_env: pytest.MonkeyPatch, tmp_pa
     clean_env.setenv("DATABASE_URL_FILE", str(db_file))
     clean_env.setenv("SECRET_KEY_FILE", str(key_file))
     clean_env.setenv("REDIS_URL", VALID_REDIS_URL)
+    clean_env.setenv("PUBLIC_URL", TEST_PUBLIC_URL)
 
     settings = load_settings()
 

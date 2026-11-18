@@ -24,12 +24,22 @@ CONFIG_ENV_VARS = (
     "CORS_ORIGINS",
     "DB_POOL_SIZE",
     "DB_MAX_OVERFLOW",
+    "API_DOCS_ENABLED",
+    "PUBLIC_URL",
+    "SETUP_MODE",
+    "BOOTSTRAP_DIR",
+    "BOOTSTRAP_TOKEN_TTL",
+    "SESSION_IDLE_TTL",
+    "SESSION_ABSOLUTE_TTL",
+    "SESSION_COOKIE_SECURE",
 )
 
 DB_PASSWORD = "db-password-should-never-leak"
 VALID_DATABASE_URL = f"postgresql+asyncpg://plummy:{DB_PASSWORD}@db.internal:5432/plummy"
 VALID_REDIS_URL = "redis://redis.internal:6379/0"
 VALID_SECRET_KEY = "s" * 40
+# PUBLIC_URL is required in production (ADR-013); the test client's origin.
+TEST_PUBLIC_URL = "https://testserver"
 
 
 @pytest.fixture(autouse=True)
@@ -53,6 +63,7 @@ def make_settings(**overrides: Any) -> Settings:
         "app_env": "test",
         "database_url": VALID_DATABASE_URL,
         "redis_url": VALID_REDIS_URL,
+        "public_url": TEST_PUBLIC_URL,
     }
     values.update(overrides)
     return load_settings(**values)

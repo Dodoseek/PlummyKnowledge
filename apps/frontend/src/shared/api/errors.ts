@@ -3,7 +3,7 @@ import type { FetchBaseQueryError } from '@reduxjs/toolkit/query';
 
 /**
  * Normalized API error for the UI. Built from RTK Query errors and the backend error format
- * (RFC 9457 problem+json, API_CONTRACTS.md §1.5 — [Proposed]).
+ * (RFC 9457 problem+json, API_CONTRACTS.md §1.5).
  */
 export interface ApiError {
   kind: 'http' | 'network' | 'timeout' | 'parse' | 'unknown';
@@ -15,6 +15,14 @@ export interface ApiError {
   message: string;
   /** Backend correlation ID (`X-Request-ID`) to quote in bug reports. */
   correlationId?: string;
+  /** Field errors of `validation_error` (`field` like `body.admin.password`). */
+  fieldErrors?: FieldError[];
+}
+
+export interface FieldError {
+  field: string;
+  code: string;
+  message: string;
 }
 
 interface ProblemDetails {
@@ -22,6 +30,20 @@ interface ProblemDetails {
   detail?: unknown;
   code?: unknown;
   correlation_id?: unknown;
+  errors?: unknown;
+}
+
+function parseFieldErrors(value: unknown): FieldError[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item: unknown) => {
+    if (!isRecord(item)) return [];
+    const field = asString(item.field);
+    const code = asString(item.code);
+    const message = asString(item.message);
+    return field !== undefined && code !== undefined && message !== undefined
+      ? [{ field, code, message }]
+      : [];
+  });
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -38,6 +60,7 @@ function fromHttpStatus(status: number, data: unknown): ApiError {
   const problem: ProblemDetails = isRecord(data) ? data : {};
   const code = asString(problem.code);
   const correlationId = asString(problem.correlation_id);
+  const fieldErrors = parseFieldErrors(problem.errors);
   const message =
     asString(problem.detail) ??
     asString(problem.title) ??
@@ -48,6 +71,7 @@ function fromHttpStatus(status: number, data: unknown): ApiError {
     message,
     ...(code !== undefined && { code }),
     ...(correlationId !== undefined && { correlationId }),
+    ...(fieldErrors.length > 0 && { fieldErrors }),
   };
 }
 

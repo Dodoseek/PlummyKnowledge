@@ -1,6 +1,7 @@
 # ADR-004: Tenant isolation и доступ на уровне Knowledge Base
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR-012](0012-single-organization-deployment.md) — инсталляция принадлежит одной
+  организации; tenant-модель упразднена, правила доступа на уровне KB перенесены в ADR-012 п.7.
 - **Date:** 2026-11-17
 
 ## Context

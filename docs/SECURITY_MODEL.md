@@ -2,14 +2,14 @@
 
 | | |
 |---|---|
-| Статус | Draft v0.1 (до реализации) |
+| Статус | v0.2 — аутентификация, сессии и bootstrap реализованы (Фазы 2–3) |
 | Источник | [PROJECT_BLUEPRINT.md](PROJECT_BLUEPRINT.md) §1, §2, §5, §7, §8, §11, §12, §13 (Фазы 3, 9, 10, 12), §18, §20 |
-| Решения | [ADR-004](adr/0004-tenant-isolation-and-kb-level-access.md) … [ADR-008](adr/0008-unified-document-ingestion.md) (Accepted) |
+| Решения | [ADR-005](adr/0005-assistant-access-model.md) … [ADR-008](adr/0008-unified-document-ingestion.md), [ADR-012](adr/0012-single-organization-deployment.md), [ADR-013](adr/0013-auth-session-strategy.md) (Accepted) |
 | Связанные документы | [ARCHITECTURE.md](ARCHITECTURE.md), [DATABASE_SCHEMA.md](DATABASE_SCHEMA.md), [API_CONTRACTS.md](API_CONTRACTS.md), [DEPLOYMENT.md](DEPLOYMENT.md) |
 
 **Как читать.** Threat model, обязательные меры, правила prompt injection, Document ACL и Retention (§8) —
 нормативны. Конкретные параметры (TTL, лимиты, алгоритмы) — **[Proposed]**; изменение auth/session strategy или
-tenant model требует ADR (§15).
+модели развёртывания (ADR-012) требует ADR (§15).
 
 ---
 
@@ -31,18 +31,18 @@ tenant model требует ADR (§15).
 
 | Актив | Где | Угроза |
 |---|---|---|
-| Документы, extracted text, chunks, embeddings | PostgreSQL, object storage | Утечка между tenant/KB, retrieval удалённых данных |
+| Документы, extracted text, chunks, embeddings | PostgreSQL, object storage | Утечка между KB и пользователями, retrieval удалённых данных |
 | Диалоги и ответы | PostgreSQL | Доступ чужих пользователей |
 | API keys AI providers, OAuth refresh tokens | `secret_references` (зашифровано) | Утечка через API/логи/backup/prompt |
 | Ключ шифрования секретов | Вне БД (env/файл/secret mount) | Компрометация всех секретов |
-| Пароли (хэши), сессии, refresh tokens | PostgreSQL | Захват аккаунта |
+| Пароли (хэши), сессии (хэши токенов) | PostgreSQL | Захват аккаунта |
 | Audit log | PostgreSQL | Подмена/удаление следов |
 | Инфраструктура (сеть, metadata endpoints) | Хост/облако | SSRF |
 
 ### 2.2 Акторы
 
 Анонимный пользователь интернета; аутентифицированный пользователь любой из ролей (§2) — в том числе злонамеренный
-участник одной организации, пытающийся получить данные другой KB или организации; автор документа с prompt
+сотрудник, пытающийся получить данные KB без доступа или чужие диалоги; автор документа с prompt
 injection; скомпрометированный внешний провайдер/источник; оператор инсталляции.
 
 ### 2.3 Границы доверия
@@ -61,60 +61,60 @@ injection; скомпрометированный внешний провайд�
 
 ## 3. Roles и permissions
 
+Инсталляция принадлежит одной организации ([ADR-012](adr/0012-single-organization-deployment.md)): ролей уровня
+«платформы» и «организации» нет. Каталог permissions и системные роли создаются миграцией `0003`; назначение ролей
+через API — этап «Users & RBAC».
+
 ### 3.1 Роли (§2)
 
-| Роль | Scope | Назначение |
-|---|---|---|
-| Platform Owner | platform | Настройки инсталляции и организаций |
-| Organization Admin | organization | Пользователи, группы, провайдеры, источники и KB |
-| Knowledge Manager | organization | Документы, базы знаний и синхронизация |
-| Member | organization | Работа с разрешёнными ассистентами |
-| Auditor | organization | Доступ к журналам аудита в рамках полномочий |
+| Роль (`key`) | Назначение |
+|---|---|
+| Administrator (`admin`) | Пользователи, группы, роли, провайдеры, источники, KB, ассистенты, настройки приложения, аудит; просмотр Instance Settings |
+| Knowledge Manager (`knowledge_manager`) | Документы, базы знаний и синхронизация |
+| Member (`member`) | Работа с разрешёнными ассистентами |
+| Auditor (`auditor`) | Доступ к журналу аудита |
 
-### 3.2 Каталог permissions **[Proposed]**
+Первый Administrator создаётся при первоначальной настройке (§4.5). Владелец инсталляции (человек с доступом к
+серверу) — не роль приложения: Instance Settings меняются только на сервере (ADR-006).
+
+### 3.2 Каталог permissions
 
 | Permission | Описание |
 |---|---|
-| `platform.organizations.manage` | Создание, изменение, приостановка организаций |
-| `platform.settings.read` | Просмотр Instance Settings без секретов. Изменение Instance Settings через API не предусмотрено ([ADR-006](adr/0006-initial-setup-and-system-configuration.md)) |
-| `platform.audit.read` | События уровня инсталляции |
-| `org.settings.manage` | Настройки организации |
+| `system.settings.read` | Просмотр Instance Settings без секретов. Изменение Instance Settings через API не предусмотрено ([ADR-006](adr/0006-initial-setup-and-system-configuration.md)) |
+| `settings.manage` | Application Settings (в пределах instance policy) |
 | `users.read` / `users.manage` | Просмотр / управление пользователями |
 | `groups.read` / `groups.manage` | Просмотр / управление группами |
-| `roles.read` / `roles.assign` / `roles.manage` | Просмотр ролей / назначение / пользовательские роли (не в 0.1.0) |
+| `roles.read` / `roles.assign` | Просмотр ролей / назначение ролей (пользовательские роли — не в 0.1.0) |
 | `providers.read` / `providers.manage` | AI providers, models, embedding profiles |
 | `data_sources.read` / `data_sources.manage` | Источники: просмотр / подключение, OAuth, disconnect |
 | `data_sources.sync` | Запуск синхронизации |
-| `knowledge_bases.manage` | Создание KB и управление **всеми** KB организации |
+| `knowledge_bases.manage` | Создание KB и управление **всеми** KB |
 | `assistants.manage` | Создание и настройка ассистентов |
 | `jobs.read` / `jobs.manage` | Просмотр / retry, cancel jobs |
-| `audit.read` | Журнал аудита организации |
+| `audit.read` | Журнал аудита |
 | `chat.use` | Работа с доступными ассистентами |
 
-### 3.3 Матрица ролей **[Proposed]**
+### 3.3 Матрица ролей
 
-| Permission | Platform Owner | Org Admin | Knowledge Manager | Member | Auditor |
-|---|:-:|:-:|:-:|:-:|:-:|
-| `platform.*` | ✓ | | | | |
-| `org.settings.manage` | | ✓ | | | |
-| `users.*`, `groups.*` | | ✓ | `read` | | |
-| `roles.read`, `roles.assign` | | ✓ | | | |
-| `providers.read` | | ✓ | ✓ | | |
-| `providers.manage` | | ✓ | | | |
-| `data_sources.read` | | ✓ | ✓ | | |
-| `data_sources.manage` | | ✓ | | | |
-| `data_sources.sync` | | ✓ | ✓ | | |
-| `knowledge_bases.manage` | | ✓ | ✓ | | |
-| `assistants.manage` | | ✓ | | | |
-| `jobs.read` | | ✓ | ✓ | | |
-| `jobs.manage` | | ✓ | ✓ | | |
-| `audit.read` | | ✓ | | | ✓ |
-| `chat.use` | | ✓ | ✓ | ✓ | |
+| Permission | Administrator | Knowledge Manager | Member | Auditor |
+|---|:-:|:-:|:-:|:-:|
+| `system.settings.read`, `settings.manage` | ✓ | | | |
+| `users.*`, `groups.*` | ✓ | `read` | | |
+| `roles.read`, `roles.assign` | ✓ | | | |
+| `providers.read` | ✓ | ✓ | | |
+| `providers.manage` | ✓ | | | |
+| `data_sources.read` | ✓ | ✓ | | |
+| `data_sources.manage` | ✓ | | | |
+| `data_sources.sync` | ✓ | ✓ | | |
+| `knowledge_bases.manage` | ✓ | ✓ | | |
+| `assistants.manage` | ✓ | | | |
+| `jobs.read`, `jobs.manage` | ✓ | ✓ | | |
+| `audit.read` | ✓ | | | ✓ |
+| `chat.use` | ✓ | ✓ | ✓ | |
 
-Обоснование: Organization Admin создаёт KB и Assistant и видит аудит (§2, сценарии 5 и 8); Knowledge Manager —
-документы, KB и синхронизация (§2). Platform Owner **не** получает автоматического доступа к данным организаций; для
-работы с данными ему назначается организационная роль явно. Auditor видит только журнал своей организации
-(«в рамках полномочий», §2).
+Обоснование: Administrator создаёт KB и Assistant и видит аудит (§2, сценарии 5 и 8); Knowledge Manager —
+документы, KB и синхронизация (§2); Auditor видит только журнал аудита.
 
 ### 3.4 Уровни доступа к KB (§5, §8)
 
@@ -124,85 +124,109 @@ injection; скомпрометированный внешний провайд�
 | `manage` | `read` + загрузка/удаление документов, привязка источников, reindex, управление доступом к этой KB |
 
 Выдаётся пользователю или группе (`knowledge_base_access`). Пользователи с `knowledge_bases.manage` имеют `manage`
-ко всем KB организации.
+ко всем KB.
 
 ### 3.5 Вычисление прав
 
-- Эффективные permissions = объединение permissions ролей пользователя и ролей его групп.
+- Эффективные permissions = объединение permissions ролей пользователя и (с этапа «Users & RBAC») ролей его групп.
 - Эффективный доступ к KB = максимум из прямого доступа, доступа через группы и `knowledge_bases.manage`.
-- Права загружаются **на каждый запрос** (допустим короткий кэш, инвалидируемый при изменении ролей/групп/доступа);
-  отзыв доступа вступает в силу не позже следующего запроса **[Proposed]**.
+- Права загружаются **на каждый запрос** вместе с проверкой сессии (реализовано: один запрос к `user_roles` и
+  `role_permissions`); отзыв роли вступает в силу со следующего запроса.
 
-## 4. Authentication и сессии
+## 4. Authentication и сессии ([ADR-013](adr/0013-auth-session-strategy.md))
 
-Требования (§5, §13 Фаза 3): локальная аутентификация, Argon2id, короткий access token, refresh token
-rotation/revocation, cookies HttpOnly/Secure/SameSite, CSRF strategy, rate limiting login, password reset только при
-наличии email infrastructure; OIDC — следующая фаза, SAML/SCIM — позднее.
+Требования (§5, §13 Фаза 3): локальная аутентификация, Argon2id, cookies HttpOnly/Secure/SameSite, CSRF strategy,
+отзыв сессий, rate limiting login, password reset только при наличии email infrastructure; OIDC — следующая фаза,
+SAML/SCIM — позднее. Автоматической регистрации нет: пользователей создаёт Administrator (этап «Users & RBAC») или
+первоначальная настройка.
 
 ### 4.1 Пароли
 
-- Argon2id; параметры не ниже рекомендаций OWASP (m = 19 MiB, t = 2, p = 1) и калибруются под сервер;
-  параметры хранятся в строке хэша, при входе с устаревшими параметрами хэш пересчитывается **[Proposed]**.
-- Минимальная длина 12 символов, без требований к составу; проверка по списку распространённых паролей
-  **[Proposed]**.
-- Сообщения об ошибке входа не различают «нет пользователя» / «неверный пароль» / «отключён» (`invalid_credentials`).
-- Время ответа на неудачный логин не зависит от существования пользователя (фиктивная проверка хэша).
+- Argon2id (`argon2-cffi`), профиль RFC 9106 low-memory: t = 3, m = 64 MiB, p = 4 (выше минимума OWASP m = 19 MiB,
+  t = 2, p = 1). Параметры хранятся в строке хэша; при входе с устаревшими параметрами хэш пересчитывается.
+  Хэширование — вне event loop.
+- Длина 12–128 символов, без требований к составу; пароль не совпадает с email и не состоит из одного
+  повторяющегося символа. Проверка по списку распространённых паролей — **[Proposed]**, отдельная задача.
+- Ошибка входа не различает «нет пользователя» / «неверный пароль» / «отключён» / «удалён» (`invalid_credentials`).
+- Время ответа на неудачный логин не зависит от существования пользователя (проверка фиктивного хэша).
 
-### 4.2 Сессии и токены **[Proposed — ADR «Auth/session strategy» (планируется)]**
+### 4.2 Сессии
 
 | Объект | Срок | Хранение |
 |---|---|---|
-| Access token | 15 мин | Cookie; при **каждом** запросе сервер проверяет, что сессия не отозвана (Redis-кэш + БД) |
-| Refresh token | 7 дней (idle) | Cookie, ограниченная путём refresh; в БД — только SHA-256 |
-| Сессия | 30 дней (абсолютный срок) | `sessions` |
+| Сессия: простой | `SESSION_IDLE_TTL`, по умолчанию 24 ч | `sessions.last_seen_at` (обновляется не чаще раза в 60 с) |
+| Сессия: абсолютный срок | `SESSION_ABSOLUTE_TTL`, по умолчанию 7 дней | `sessions.expires_at` |
+| Токен сессии | Как сессия | Cookie; в БД только SHA-256 (`sessions.token_hash`) |
 
-- Refresh rotation: каждый refresh выдаёт новый токен, старый помечается использованным. Повторное предъявление
-  использованного токена → отзыв всей сессии и audit event `auth.refresh.reuse_detected` (§5).
-- Отзыв всех сессий пользователя: logout-all, смена пароля, отключение/удаление пользователя, действие администратора.
-- Отозванная сессия отклоняется немедленно (§12), даже если access token ещё не истёк.
+- Непрозрачный токен 256 бит; проверка на **каждом** запросе в PostgreSQL: не отозвана, не истекла, пользователь
+  `active` и не удалён, сессия не старше `password_changed_at`. Отозванная сессия отклоняется немедленно (§12).
+- Login и setup всегда создают **новую** сессию; сессия из прежней cookie отзывается (`superseded`) — защита от
+  session fixation.
+- Logout отзывает текущую сессию (`logout`); без сессии — только удаляет cookie (идемпотентно).
+- Отзыв всех сессий пользователя: смена/сброс пароля (`plummy.cli admin reset-password`), позднее —
+  отключение/удаление пользователя и действие администратора.
+- Refresh tokens не используются (ADR-013).
 
-### 4.3 Cookies (§5) **[Proposed]**
+### 4.3 Cookies (§5)
 
 | Cookie | Атрибуты |
 |---|---|
-| `__Host-pk_access` | `HttpOnly; Secure; SameSite=Lax; Path=/` |
-| `__Secure-pk_refresh` | `HttpOnly; Secure; SameSite=Strict; Path=/api/v1/auth/refresh` |
-| `__Host-pk_csrf` | `Secure; SameSite=Strict; Path=/` (читается JS для double-submit) |
+| `__Host-pk_session` | `HttpOnly; Secure; SameSite=Lax; Path=/`; `Max-Age` до абсолютного истечения |
+| `pk_session` | Только при `SESSION_COOKIE_SECURE=false` (разработка без TLS; запрещено в `production`): `HttpOnly; SameSite=Lax; Path=/` |
 
 ### 4.4 CSRF (§5)
 
-- Double-submit token: значение cookie `pk_csrf` передаётся в заголовке `X-CSRF-Token` для `POST/PUT/PATCH/DELETE`.
-- Дополнительно проверяется заголовок `Origin` (должен совпадать с настроенным публичным origin).
+- Токен, привязанный к сессии: `HMAC-SHA256(key = токен сессии, "plummy-csrf-v1")`, base64url. Приходит в теле ответов
+  `POST /setup/initialize`, `POST /auth/login`, `GET /auth/me`; frontend хранит его только в памяти и передаёт в
+  `X-CSRF-Token` для `POST/PUT/PATCH/DELETE`. Неверный или отсутствующий токен при действующей сессии →
+  `403 csrf_failed`.
+- Для всех небезопасных методов проверяется `Origin` (без него — `Referer`): должен совпадать с origin `PUBLIC_URL`
+  или входить в `CORS_ORIGINS`; иначе (в том числе без обоих заголовков) → `403 csrf_failed`. Для login и setup это
+  основная защита (сессии ещё нет).
 - `GET`-запросы не имеют побочных эффектов (кроме OAuth callback, защищённого `state`).
 
 ### 4.5 Первоначальная настройка и восстановление администратора ([ADR-006](adr/0006-initial-setup-and-system-configuration.md))
 
-- `POST /api/v1/setup/initialize` требует **bootstrap token**: ≥ 256 бит, генерируется init-командой при установке, в
-  БД хранится только хэш, открытое значение — в файле `0600` на сервере; в логи попадает только путь. Срок действия
-  ограничен (по умолчанию 24 ч **[Proposed]**), токен одноразовый.
-- Инициализация атомарна: блокировка строки `instance_state`, проверка флага и токена, создание организации,
-  пользователя и ролей, установка флага, погашение токена, audit — одна транзакция. Второй параллельный запрос
-  получает `409 setup_already_completed`.
+- `POST /api/v1/setup/initialize` требует **bootstrap token**: 256 бит, генерируется командой
+  `python -m plummy.cli setup init-token` в шаге `migrate`; в БД хранится только SHA-256, открытое значение — в файле
+  `BOOTSTRAP_DIR/setup-token` (`0600`, каталог `0700`) на сервере; в логи попадает только путь. Срок действия —
+  `BOOTSTRAP_TOKEN_TTL` (по умолчанию 24 ч), токен одноразовый.
+- Инициализация атомарна: хэш пароля вычисляется до транзакции; затем блокировка строки `instance_state`
+  (`SELECT … FOR UPDATE`), проверка флага и токена (сравнение constant-time), создание первого пользователя и
+  назначение роли `admin`, установка флага, погашение токена (хэш обнуляется), audit `setup.completed`, создание
+  сессии — одна транзакция. Второй параллельный запрос ждёт блокировку и получает `409 setup_already_completed`.
+  Отклонённые попытки пишут `setup.initialize.rejected` отдельной транзакцией.
 - Состояние «настроено» хранится явным флагом и через API не сбрасывается; удаление всех пользователей не открывает
   setup повторно.
-- Нет сессии и CSRF cookie → обязательна проверка `Origin`; rate limit `setup`; сравнение токена constant-time; тела
-  запросов setup не логируются.
-- Режим `cli_only` отключает web-initialize.
-- Повторное создание или восстановление администратора — только CLI с доступом к серверу (`plummy admin create`,
-  `plummy admin reset-password`), с audit-событием.
+- Сессии ещё нет → обязательна проверка `Origin`; rate limit `setup` (5/мин на IP); тела запросов setup не
+  логируются; токен и пароль — `SecretStr`.
+- Режим `SETUP_MODE=cli_only` отключает web-initialize (`404`); первый администратор создаётся
+  `python -m plummy.cli admin create`.
+- **Токен потерян или истёк** до завершения настройки — только с доступом к серверу:
+  `python -m plummy.cli setup init-token --rotate` выпускает новый токен, старый перестаёт действовать. Повторные
+  запуски `migrate` действующий токен не меняют. После инициализации команда ничего не выпускает и удаляет
+  оставшийся файл токена.
+- Восстановление доступа администратора — только CLI на сервере (`python -m plummy.cli admin reset-password`;
+  отзывает все сессии пользователя), с audit-событием. Публичного механизма повторного создания администратора нет.
 
-## 5. Tenant isolation (§8 п.1)
+## 5. Изоляция данных ([ADR-012](adr/0012-single-organization-deployment.md))
 
-1. Tenant context устанавливается сервером из проверенной сессии (§5); `organization_id` от клиента не принимается.
-2. Каждый repository-метод требует `organization_id`; запросы без tenant-фильтра запрещены (code review + тесты).
-3. Составные внешние ключи `(organization_id, id)` не дают связать объекты разных организаций на уровне БД
-   (DATABASE_SCHEMA.md §1).
-4. **Background jobs:** payload содержит `organization_id`; worker загружает ресурсы только с этим фильтром и
-   проверяет их состояние (не удалены, принадлежат tenant) (§8 п.1).
-5. Ключи Redis (кэш, locks, rate limits) и ключи object storage содержат `organization_id` в префиксе.
-6. Ответы на запросы к ресурсам чужой организации — `404` (не раскрывать существование).
-7. **[Proposed — ADR «PostgreSQL RLS» (планируется)]** PostgreSQL RLS как второй рубеж.
-8. Тесты изоляции двух организаций обязательны для каждого endpoint и job (§13 Фаза 2, §12).
+Инсталляция принадлежит одной организации; изоляция **разных** организаций обеспечивается отдельными инсталляциями
+(свои БД, storage, ключи, сети), а не кодом. Внутри инсталляции действуют правила:
+
+1. Контекст безопасности (`SecurityContext`: пользователь, сессия, роли, permissions) устанавливается сервером только
+   из проверенной сессии (§5); идентификаторы пользователя, ролей и прав от клиента не принимаются (DTO с
+   `extra="forbid"`).
+2. Доступ к документам — на уровне Knowledge Base (§3.4, §6); фильтры доступа к KB, источникам, документам и версиям
+   применяются в SQL **до** передачи контекста LLM.
+3. Личные данные пользователя (диалоги, сессии) доступны только ему.
+4. **Background jobs:** payload содержит идентификаторы ресурса и `correlation_id`; worker заново загружает ресурс и
+   проверяет его состояние (не удалён, источник активен) (§8 п.1).
+5. Ответы на запросы к ресурсам без доступа (чужой диалог, KB без доступа, документ такой KB) — `404`
+   (не раскрывать существование).
+6. **[Proposed — ADR «PostgreSQL RLS» (планируется)]** RLS по доступным KB как второй рубеж — решается в Фазе 12.
+7. Тесты «чужой диалог / KB без доступа / документ без доступа недоступны» обязательны для каждого endpoint и job
+   (§12).
 
 ## 6. Authorization и Document ACL
 
@@ -238,7 +262,7 @@ rotation/revocation, cookies HttpOnly/Secure/SameSite, CSRF strategy, rate limit
 
 ### 6.4 Защита RAG (сводка)
 
-1. Доступность ассистента (§6.3) → 2. разрешённые источники вычисляет backend → 3. фильтры tenant / источник / текущая
+1. Доступность ассистента (§6.3) → 2. разрешённые источники вычисляет backend → 3. фильтры источник / текущая
 `ready`-версия / активный `chunk_set` / profile в SQL → 4. повторная проверка отобранных chunks перед сборкой
 контекста → 5. инструкции отделены от недоверенного контекста (§10) → 6. валидация citation IDs → 7. source viewer
 проверяет доступ заново.
@@ -248,7 +272,7 @@ rotation/revocation, cookies HttpOnly/Secure/SameSite, CSRF strategy, rate limit
 - Секреты (API keys провайдеров, OAuth refresh tokens и client secrets) шифруются **до записи в БД** (§5).
 - Ключ шифрования хранится **вне БД** (§5): переменная окружения или смонтированный файл; отсутствие ключа при
   старте → отказ запуска с понятной диагностикой.
-- **[Proposed — ADR «Шифрование секретов» (планируется)]** AES-256-GCM, уникальный nonce на запись, associated data = `organization_id` +
+- **[Proposed — ADR «Шифрование секретов» (планируется)]** AES-256-GCM, уникальный nonce на запись, associated data =
   `secret_id` + `kind`; key ring с `key_id` для ротации ключа без простоя.
 - Секреты в API — **write-only**; в ответах только `has_secret` и `secret_hint` (§12).
 - Секреты не передаются в prompt (§8), не включаются в тексты ошибок, не пишутся в логи (secret redaction, §8 п.3):
@@ -263,10 +287,10 @@ OpenAI/Anthropic). Полный алгоритм — в ADR-007; здесь — 
 **Модель: Explicit Network Allowlist.**
 
 - Все внутренние и опасные адреса запрещены по умолчанию; allowlist по умолчанию пуст.
-- Разрешения задаёт только владелец инсталляции в Instance Settings (конфигурация сервера). Администратор организации
-  не может расширить allowlist: такого API нет, Organization Settings не содержат сетевых параметров.
+- Разрешения задаёт только владелец инсталляции в Instance Settings (конфигурация сервера). Administrator приложения
+  не может расширить allowlist: такого API нет, Application Settings не содержат сетевых параметров.
 - Запись allowlist ограничена `scheme + host + port` (+ префикс пути), назначением (`llm`, `embedding`, …), типами
-  провайдеров, организациями и **обязательными `allowed_cidrs`** для непубличных адресов. Разрешение hostname не
+  провайдеров и **обязательными `allowed_cidrs`** для непубличных адресов. Разрешение hostname не
   открывает все адреса, в которые он может разрешиться.
 - Link-local, cloud metadata, unspecified, multicast/broadcast и адреса собственных сервисов платформы (PostgreSQL,
   Redis, storage) не разрешаются никогда.
@@ -293,14 +317,14 @@ OpenAI/Anthropic). Полный алгоритм — в ADR-007; здесь — 
 
 **Локальные LLM** используют те же `LLMProvider`/`EmbeddingProvider`. Безопасная настройка (владелец): изолированная
 сеть для сервиса модели без публикации порта → запись allowlist с назначением и CIDR → перезапуск API/worker →
-провайдер в организации с тем же `base_url` → connection test. Удобство обеспечивается одной записью конфигурации, а не
+провайдер в приложении с тем же `base_url` → connection test. Удобство обеспечивается одной записью конфигурации, а не
 ослаблением проверок.
 
 ## 9. Uploads, parsing и storage (§8 п.6, п.8)
 
 Все источники ([ADR-008](adr/0008-unified-document-ingestion.md)) — upload, Google Drive, Microsoft 365 — проходят одни и
-те же стадии 2–4 ingestion pipeline: проверка прав и tenant, типа и размера, безопасности файла. Worker повторно
-проверяет tenant и состояние ресурсов, не доверяя payload задачи.
+те же стадии 2–4 ingestion pipeline: проверка прав и состояния ресурсов, типа и размера, безопасности файла. Worker повторно
+проверяет состояние ресурсов, не доверяя payload задачи.
 
 | Мера | Реализация **[Proposed — значения]** |
 |---|---|
@@ -337,8 +361,8 @@ OpenAI/Anthropic). Полный алгоритм — в ADR-007; здесь — 
 
 | Область | События |
 |---|---|
-| Setup / организации | `setup.completed`, `setup.initialize.rejected`, `admin.created_via_cli`, `admin.password_reset_via_cli`, `organization.created`, `organization.updated`, `organization.suspended`, `organization.settings.updated` |
-| Аутентификация | `auth.login.succeeded`, `auth.login.failed`, `auth.logout`, `auth.session.revoked`, `auth.session.revoked_by_admin`, `auth.refresh.reuse_detected`, `auth.password.changed`, `auth.password.reset_requested`, `auth.password.reset` |
+| Setup / настройки | `setup.completed`, `setup.initialize.rejected`, `setup.token_issued`, `admin.created_via_cli`, `admin.password_reset_via_cli`, `settings.updated` |
+| Аутентификация | `auth.login.succeeded`, `auth.login.failed`, `auth.logout`, `auth.session.revoked`, `auth.session.revoked_by_admin`, `auth.password.changed`, `auth.password.reset_requested`, `auth.password.reset` |
 | Пользователи и группы | `user.created`, `user.updated`, `user.disabled`, `user.deleted`, `group.created`, `group.updated`, `group.deleted`, `group.members.changed` |
 | Роли и доступ | `role.assigned`, `role.revoked`, `role.created`, `role.updated`, `role.deleted`, `kb.access.granted`, `kb.access.revoked` |
 | Провайдеры | `provider.created`, `provider.updated`, `provider.deleted`, `provider.secret.rotated`, `provider.tested`, `model.created`, `model.updated`, `model.deleted`, `embedding_profile.created`, `embedding_profile.updated` |
@@ -359,7 +383,7 @@ OpenAI/Anthropic). Полный алгоритм — в ADR-007; здесь — 
 - **XSS:** React-экранирование по умолчанию; `dangerouslySetInnerHTML` запрещён без санитизации; содержимое
   документов и ответы модели рендерятся как недоверенные данные.
 - **CORS:** same-origin; при необходимости — явный allowlist origins, никогда `*` вместе с credentials.
-- **Session theft:** HttpOnly cookies, короткий access token, rotation, reuse detection, отзыв сессий.
+- **Session theft:** HttpOnly cookies, хэш токена в БД, idle и абсолютный срок, немедленный отзыв, новая сессия при входе (ADR-013).
 
 ## 13. Rate limiting и resource exhaustion (§8 п.5, п.6)
 
@@ -373,12 +397,12 @@ OpenAI/Anthropic). Полный алгоритм — в ADR-007; здесь — 
 - Запрещено в обычных логах (§11): содержимое документов и chunks, prompts и ответы модели, токены, пароли,
   API keys, cookies, заголовки `Authorization`, OAuth codes.
 - Ошибки внешних SDK санитизируются: они могут содержать фрагменты запроса или ключа.
-- В логах — идентификаторы (`user_id`, `organization_id`, `job_id`, `correlation_id`), а не email/имена, где возможно.
+- В логах — идентификаторы (`user_id`, `job_id`, `correlation_id`), а не email/имена, где возможно.
 - Уровень DEBUG в production не включает payload-логирование.
 
 ## 15. OAuth-коннекторы (§7, §13 Фазы 9, 10)
 
-- `state`: случайный, одноразовый, привязан к сессии и организации, TTL ≈ 10 мин; проверяется в callback.
+- `state`: случайный, одноразовый, привязан к сессии и пользователю, TTL ≈ 10 мин; проверяется в callback.
 - PKCE (S256) — обязательно для Microsoft Entra ID (§7), **[Proposed]** и для Google.
 - Redirect URI — точное совпадение, только HTTPS (кроме localhost в dev).
 - Refresh tokens шифруются (§13 Фаза 9); access tokens провайдеров не сохраняются или сохраняются только зашифрованными с коротким сроком.
@@ -417,7 +441,8 @@ OpenAI/Anthropic). Полный алгоритм — в ADR-007; здесь — 
 
 | Угроза (§8) | Меры | Проверка |
 |---|---|---|
-| Cross-tenant leakage | Tenant из сессии, обязательный фильтр, составные FK, tenant в job payload, префиксы Redis/storage, (RLS) | Тесты двух организаций для каждого endpoint/job |
+| Утечка между KB / пользователями | Контекст из сессии, фильтры доступа к KB в SQL, проверка состояния ресурсов в jobs, (RLS) | Тесты «KB без доступа / чужой диалог недоступны» для каждого endpoint/job |
+| Утечка между организациями | Одна организация на инсталляцию (ADR-012): отдельные БД, storage, ключи | Не применимо внутри инсталляции |
 | RBAC bypass | Policy в каждом use case, deny by default, 404/403, frontend не boundary | Negative RBAC tests, тесты комбинаций permissions (§13 Фаза 7) |
 | Утечка API keys / OAuth tokens | Шифрование, ключ вне БД, write-only API, redaction, отсутствие в prompt | Тесты: secrets не возвращаются и не логируются |
 | SSRF | Валидация URL и IP, запрет private/metadata, allowlist уровня инсталляции, pinning | SSRF-тесты (§12) |
@@ -426,12 +451,12 @@ OpenAI/Anthropic). Полный алгоритм — в ADR-007; здесь — 
 | Prompt injection | Недоверенный контент, разделение инструкций и контекста, нет tools, валидация цитат, безопасный рендеринг | Adversarial documents (§13 Фаза 6) |
 | XSS | Экранирование, CSP, запрет сырого HTML | XSS tests |
 | CSRF | Double-submit + Origin, SameSite | CSRF tests |
-| Session theft | HttpOnly/Secure, короткий access, rotation, reuse detection | Тесты revoked sessions (§12) |
+| Session theft | HttpOnly/Secure, хэш токена в БД, idle/абсолютный срок, отзыв, новая сессия при входе (ADR-013) | Тесты revoked/expired sessions, session fixation (§12) |
 | Resource exhaustion | Rate limits, лимиты upload/парсинга/генераций, pools, timeouts | Performance tests (§12) |
 | Утечки через логи | Запрет payload-логирования, redaction | Проверка логов в тестах |
 | Ошибки удаления | Немедленное исключение из retrieval, purge jobs, lifecycle drills | Тест «deleted docs не находятся» (§12) |
 | Захват неинициализированной инсталляции | Bootstrap token, атомарная инициализация, флаг без сброса через API, CLI-восстановление (ADR-006) | SC-03, SC-04 |
-| Обход сетевой политики администратором организации | Allowlist только в Instance Settings, нет API изменения (ADR-007) | SC-02 |
+| Обход сетевой политики администратором приложения | Allowlist только в Instance Settings, нет API изменения (ADR-007) | SC-02 |
 | Доступ к ассистенту без доступа ко всем его KB | ADR-005, проверка на каждом запросе | SC-01 |
 | Чрезмерные OAuth permissions | Минимальные scopes, честное отображение, исследование Selected permissions | Документация и ревью перед production |
 
@@ -439,16 +464,16 @@ OpenAI/Anthropic). Полный алгоритм — в ADR-007; здесь — 
 
 Негативные тесты обязательны:
 
-- [ ] чужой tenant / KB / document недоступен;
+- [ ] KB / документ без доступа и чужой диалог недоступны;
 - [ ] unauthorized chunks не попадают в LLM;
-- [ ] revoked sessions отклоняются;
+- [x] revoked sessions отклоняются (Фаза 3);
 - [ ] secrets не возвращаются;
 - [ ] malicious filenames не выходят из storage;
 - [ ] повторные jobs не дублируют chunks;
 - [ ] deleted docs не находятся;
 - [ ] выдуманные citation IDs отклоняются.
 
-Плюс категории (§12): tenant isolation, RBAC, SSRF, uploads, prompt injection; recovery: backup restore, worker
+Плюс категории (§12): изоляция данных KB и пользователей, RBAC, SSRF, uploads, prompt injection; recovery: backup restore, worker
 restart, interrupted sync.
 
 ### 18.1 Контрольные сценарии
@@ -458,11 +483,11 @@ restart, interrupted sync.
 | ID | Сценарий | Ожидаемое поведение | Решение | Фаза |
 |---|---|---|---|---|
 | SC-01 | Пользователь имеет доступ к KB A, но не к KB B; обе подключены к одному ассистенту | Ассистента нет в списке; `GET /assistants/{id}` → `404`; `POST /chat/stream` → `404` (или `403 assistant_unavailable` в собственном старом диалоге); ни один chunk из A или B не уходит в LLM | ADR-005 | 7–8 |
-| SC-02 | Администратор организации пытается расширить сетевой allowlist | API изменения allowlist отсутствует (`404/405`); `PATCH /organizations/current/settings` с сетевыми полями → `422`; провайдер с непозволенным `base_url` → `422 endpoint_not_allowed` | ADR-006, ADR-007 | 3–4 |
+| SC-02 | Administrator приложения пытается расширить сетевой allowlist | API изменения allowlist отсутствует (`404/405`); `PATCH /settings` с сетевыми полями → `422`; провайдер с непозволенным `base_url` → `422 endpoint_not_allowed` | ADR-006, ADR-007 | 3–4 |
 | SC-03 | Злоумышленник повторно вызывает первоначальную настройку | После инициализации `POST /setup/initialize` → `409 setup_already_completed` при любом токене; до инициализации без валидного токена → `403 setup_token_invalid`; событие `setup.initialize.rejected` | ADR-006 | 3 |
-| SC-04 | Два запроса одновременно создают первого администратора | Ровно один `201`; второй ждёт блокировку и получает `409`; в БД одна организация и один первый администратор | ADR-006 | 3 |
-| SC-05 | Пользователь запрашивает документ другого tenant напрямую по ID (карточка, viewer, chunk, reindex, delete) | `404 not_found` для всех методов; данные и факт существования не раскрываются | ADR-004, ADR-008 | 2, 5 |
-| SC-06 | Локальный Ollama доступен по явно разрешённому адресу | Провайдер `ollama` с `base_url`, совпадающим с записью allowlist, проходит connection test и используется в чате/embeddings; тот же адрес для другого назначения или организации вне записи → отказ | ADR-007 | 4 |
+| SC-04 | Два запроса одновременно создают первого администратора | Ровно один `201`; второй ждёт блокировку и получает `409`; в БД один первый администратор | ADR-006 | 3 |
+| SC-05 | Пользователь запрашивает документ KB, к которой у него нет доступа, напрямую по ID (карточка, viewer, chunk, reindex, delete) | `404 not_found` для всех методов; данные и факт существования не раскрываются | ADR-012, ADR-008 | 5 |
+| SC-06 | Локальный Ollama доступен по явно разрешённому адресу | Провайдер `ollama` с `base_url`, совпадающим с записью allowlist, проходит connection test и используется в чате/embeddings; тот же адрес для другого назначения или типа провайдера вне записи → отказ | ADR-007 | 4 |
 | SC-07 | Разрешённый hostname после DNS-разрешения указывает на запрещённый адрес (вне `allowed_cidrs`, metadata, loopback) | Соединение не устанавливается; `egress_denied`; `network.egress.denied` в audit; повторного DNS-разрешения нет | ADR-007 | 4 |
 | SC-08 | Внешний документ содержит prompt injection | Инструкции из документа не меняют правила; модель без tools; выдуманные citation IDs отклоняются; внешние изображения в ответе не загружаются; секреты в prompt отсутствуют | §10, ADR-008 | 6 |
 | SC-09 | Повторная задача ingestion для уже обработанной версии | Job завершается `succeeded` с `result = skipped_already_processed`; число chunks и embeddings не меняется; при гонке двух jobs дубликатов нет (unique + lock) | ADR-008 | 5 |
@@ -473,21 +498,22 @@ restart, interrupted sync.
 - **Dependency и container scanning** в CI (§13 Фаза 12); инструменты — **[Proposed]**: pip-audit, npm audit /
   Dependabot, Trivy.
 - **Security reporting:** `SECURITY.md` с процессом ответственного раскрытия (§4, §13 Фаза 13).
-- **Перед релизом** (§20): нет известных critical/high issues; tenant isolation и permission tests проходят; secrets
+- **Перед релизом** (§20): нет известных critical/high issues; тесты изоляции KB/пользователей и permission tests проходят; secrets
   не попадают в logs/API responses; upload/parser limits и ingestion idempotency работают; deleted docs исключены
   из retrieval; citations валидируются backend; backup/restore проверены.
-- Threat model review и tenant/RBAC audit — Фаза 12 и при значимых изменениях.
+- Threat model review и RBAC/KB-access audit — Фаза 12 и при значимых изменениях.
 
 ## 20. Открытые вопросы
 
-1. Auth/session strategy: TTL, формат access token, точная CSRF-схема (планируемый ADR).
-2. Алгоритм и ротация ключа шифрования секретов (планируемый ADR).
-3. RLS как второй рубеж (планируемый ADR).
-4. Antivirus-сканирование загрузок.
-5. CSP для стилей Chakra UI (nonce vs `unsafe-inline`).
-6. Нужно ли аудировать просмотр документов и чтение аудита.
-7. Срок действия bootstrap token и процедура повторной генерации.
+1. Алгоритм и ротация ключа шифрования секретов (планируемый ADR).
+2. RLS как второй рубеж доступа на уровне KB (планируемый ADR).
+3. Antivirus-сканирование загрузок.
+4. CSP для стилей Chakra UI (nonce vs `unsafe-inline`).
+5. Нужно ли аудировать просмотр документов и чтение аудита.
+6. Список распространённых паролей для парольной политики (источник, лицензия).
 
-Решено: сетевой allowlist и локальные модели ([ADR-007](adr/0007-network-access-and-local-llm.md)), bootstrap
+Решено: одна организация на инсталляцию ([ADR-012](adr/0012-single-organization-deployment.md)), сессии, CSRF,
+пароли и лимиты входа ([ADR-013](adr/0013-auth-session-strategy.md)), срок и повторная генерация bootstrap token
+(§4.5), сетевой allowlist и локальные модели ([ADR-007](adr/0007-network-access-and-local-llm.md)), bootstrap
 ([ADR-006](adr/0006-initial-setup-and-system-configuration.md)), доступ к ассистентам
 ([ADR-005](adr/0005-assistant-access-model.md)).

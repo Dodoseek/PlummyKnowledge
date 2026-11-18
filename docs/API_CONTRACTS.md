@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Статус | Draft v0.1 (до реализации; контракт не стабилен до 1.0.0, §19) |
+| Статус | v0.2 — реализованы `health`, `setup`, `auth` (login, logout, me); контракт не стабилен до 1.0.0, §19 |
 | Источник | [PROJECT_BLUEPRINT.md](PROJECT_BLUEPRINT.md) §5, §6, §10, §12 |
 | Решения | [ADR-005](adr/0005-assistant-access-model.md), [ADR-006](adr/0006-initial-setup-and-system-configuration.md) (группы `setup`, `system`), [ADR-007](adr/0007-network-access-and-local-llm.md), [ADR-008](adr/0008-unified-document-ingestion.md), [ADR-010](adr/0010-api-error-format.md) |
 | Связанные документы | [ARCHITECTURE.md](ARCHITECTURE.md), [DATABASE_SCHEMA.md](DATABASE_SCHEMA.md), [SECURITY_MODEL.md](SECURITY_MODEL.md) |
@@ -29,25 +29,27 @@
 
 - Запросы и ответы — Pydantic v2 DTO (§10). ORM entities **никогда** не отдаются напрямую (§10).
 - Request DTO запрещают неизвестные поля (`extra="forbid"`), чтобы клиент не мог передать, например,
-  `organization_id` или `role` в обход правил.
+  `user_id`, `role` или `permissions` в обход правил.
 - Write-only поля (секреты, пароли) никогда не появляются в ответах (§12).
 - Формат: JSON, `snake_case`, UUID — строки, время — ISO 8601 UTC (`2026-11-17T12:00:00Z`).
 
-### 1.3 Tenant scope (§5)
+### 1.3 Контекст запроса (§5, [ADR-012](adr/0012-single-organization-deployment.md))
 
-- Организация определяется **только** из проверенной сессии. `organization_id` не передаётся в путях, query или теле
-  запросов организационного уровня.
-- Исключения: группы `organizations` и `system` для Platform Owner (scope `platform`); `health`, `setup`,
-  `auth/login` (scope `public`).
-- Ресурс другой организации или ресурс, к которому у пользователя нет даже права чтения, → `404 not_found`
-  (не раскрываем существование). Ресурс доступен для чтения, но действие запрещено → `403 permission_denied`.
+- Инсталляция принадлежит одной организации: идентификатора организации в API нет.
+- Пользователь, его роли и permissions определяются **только** из проверенной сессии; клиент не передаёт их в путях,
+  query, заголовках или теле.
+- Без аутентификации (scope `public`): `health`, `setup`, `auth/login`, `auth/logout`.
+- Нет сессии → `401 unauthenticated` (`session_revoked` для отозванной). Ресурс, к которому у пользователя нет даже
+  права чтения (KB без доступа, чужой диалог), → `404 not_found` (не раскрываем существование). Ресурс доступен для
+  чтения или endpoint требует permission, которой нет, → `403 permission_denied`.
 
 ### 1.4 Аутентификация и CSRF (§5) — детали в [SECURITY_MODEL.md §4](SECURITY_MODEL.md#4-authentication-и-сессии)
 
-- Access и refresh tokens передаются только в cookies `HttpOnly; Secure; SameSite` (§5). Заголовок
-  `Authorization` браузерным клиентом не используется.
-- Для небезопасных методов (`POST`, `PUT`, `PATCH`, `DELETE`) обязателен заголовок `X-CSRF-Token`, совпадающий с
-  CSRF cookie (double-submit), плюс проверка `Origin` **[Proposed — ADR «Auth/session strategy» (планируется)]**.
+- Серверная сессия с непрозрачным токеном в cookie `__Host-pk_session` (`HttpOnly; Secure; SameSite=Lax`)
+  ([ADR-013](adr/0013-auth-session-strategy.md)). Заголовок `Authorization` не используется; refresh tokens нет.
+- Для небезопасных методов (`POST`, `PUT`, `PATCH`, `DELETE`) с действующей сессией обязателен заголовок
+  `X-CSRF-Token` — токен, привязанный к сессии и полученный в теле `Session` (§2.2). Для всех небезопасных методов
+  `Origin` (или `Referer`) должен совпадать с origin `PUBLIC_URL` или `CORS_ORIGINS`. Нарушение → `403 csrf_failed`.
 
 ### 1.5 Формат ошибок ([ADR-010](adr/0010-api-error-format.md), реализовано)
 
@@ -73,7 +75,7 @@
 - `code` — обязательный стабильный идентификатор; клиенты ветвятся по `code`, а не по `title`/`detail`.
 - `correlation_id` — всегда, равен заголовку ответа `X-Request-ID`.
 - `detail` — необязателен, отсутствует у `5xx`. `detail` и `errors[].message` не содержат секретов, stack traces,
-  SQL, переданных значений, содержимого документов или сведений об объектах других организаций.
+  SQL, переданных значений, содержимого документов или сведений об объектах, недоступных пользователю.
 - `errors` — только у `validation_error` и `invalid_query_parameter`. `field` — путь через точку с источником
   (`body.…`, `query.…`, `path.…`, `header.…`); `code` — тип ошибки Pydantic (`missing`, `int_parsing`, …) или
   прикладной код.
@@ -83,10 +85,10 @@
 | HTTP | `code` | Когда |
 |---|---|---|
 | 400 | `bad_request` | Некорректный запрос, не связанный с валидацией полей |
-| 401 | `unauthenticated` | Нет сессии / access token истёк |
+| 401 | `unauthenticated` | Нет сессии, сессия истекла или пользователь неактивен |
 | 401 | `session_revoked` | Сессия отозвана (§12) |
 | 401 | `invalid_credentials` | Логин — одинаково для неизвестного email, неверного пароля и отключённого пользователя |
-| 403 | `csrf_failed` | Нет/неверный CSRF token или `Origin` |
+| 403 | `csrf_failed` | Нет/неверный `X-CSRF-Token` или `Origin` |
 | 403 | `permission_denied` | Недостаточно прав |
 | 403 | `assistant_unavailable` | Ассистент собственного диалога пользователя стал недоступен ([ADR-005](adr/0005-assistant-access-model.md)) |
 | 403 | `setup_token_invalid` | Bootstrap token неверен, истёк или погашен ([ADR-006](adr/0006-initial-setup-and-system-configuration.md)) |
@@ -102,7 +104,7 @@
 | 422 | `validation_error` | Ошибка валидации DTO; список в `errors` |
 | 422 | `invalid_query_parameter` | Неразрешённый фильтр/сортировка (§10) |
 | 422 | `endpoint_not_allowed` | `base_url` провайдера не проходит сетевую политику инсталляции ([ADR-007](adr/0007-network-access-and-local-llm.md)) |
-| 422 | `setting_exceeds_instance_policy` | Значение Organization Settings шире, чем разрешает instance policy ([ADR-006](adr/0006-initial-setup-and-system-configuration.md)) |
+| 422 | `setting_exceeds_instance_policy` | Значение Application Settings шире, чем разрешает instance policy ([ADR-006](adr/0006-initial-setup-and-system-configuration.md)) |
 | 429 | `rate_limited` | Превышен лимит; заголовок `Retry-After` (§8 п.5) |
 | 500 | `internal_error` | Необработанная ошибка; без `detail`, подробности — в логе по `correlation_id` |
 | 502 | `provider_error` | Ошибка AI provider / источника |
@@ -129,7 +131,7 @@
   `Idempotency-Key: <uuid>`.
 - Тот же ключ + то же тело → возвращается сохранённый результат первой обработки, побочные эффекты не повторяются.
 - Тот же ключ + другое тело → `409 idempotency_key_mismatch`.
-- Ключи привязаны к пользователю, организации и endpoint; срок хранения **[Proposed]** 24 часа.
+- Ключи привязаны к пользователю и endpoint; срок хранения **[Proposed]** 24 часа.
 
 ### 1.8 Сквозные заголовки (§11)
 
@@ -149,7 +151,7 @@
 |---|---|
 | Назначение | Что делает |
 | Permission | Ключ permission и/или уровень доступа к KB ([SECURITY_MODEL.md §3](SECURITY_MODEL.md#3-roles-и-permissions)) |
-| Tenant scope | `organization` (из сессии) \| `platform` \| `public` |
+| Scope | `auth` (сессия пользователя) \| `public` |
 | Schemas | Request / response DTO |
 | Ошибки | Коды из §1.5 |
 | Side effects | Создаваемые jobs, отзыв сессий, удаление данных |
@@ -157,19 +159,19 @@
 | Audit event | Имя события ([SECURITY_MODEL.md](SECURITY_MODEL.md), раздел 11 «Audit log») или «—» |
 | Rate limits | Лимит или «общий» |
 
-В таблицах ниже: **Scope** — `org` (из сессии), `plat` (Platform Owner), `pub` (без аутентификации);
+В таблицах ниже: **Scope** — `auth` (нужна сессия), `pub` (без аутентификации);
 **Idem** — требуется `Idempotency-Key`; **RL** — специальный rate limit (см. §5); «—» — нет.
 
 ---
 
 ## 2. Endpoints по группам (§10)
 
-### 2.0 `setup` ([ADR-006](adr/0006-initial-setup-and-system-configuration.md))
+### 2.0 `setup` ([ADR-006](adr/0006-initial-setup-and-system-configuration.md)) — реализовано
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
-| GET | `/api/v1/setup/status` | Состояние первоначальной настройки | — | pub | — | — | общий |
-| POST | `/api/v1/setup/initialize` | Создать первую организацию и первого администратора | bootstrap token | pub | — | `setup.completed` / `setup.initialize.rejected` | setup |
+| GET | `/api/v1/setup/status` | Состояние первоначальной настройки | — | pub | — | — | — |
+| POST | `/api/v1/setup/initialize` | Создать первого администратора | bootstrap token | pub | — | `setup.completed` / `setup.initialize.rejected` | setup |
 
 **`GET /setup/status` → `200`:** `{ "status": "uninitialized" | "initialized", "web_setup_enabled": true }`. Других
 сведений (версии, конфигурация) не раскрывает.
@@ -179,20 +181,21 @@
 ```json
 {
   "bootstrap_token": "…",
-  "organization_name": "Acme",
-  "admin": { "email": "admin@acme.test", "display_name": "Admin", "password": "…" }
+  "admin": { "email": "admin@example.com", "display_name": "Admin", "password": "…" }
 }
 ```
 
-- `201`: `{ "organization": {…}, "user": {…} }` + cookies сессии (как `POST /auth/login`). Пользователь получает роли
-  Platform Owner и Organization Admin.
+- `201`: тело `Session` (как `POST /auth/login`) + cookie сессии. Пользователь получает роль Administrator (`admin`).
+  Организация в БД не создаётся ([ADR-012](adr/0012-single-organization-deployment.md)).
 - Ошибки: `409 setup_already_completed` (инсталляция инициализирована — в том числе для второго из двух
-  одновременных запросов), `403 setup_token_invalid`, `403 csrf_failed` (неверный `Origin`), `404 not_found` (режим
-  `cli_only`), `422`, `429`.
+  одновременных запросов и при любом токене), `403 setup_token_invalid` (неверный, истёкший или погашенный токен),
+  `403 csrf_failed` (неверный или отсутствующий `Origin`), `404 not_found` (режим `cli_only`), `422 validation_error`
+  (поля, email, парольная политика — `errors[].code`: `invalid_email`, `invalid_display_name`,
+  `password_too_short`, `password_too_long`, `password_matches_email`, `password_repetitive`), `429 rate_limited`, `503 service_unavailable` (Redis недоступен).
 - Backend сам проверяет состояние в транзакции с блокировкой `instance_state`; статус, показанный frontend, роли не
   играет. Тело запроса не логируется.
-- Повторное создание или восстановление администратора — только CLI на сервере (`plummy admin create`,
-  `plummy admin reset-password`), не через API.
+- Повторное создание или восстановление администратора — только CLI на сервере
+  (`python -m plummy.cli admin create`, `python -m plummy.cli admin reset-password`), не через API.
 
 ### 2.1 `health`
 
@@ -204,58 +207,62 @@
 Ответ `ready` не раскрывает версии, хосты и тексты ошибок зависимостей: `{"status":"ready"}` или
 `503 {"status":"not_ready","checks":{"database":"fail"}}`.
 
-### 2.2 `auth`
+### 2.2 `auth` ([ADR-013](adr/0013-auth-session-strategy.md))
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
-| POST | `/api/v1/auth/login` | Логин, установка cookies | — | pub | — | `auth.login.succeeded` / `auth.login.failed` | login |
-| POST | `/api/v1/auth/refresh` | Ротация refresh token (§5) | refresh cookie | pub | — | `auth.refresh.reuse_detected` (при reuse) | refresh |
-| POST | `/api/v1/auth/logout` | Отзыв текущей сессии | сессия | org | — | `auth.logout` | — |
-| GET | `/api/v1/auth/me` | Текущий пользователь, организация, эффективные permissions | сессия | org | — | — | — |
-| GET | `/api/v1/auth/sessions` | Мои активные сессии | сессия | org | — | — | — |
-| DELETE | `/api/v1/auth/sessions/{session_id}` | Отозвать свою сессию | сессия | org | — | `auth.session.revoked` | — |
-| POST | `/api/v1/auth/password/change` | Смена пароля; отзыв остальных сессий | сессия | org | — | `auth.password.changed` | login |
+| POST | `/api/v1/auth/login` | Логин, установка cookie сессии — **реализовано** | — | pub | — | `auth.login.succeeded` / `auth.login.failed` | login |
+| POST | `/api/v1/auth/logout` | Отзыв текущей сессии — **реализовано** | — | pub | — | `auth.logout` | — |
+| GET | `/api/v1/auth/me` | Текущий пользователь, роли, эффективные permissions, сессия, CSRF-токен — **реализовано** | сессия | auth | — | — | — |
+| GET | `/api/v1/auth/sessions` | Мои активные сессии | сессия | auth | — | — | — |
+| DELETE | `/api/v1/auth/sessions/{session_id}` | Отозвать свою сессию | сессия | auth | — | `auth.session.revoked` | — |
+| POST | `/api/v1/auth/password/change` | Смена пароля; отзыв остальных сессий | сессия | auth | — | `auth.password.changed` | login |
 | POST | `/api/v1/auth/password/reset-request` | Только при наличии email infrastructure (§5) | — | pub | — | `auth.password.reset_requested` | login |
 | POST | `/api/v1/auth/password/reset` | Только при наличии email infrastructure (§5) | reset token | pub | — | `auth.password.reset` | login |
 
-Первоначальная настройка вынесена в группу `setup` (§2.0).
+Первоначальная настройка вынесена в группу `setup` (§2.0). Endpoint `/auth/refresh` не существует (ADR-013).
+Автоматической регистрации нет.
+
+**DTO `Session`** — ответ `POST /auth/login` (`200`), `POST /setup/initialize` (`201`) и `GET /auth/me` (`200`):
+
+```json
+{
+  "user": { "id": "…", "email": "user@example.com", "display_name": "User" },
+  "roles": ["member"],
+  "permissions": ["chat.use"],
+  "session": { "expires_at": "2026-11-24T12:00:00Z", "idle_expires_at": "2026-11-18T12:00:00Z" },
+  "csrf_token": "…"
+}
+```
+
+`csrf_token` передаётся в `X-CSRF-Token` с небезопасными методами; хранится только в памяти страницы.
+Все ответы группы — `Cache-Control: no-store`.
 
 **`POST /auth/login`**
 
-- Request: `{ "email": "user@acme.test", "password": "..." }`
-- `200`:
+- Request: `{ "email": "user@example.com", "password": "..." }` (неизвестные поля → `422`).
+- `200`: `Session` + `Set-Cookie: __Host-pk_session=…; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=…`
+  (атрибуты — SECURITY_MODEL.md §4.3). Сессия из прежней cookie отзывается.
+- Ошибки: `401 invalid_credentials` (одинаково для неизвестного email, неверного пароля, отключённого или удалённого
+  пользователя), `403 csrf_failed` (`Origin`), `422`, `429 rate_limited` + `Retry-After`, `503 service_unavailable`.
 
-  ```json
-  {
-    "user": { "id": "…", "email": "user@acme.test", "display_name": "User" },
-    "organization": { "id": "…", "name": "Acme" },
-    "permissions": ["chat.use"],
-    "access_expires_at": "2026-11-17T12:15:00Z"
-  }
-  ```
+**`POST /auth/logout`** — `204` и удаление cookie. С действующей сессией требует `X-CSRF-Token` (иначе
+`403 csrf_failed`) и отзывает её; без сессии (нет cookie, истекла, отозвана) — идемпотентно `204`.
 
-  `Set-Cookie`: access, refresh, CSRF (атрибуты — SECURITY_MODEL.md §4).
-- Ошибки: `401 invalid_credentials`, `422`, `429 rate_limited`.
+**`GET /auth/me`** — `200 Session`; `401 unauthenticated` (нет cookie, сессия не найдена или истекла, пользователь
+неактивен), `401 session_revoked` (сессия отозвана). При `401` cookie удаляется.
 
-**`POST /auth/refresh`** — выдаёт новую пару access/refresh и инвалидирует предъявленный refresh token. Повторное
-предъявление использованного токена → отзыв всей сессии, `401 session_revoked`.
+### 2.3 `settings` — Application Settings ([ADR-006](adr/0006-initial-setup-and-system-configuration.md), [ADR-012](adr/0012-single-organization-deployment.md))
 
-### 2.3 `organizations`
+Группы `organizations` нет: инсталляция принадлежит одной организации (ADR-012).
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
-| GET | `/api/v1/organizations` | Список организаций инсталляции | `platform.organizations.manage` | plat | — | — | — |
-| POST | `/api/v1/organizations` | Создать организацию и её первого администратора | `platform.organizations.manage` | plat | Idem | `organization.created` | — |
-| GET | `/api/v1/organizations/{id}` | Карточка организации | `platform.organizations.manage` | plat | — | — | — |
-| PATCH | `/api/v1/organizations/{id}` | Изменить / приостановить (`status`) | `platform.organizations.manage` | plat | — | `organization.updated`, `organization.suspended` | — |
-| GET | `/api/v1/organizations/current` | Текущая организация и публичная часть её настроек | сессия | org | — | — | — |
-| GET | `/api/v1/organizations/current/settings` | Organization Settings: заданные и effective значения, instance-границы | `org.settings.manage` | org | — | — | — |
-| PATCH | `/api/v1/organizations/current/settings` | Изменить Organization Settings в пределах instance policy | `org.settings.manage` | org | — | `organization.settings.updated` | — |
+| GET | `/api/v1/settings` | Application Settings: заданные и effective значения, instance-границы | `settings.manage` | auth | — | — | — |
+| PATCH | `/api/v1/settings` | Изменить Application Settings в пределах instance policy | `settings.manage` | auth | — | `settings.updated` | — |
 
-Platform Owner через эти endpoints **не** получает доступа к документам, диалогам и KB организации.
-
-**`PATCH /organizations/current/settings`** ([ADR-006](adr/0006-initial-setup-and-system-configuration.md)):
-тело — частичный `OrganizationSettingsV1`; неизвестные поля → `422`; значение шире instance policy →
+**`PATCH /settings`** ([ADR-006](adr/0006-initial-setup-and-system-configuration.md)): тело — частичный
+`ApplicationSettingsV1`; неизвестные поля → `422`; значение шире instance policy →
 `422 setting_exceeds_instance_policy`. Ответ:
 
 ```json
@@ -271,36 +278,36 @@ Platform Owner через эти endpoints **не** получает досту�
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
-| GET | `/api/v1/users` | Список (фильтры: `status`, `group_id`, `q`) | `users.read` | org | — | — | — |
-| POST | `/api/v1/users` | Создать пользователя с временным паролем (смена при первом входе) **[Proposed]** | `users.manage` | org | Idem | `user.created` | — |
-| GET | `/api/v1/users/{id}` | Карточка | `users.read` | org | — | — | — |
-| PATCH | `/api/v1/users/{id}` | Имя, статус (`disabled` → отзыв всех сессий) | `users.manage` | org | — | `user.updated`, `user.disabled` | — |
-| DELETE | `/api/v1/users/{id}` | Soft delete; отзыв сессий | `users.manage` | org | — | `user.deleted` | — |
-| PUT | `/api/v1/users/{id}/roles` | Заменить набор ролей | `roles.assign` | org | — | `role.assigned`, `role.revoked` | — |
-| POST | `/api/v1/users/{id}/sessions/revoke` | Отозвать все сессии пользователя | `users.manage` | org | — | `auth.session.revoked_by_admin` | — |
+| GET | `/api/v1/users` | Список (фильтры: `status`, `group_id`, `q`) | `users.read` | auth | — | — | — |
+| POST | `/api/v1/users` | Создать пользователя с временным паролем (смена при первом входе) **[Proposed]** | `users.manage` | auth | Idem | `user.created` | — |
+| GET | `/api/v1/users/{id}` | Карточка | `users.read` | auth | — | — | — |
+| PATCH | `/api/v1/users/{id}` | Имя, статус (`disabled` → отзыв всех сессий) | `users.manage` | auth | — | `user.updated`, `user.disabled` | — |
+| DELETE | `/api/v1/users/{id}` | Soft delete; отзыв сессий | `users.manage` | auth | — | `user.deleted` | — |
+| PUT | `/api/v1/users/{id}/roles` | Заменить набор ролей | `roles.assign` | auth | — | `role.assigned`, `role.revoked` | — |
+| POST | `/api/v1/users/{id}/sessions/revoke` | Отозвать все сессии пользователя | `users.manage` | auth | — | `auth.session.revoked_by_admin` | — |
 
-Пароли и хэши в ответах отсутствуют. Пользователь не может снять с себя последнюю роль Organization Admin в
-организации (защита от потери управления).
+Пароли и хэши в ответах отсутствуют. Нельзя снять роль Administrator с последнего активного администратора
+(защита от потери управления); восстановление — только CLI на сервере.
 
 ### 2.5 `groups`
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
-| GET | `/api/v1/groups` | Список | `groups.read` | org | — | — | — |
-| POST | `/api/v1/groups` | Создать | `groups.manage` | org | — | `group.created` | — |
-| GET | `/api/v1/groups/{id}` | Карточка с участниками | `groups.read` | org | — | — | — |
-| PATCH | `/api/v1/groups/{id}` | Изменить | `groups.manage` | org | — | `group.updated` | — |
-| DELETE | `/api/v1/groups/{id}` | Удалить (доступы группы к KB снимаются) | `groups.manage` | org | — | `group.deleted` | — |
-| PUT | `/api/v1/groups/{id}/members` | Заменить состав | `groups.manage` | org | — | `group.members.changed` | — |
-| PUT | `/api/v1/groups/{id}/roles` | Заменить роли группы | `roles.assign` | org | — | `role.assigned`, `role.revoked` | — |
+| GET | `/api/v1/groups` | Список | `groups.read` | auth | — | — | — |
+| POST | `/api/v1/groups` | Создать | `groups.manage` | auth | — | `group.created` | — |
+| GET | `/api/v1/groups/{id}` | Карточка с участниками | `groups.read` | auth | — | — | — |
+| PATCH | `/api/v1/groups/{id}` | Изменить | `groups.manage` | auth | — | `group.updated` | — |
+| DELETE | `/api/v1/groups/{id}` | Удалить (доступы группы к KB снимаются) | `groups.manage` | auth | — | `group.deleted` | — |
+| PUT | `/api/v1/groups/{id}/members` | Заменить состав | `groups.manage` | auth | — | `group.members.changed` | — |
+| PUT | `/api/v1/groups/{id}/roles` | Заменить роли группы | `roles.assign` | auth | — | `role.assigned`, `role.revoked` | — |
 
 ### 2.6 `roles`
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
-| GET | `/api/v1/roles` | Роли с их permissions | `roles.read` | org | — | — | — |
-| GET | `/api/v1/roles/permissions` | Каталог permissions | `roles.read` | org | — | — | — |
-| POST / PATCH / DELETE | `/api/v1/roles[/{id}]` | Пользовательские роли — **не в 0.1.0** **[Proposed]** | `roles.manage` | org | — | `role.created/updated/deleted` | — |
+| GET | `/api/v1/roles` | Роли с их permissions | `roles.read` | auth | — | — | — |
+| GET | `/api/v1/roles/permissions` | Каталог permissions | `roles.read` | auth | — | — | — |
+| POST / PATCH / DELETE | `/api/v1/roles[/{id}]` | Пользовательские роли — **не в 0.1.0** **[Proposed]** | `roles.manage` | auth | — | `role.created/updated/deleted` | — |
 
 Системные роли (§2) неизменяемы.
 
@@ -308,15 +315,15 @@ Platform Owner через эти endpoints **не** получает досту�
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
-| GET | `/api/v1/providers` | Список конфигураций | `providers.read` | org | — | — | — |
-| POST | `/api/v1/providers` | Создать (секрет шифруется до записи, §5) | `providers.manage` | org | — | `provider.created` | — |
-| GET | `/api/v1/providers/{id}` | Карточка без секрета | `providers.read` | org | — | — | — |
-| PATCH | `/api/v1/providers/{id}` | Изменить; замена секрета | `providers.manage` | org | — | `provider.updated`, `provider.secret.rotated` | — |
-| DELETE | `/api/v1/providers/{id}` | Удалить (запрещено, если используется ассистентом/profile → `409`) | `providers.manage` | org | — | `provider.deleted` | — |
-| POST | `/api/v1/providers/{id}/test` | Connection test (§5) | `providers.manage` | org | — | `provider.tested` | provider_test |
-| GET | `/api/v1/providers/{id}/models` | Модели (`model_configs`) | `providers.read` | org | — | — | — |
-| POST | `/api/v1/providers/{id}/models` | Добавить model ID | `providers.manage` | org | — | `model.created` | — |
-| PATCH / DELETE | `/api/v1/providers/{id}/models/{model_id}` | Изменить / удалить | `providers.manage` | org | — | `model.updated` / `model.deleted` | — |
+| GET | `/api/v1/providers` | Список конфигураций | `providers.read` | auth | — | — | — |
+| POST | `/api/v1/providers` | Создать (секрет шифруется до записи, §5) | `providers.manage` | auth | — | `provider.created` | — |
+| GET | `/api/v1/providers/{id}` | Карточка без секрета | `providers.read` | auth | — | — | — |
+| PATCH | `/api/v1/providers/{id}` | Изменить; замена секрета | `providers.manage` | auth | — | `provider.updated`, `provider.secret.rotated` | — |
+| DELETE | `/api/v1/providers/{id}` | Удалить (запрещено, если используется ассистентом/profile → `409`) | `providers.manage` | auth | — | `provider.deleted` | — |
+| POST | `/api/v1/providers/{id}/test` | Connection test (§5) | `providers.manage` | auth | — | `provider.tested` | provider_test |
+| GET | `/api/v1/providers/{id}/models` | Модели (`model_configs`) | `providers.read` | auth | — | — | — |
+| POST | `/api/v1/providers/{id}/models` | Добавить model ID | `providers.manage` | auth | — | `model.created` | — |
+| PATCH / DELETE | `/api/v1/providers/{id}/models/{model_id}` | Изменить / удалить | `providers.manage` | auth | — | `model.updated` / `model.deleted` | — |
 
 **Секреты — write-only.**
 
@@ -358,29 +365,29 @@ Platform Owner через эти endpoints **не** получает досту�
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
-| GET | `/api/v1/embedding-profiles` | Список | `providers.read` | org | — | — | — |
-| POST | `/api/v1/embedding-profiles` | Создать (provider, model ID, dimensions, metric) | `providers.manage` | org | — | `embedding_profile.created` | — |
-| GET | `/api/v1/embedding-profiles/{id}` | Карточка | `providers.read` | org | — | — | — |
-| PATCH | `/api/v1/embedding-profiles/{id}` | Только `name`, `status`; изменение модели/размерности → `409 reindex_required` | `providers.manage` | org | — | `embedding_profile.updated` | — |
-| POST | `/api/v1/embedding-profiles/{id}/test` | Тестовый embedding, проверка размерности | `providers.manage` | org | — | — | provider_test |
+| GET | `/api/v1/embedding-profiles` | Список | `providers.read` | auth | — | — | — |
+| POST | `/api/v1/embedding-profiles` | Создать (provider, model ID, dimensions, metric) | `providers.manage` | auth | — | `embedding_profile.created` | — |
+| GET | `/api/v1/embedding-profiles/{id}` | Карточка | `providers.read` | auth | — | — | — |
+| PATCH | `/api/v1/embedding-profiles/{id}` | Только `name`, `status`; изменение модели/размерности → `409 reindex_required` | `providers.manage` | auth | — | `embedding_profile.updated` | — |
+| POST | `/api/v1/embedding-profiles/{id}/test` | Тестовый embedding, проверка размерности | `providers.manage` | auth | — | — | provider_test |
 
 ### 2.9 `data-sources` (§7)
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
-| GET | `/api/v1/data-sources` | Список, статусы sync | `data_sources.read` | org | — | — | — |
-| POST | `/api/v1/data-sources` | Создать внешний источник (`google_drive` \| `microsoft_365`); `upload` через API не создаётся | `data_sources.manage` | org | — | `data_source.created` | — |
-| GET | `/api/v1/data-sources/{id}` | Карточка: статус, `granted_scopes`, последний sync | `data_sources.read` | org | — | — | — |
-| PATCH | `/api/v1/data-sources/{id}` | Выбранная папка/site/library, расписание | `data_sources.manage` | org | — | `data_source.updated` | — |
-| DELETE | `/api/v1/data-sources/{id}` | Удалить источник и его документы по lifecycle | `data_sources.manage` | org | Idem | `data_source.deleted` | — |
-| POST | `/api/v1/data-sources/{id}/oauth/start` | Начать OAuth (state + PKCE), вернуть `authorization_url` | `data_sources.manage` | org | — | `data_source.oauth.started` | — |
+| GET | `/api/v1/data-sources` | Список, статусы sync | `data_sources.read` | auth | — | — | — |
+| POST | `/api/v1/data-sources` | Создать внешний источник (`google_drive` \| `microsoft_365`); `upload` через API не создаётся | `data_sources.manage` | auth | — | `data_source.created` | — |
+| GET | `/api/v1/data-sources/{id}` | Карточка: статус, `granted_scopes`, последний sync | `data_sources.read` | auth | — | — | — |
+| PATCH | `/api/v1/data-sources/{id}` | Выбранная папка/site/library, расписание | `data_sources.manage` | auth | — | `data_source.updated` | — |
+| DELETE | `/api/v1/data-sources/{id}` | Удалить источник и его документы по lifecycle | `data_sources.manage` | auth | Idem | `data_source.deleted` | — |
+| POST | `/api/v1/data-sources/{id}/oauth/start` | Начать OAuth (state + PKCE), вернуть `authorization_url` | `data_sources.manage` | auth | — | `data_source.oauth.started` | — |
 | GET | `/api/v1/data-sources/oauth/callback` | Callback провайдера: проверка `state`, обмен кода, шифрование refresh token, redirect в UI | state | pub* | — | `data_source.connected` / `data_source.oauth.failed` | — |
-| POST | `/api/v1/data-sources/{id}/validate` | `validate_connection` (§7) | `data_sources.manage` | org | — | — | provider_test |
-| GET | `/api/v1/data-sources/{id}/browse` | Folder/site/drive/library picker (`?parent_id=`) | `data_sources.manage` | org | — | — | general |
-| POST | `/api/v1/data-sources/{id}/sync` | Ручной запуск sync (`mode`: `incremental` \| `reconciliation`) | `data_sources.sync` | org | Idem | `sync.requested` | sync |
-| POST | `/api/v1/data-sources/{id}/disconnect` | Revoke у провайдера + удаление credentials | `data_sources.manage` | org | — | `data_source.disconnected` | — |
+| POST | `/api/v1/data-sources/{id}/validate` | `validate_connection` (§7) | `data_sources.manage` | auth | — | — | provider_test |
+| GET | `/api/v1/data-sources/{id}/browse` | Folder/site/drive/library picker (`?parent_id=`) | `data_sources.manage` | auth | — | — | general |
+| POST | `/api/v1/data-sources/{id}/sync` | Ручной запуск sync (`mode`: `incremental` \| `reconciliation`) | `data_sources.sync` | auth | Idem | `sync.requested` | sync |
+| POST | `/api/v1/data-sources/{id}/disconnect` | Revoke у провайдера + удаление credentials | `data_sources.manage` | auth | — | `data_source.disconnected` | — |
 
-\* Callback не имеет сессионного контекста API в обычном смысле: организация и пользователь восстанавливаются из
+\* Callback не имеет сессионного контекста API в обычном смысле: пользователь восстанавливается из
 серверного состояния, связанного с одноразовым `state`, и сверяются с текущей сессией браузера.
 
 Document Source типа `upload` создаётся и удаляется вместе с KB ([ADR-008](adr/0008-unified-document-ingestion.md)):
@@ -394,17 +401,17 @@ UI обязан показывать **фактические** `granted_scopes`
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
-| GET | `/api/v1/knowledge-bases` | KB, доступные пользователю | KB `read` | org | — | — | — |
-| POST | `/api/v1/knowledge-bases` | Создать (embedding profile обязателен) | `knowledge_bases.manage` | org | — | `kb.created` | — |
-| GET | `/api/v1/knowledge-bases/{id}` | Карточка + статусы индексации | KB `read` | org | — | — | — |
-| PATCH | `/api/v1/knowledge-bases/{id}` | Изменить; смена embedding profile → reindex | KB `manage` | org | — | `kb.updated` | — |
-| DELETE | `/api/v1/knowledge-bases/{id}` | Удалить | `knowledge_bases.manage` | org | Idem | `kb.deleted` | — |
-| GET | `/api/v1/knowledge-bases/{id}/access` | Список доступа | KB `manage` | org | — | — | — |
-| PUT | `/api/v1/knowledge-bases/{id}/access` | Заменить список `{principal_type, principal_id, access_level}` | KB `manage` | org | — | `kb.access.granted`, `kb.access.revoked` | — |
-| GET | `/api/v1/knowledge-bases/{id}/sources` | Привязанные источники | KB `read` | org | — | — | — |
-| PUT | `/api/v1/knowledge-bases/{id}/sources/{data_source_id}` | Привязать источник | KB `manage` + `data_sources.read` | org | — | `kb.source.attached` | — |
-| DELETE | `/api/v1/knowledge-bases/{id}/sources/{data_source_id}` | Отвязать (документы источника исключаются из KB) | KB `manage` | org | — | `kb.source.detached` | — |
-| POST | `/api/v1/knowledge-bases/{id}/reindex` | Переиндексация KB | KB `manage` | org | Idem | `kb.reindex.requested` | expensive |
+| GET | `/api/v1/knowledge-bases` | KB, доступные пользователю | KB `read` | auth | — | — | — |
+| POST | `/api/v1/knowledge-bases` | Создать (embedding profile обязателен) | `knowledge_bases.manage` | auth | — | `kb.created` | — |
+| GET | `/api/v1/knowledge-bases/{id}` | Карточка + статусы индексации | KB `read` | auth | — | — | — |
+| PATCH | `/api/v1/knowledge-bases/{id}` | Изменить; смена embedding profile → reindex | KB `manage` | auth | — | `kb.updated` | — |
+| DELETE | `/api/v1/knowledge-bases/{id}` | Удалить | `knowledge_bases.manage` | auth | Idem | `kb.deleted` | — |
+| GET | `/api/v1/knowledge-bases/{id}/access` | Список доступа | KB `manage` | auth | — | — | — |
+| PUT | `/api/v1/knowledge-bases/{id}/access` | Заменить список `{principal_type, principal_id, access_level}` | KB `manage` | auth | — | `kb.access.granted`, `kb.access.revoked` | — |
+| GET | `/api/v1/knowledge-bases/{id}/sources` | Привязанные источники | KB `read` | auth | — | — | — |
+| PUT | `/api/v1/knowledge-bases/{id}/sources/{data_source_id}` | Привязать источник | KB `manage` + `data_sources.read` | auth | — | `kb.source.attached` | — |
+| DELETE | `/api/v1/knowledge-bases/{id}/sources/{data_source_id}` | Отвязать (документы источника исключаются из KB) | KB `manage` | auth | — | `kb.source.detached` | — |
+| POST | `/api/v1/knowledge-bases/{id}/reindex` | Переиндексация KB | KB `manage` | auth | Idem | `kb.reindex.requested` | expensive |
 
 Привязка источника к KB требует подтверждения, что все участники KB имеют право видеть все документы источника
 (§8 Document ACL); UI показывает предупреждение, API принимает флаг `acl_acknowledged: true` **[Proposed]**.
@@ -413,13 +420,13 @@ UI обязан показывать **фактические** `granted_scopes`
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
-| GET | `/api/v1/documents` | Список; обязательный фильтр `knowledge_base_id`; фильтры `processing_status`, `data_source_id`, `q` | KB `read` | org | — | — | — |
-| POST | `/api/v1/documents` | Upload (`multipart/form-data`: `knowledge_base_id`, `file`) → quarantine + ingestion job | KB `manage` | org | Idem | `document.uploaded` | upload |
-| GET | `/api/v1/documents/{id}` | Карточка: версия, MIME, checksum, размер, source ID, timestamps, processing status | KB `read` | org | — | — | — |
-| GET | `/api/v1/documents/{id}/versions` | Версии | KB `read` | org | — | — | — |
-| DELETE | `/api/v1/documents/{id}` | Удаление: немедленное исключение из retrieval + purge job | KB `manage` | org | Idem | `document.deleted` | — |
-| POST | `/api/v1/documents/{id}/reindex` | Переиндексация | KB `manage` | org | Idem | `document.reindex.requested` | expensive |
-| GET | `/api/v1/documents/{id}/versions/{version_id}/chunks/{chunk_id}/view` | Защищённый in-app source viewer (§5) | KB `read` | org | — | — **[Proposed: `document.viewed` опционально]** | general |
+| GET | `/api/v1/documents` | Список; обязательный фильтр `knowledge_base_id`; фильтры `processing_status`, `data_source_id`, `q` | KB `read` | auth | — | — | — |
+| POST | `/api/v1/documents` | Upload (`multipart/form-data`: `knowledge_base_id`, `file`) → quarantine + ingestion job | KB `manage` | auth | Idem | `document.uploaded` | upload |
+| GET | `/api/v1/documents/{id}` | Карточка: версия, MIME, checksum, размер, source ID, timestamps, processing status | KB `read` | auth | — | — | — |
+| GET | `/api/v1/documents/{id}/versions` | Версии | KB `read` | auth | — | — | — |
+| DELETE | `/api/v1/documents/{id}` | Удаление: немедленное исключение из retrieval + purge job | KB `manage` | auth | Idem | `document.deleted` | — |
+| POST | `/api/v1/documents/{id}/reindex` | Переиндексация | KB `manage` | auth | Idem | `document.reindex.requested` | expensive |
+| GET | `/api/v1/documents/{id}/versions/{version_id}/chunks/{chunk_id}/view` | Защищённый in-app source viewer (§5) | KB `read` | auth | — | — **[Proposed: `document.viewed` опционально]** | general |
 
 **Upload `202`:**
 
@@ -459,11 +466,11 @@ PDF, DOCX), `429`. Тип определяется по содержимому, 
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
-| GET | `/api/v1/assistants` | Без `assistants.manage` — только доступные для чата ([ADR-005](adr/0005-assistant-access-model.md)); с `assistants.manage` — все, с полем `availability` | `chat.use` / `assistants.manage` | org | — | — | — |
-| POST | `/api/v1/assistants` | Создать: instructions, LLM, embedding/retrieval profile, KB, context limits | `assistants.manage` | org | — | `assistant.created` | — |
-| GET | `/api/v1/assistants/{id}` | Карточка (instructions видны только с `assistants.manage`) | доступ к ассистенту | org | — | — | — |
-| PATCH | `/api/v1/assistants/{id}` | Изменить | `assistants.manage` | org | — | `assistant.updated` | — |
-| DELETE | `/api/v1/assistants/{id}` | Удалить | `assistants.manage` | org | — | `assistant.deleted` | — |
+| GET | `/api/v1/assistants` | Без `assistants.manage` — только доступные для чата ([ADR-005](adr/0005-assistant-access-model.md)); с `assistants.manage` — все, с полем `availability` | `chat.use` / `assistants.manage` | auth | — | — | — |
+| POST | `/api/v1/assistants` | Создать: instructions, LLM, embedding/retrieval profile, KB, context limits | `assistants.manage` | auth | — | `assistant.created` | — |
+| GET | `/api/v1/assistants/{id}` | Карточка (instructions видны только с `assistants.manage`) | доступ к ассистенту | auth | — | — | — |
+| PATCH | `/api/v1/assistants/{id}` | Изменить | `assistants.manage` | auth | — | `assistant.updated` | — |
+| DELETE | `/api/v1/assistants/{id}` | Удалить | `assistants.manage` | auth | — | `assistant.deleted` | — |
 
 **Доступ ([ADR-005](adr/0005-assistant-access-model.md)).** Ассистент доступен пользователю, только если у него есть
 доступ ко всем KB ассистента; ассистент без KB — только пользователям с `assistants.manage`. Недоступный ассистент:
@@ -476,25 +483,25 @@ PDF, DOCX), `429`. Тип определяется по содержимому, 
 ```
 
 Валидация: все KB ассистента используют тот же embedding profile, что и ассистент **[Proposed]**; модель —
-включённый `model_config` той же организации.
+включённый `model_config`.
 
 ### 2.13 `conversations` (§5)
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
-| GET | `/api/v1/conversations` | Мои диалоги (`assistant_id`, `sort=-last_message_at`) | `chat.use` | org | — | — | — |
-| POST | `/api/v1/conversations` | Создать диалог с ассистентом | `chat.use` + доступ к ассистенту | org | — | — | — |
-| GET | `/api/v1/conversations/{id}` | Диалог (только владелец) | владелец | org | — | — | — |
-| PATCH | `/api/v1/conversations/{id}` | Переименовать | владелец | org | — | — | — |
-| DELETE | `/api/v1/conversations/{id}` | Удалить (soft delete → purge по retention) | владелец | org | — | `conversation.deleted` | — |
-| GET | `/api/v1/conversations/{id}/messages` | Сообщения с цитатами | владелец | org | — | — | — |
+| GET | `/api/v1/conversations` | Мои диалоги (`assistant_id`, `sort=-last_message_at`) | `chat.use` | auth | — | — | — |
+| POST | `/api/v1/conversations` | Создать диалог с ассистентом | `chat.use` + доступ к ассистенту | auth | — | — | — |
+| GET | `/api/v1/conversations/{id}` | Диалог (только владелец) | владелец | auth | — | — | — |
+| PATCH | `/api/v1/conversations/{id}` | Переименовать | владелец | auth | — | — | — |
+| DELETE | `/api/v1/conversations/{id}` | Удалить (soft delete → purge по retention) | владелец | auth | — | `conversation.deleted` | — |
+| GET | `/api/v1/conversations/{id}/messages` | Сообщения с цитатами | владелец | auth | — | — | — |
 
 ### 2.14 `chat/stream` (§5, §6)
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
-| POST | `/api/v1/chat/stream` | Отправить сообщение и получить SSE-поток ответа | `chat.use` + доступ к ассистенту и его KB | org | `client_message_id` | — (метрики в `generation_runs`) | chat |
-| POST | `/api/v1/chat/runs/{generation_run_id}/stop` | Остановить генерацию (§5) | владелец диалога | org | — | — | — |
+| POST | `/api/v1/chat/stream` | Отправить сообщение и получить SSE-поток ответа | `chat.use` + доступ к ассистенту и его KB | auth | `client_message_id` | — (метрики в `generation_runs`) | chat |
+| POST | `/api/v1/chat/runs/{generation_run_id}/stop` | Остановить генерацию (§5) | владелец диалога | auth | — | — | — |
 
 Подробно — в разделе 3.
 
@@ -506,10 +513,10 @@ PDF, DOCX), `429`. Тип определяется по содержимому, 
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
-| GET | `/api/v1/jobs` | Ingestion и sync jobs (`type`, `status`, `knowledge_base_id`, `data_source_id`) | `jobs.read` | org | — | — | — |
-| GET | `/api/v1/jobs/{type}/{id}` | Детали, stage, attempts, redacted error | `jobs.read` | org | — | — | — |
-| POST | `/api/v1/jobs/{type}/{id}/retry` | Повтор `failed`/`dead` job | `jobs.manage` | org | Idem | `job.retried` | expensive |
-| POST | `/api/v1/jobs/{type}/{id}/cancel` | Отмена `queued`/`running` | `jobs.manage` | org | — | `job.cancelled` | — |
+| GET | `/api/v1/jobs` | Ingestion и sync jobs (`type`, `status`, `knowledge_base_id`, `data_source_id`) | `jobs.read` | auth | — | — | — |
+| GET | `/api/v1/jobs/{type}/{id}` | Детали, stage, attempts, redacted error | `jobs.read` | auth | — | — | — |
+| POST | `/api/v1/jobs/{type}/{id}/retry` | Повтор `failed`/`dead` job | `jobs.manage` | auth | Idem | `job.retried` | expensive |
+| POST | `/api/v1/jobs/{type}/{id}/cancel` | Отмена `queued`/`running` | `jobs.manage` | auth | — | `job.cancelled` | — |
 
 `{type}`: `ingestion` \| `sync`.
 
@@ -517,9 +524,8 @@ PDF, DOCX), `429`. Тип определяется по содержимому, 
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
-| GET | `/api/v1/audit/events` | Журнал (`action`, `actor_user_id`, `target_type`, `target_id`, `outcome`, `from`, `to`) | `audit.read` | org | — | **[Proposed]** `audit.viewed` | general |
-| GET | `/api/v1/audit/events/{id}` | Событие | `audit.read` | org | — | — | — |
-| GET | `/api/v1/audit/platform-events` | События уровня инсталляции | `platform.audit.read` | plat | — | — | — |
+| GET | `/api/v1/audit/events` | Журнал (`action`, `actor_user_id`, `target_type`, `target_id`, `outcome`, `from`, `to`) | `audit.read` | auth | — | **[Proposed]** `audit.viewed` | general |
+| GET | `/api/v1/audit/events/{id}` | Событие | `audit.read` | auth | — | — | — |
 
 Аудит доступен только на чтение; endpoints изменения/удаления событий отсутствуют.
 
@@ -527,7 +533,7 @@ PDF, DOCX), `429`. Тип определяется по содержимому, 
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
-| GET | `/api/v1/system/settings` | Instance Settings только на чтение (без секретов), включая network allowlist | `platform.settings.read` | plat | — | — | general |
+| GET | `/api/v1/system/settings` | Instance Settings только на чтение (без секретов), включая network allowlist | `system.settings.read` | auth | — | — | general |
 
 Endpoints для **изменения** Instance Settings и allowlist **не существуют**: они меняются конфигурацией сервера и
 перезапуском. Секретные значения представлены как `{ "configured": true }`.
@@ -542,7 +548,7 @@ Endpoints для **изменения** Instance Settings и allowlist **не с
   "network": {
     "allowlist": [
       { "name": "local-ollama", "url": "http://ollama:11434", "purposes": ["llm", "embedding"],
-        "provider_types": ["ollama"], "allowed_cidrs": ["172.30.10.0/24"], "organizations": [] }
+        "provider_types": ["ollama"], "allowed_cidrs": ["172.30.10.0/24"] }
     ]
   }
 }
@@ -686,18 +692,20 @@ data: {"delta":"Перенос возможен "}
 }
 ```
 
-## 5. Rate limits (§5, §8 п.5) **[Proposed — значения по умолчанию, настраиваются]**
+## 5. Rate limits (§5, §8 п.5)
+
+`login` и `setup` реализованы ([ADR-013](adr/0013-auth-session-strategy.md)); остальные значения — **[Proposed]**
+(по умолчанию, настраиваются). Хранилище счётчиков — Redis; при его недоступности login и setup отвечают `503`.
 
 | Профиль | Лимит | Ключ |
 |---|---|---|
-| `login` | 5/мин и 20/час | IP + email; дополнительно на аккаунт |
-| `refresh` | 30/мин | сессия |
+| `login` | 5/мин и 20/час на IP + email; 30/мин на IP; 10 неудачных попыток за 15 мин на email | IP, SHA-256(email) |
 | `setup` | 5/мин | IP |
 | `upload` | 30/мин, суммарный объём 500 МБ/час | пользователь |
 | `chat` | 20/мин, не более 2 одновременных генераций | пользователь |
-| `provider_test` | 10/мин | организация |
+| `provider_test` | 10/мин | инсталляция |
 | `sync` | 6/час | источник |
-| `expensive` (reindex, retry) | 10/час | организация |
+| `expensive` (reindex, retry) | 10/час | инсталляция |
 | `general` | 300/мин | пользователь |
 
 При превышении — `429 rate_limited` + `Retry-After`.
@@ -718,7 +726,7 @@ data: {"delta":"Перенос возможен "}
 | Roles & Permissions | `roles` |
 | Jobs/Sync | `jobs`, `data-sources` |
 | Audit | `audit` |
-| System Settings | `organizations` (`/current/settings`), `system` (только чтение) |
+| System Settings | `settings` (Application Settings), `system` (Instance Settings, только чтение) |
 
 ## 7. Открытые вопросы
 

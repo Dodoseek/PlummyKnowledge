@@ -1,6 +1,7 @@
-import { Box, Container, Flex, Heading, Text } from '@chakra-ui/react';
+import { Box, Container, Flex, Heading, HStack, Text } from '@chakra-ui/react';
 import { Link as RouterLink, Outlet } from 'react-router';
 
+import { UserMenu } from '../features/auth/UserMenu';
 import { config } from '../shared/config/env';
 
 export function AppLayout() {
@@ -12,9 +13,12 @@ export function AppLayout() {
             <Heading as={RouterLink} to="/" size="md" color="brand.500">
               PlummyKnowledge
             </Heading>
-            <Text fontSize="sm" color="gray.500" data-testid="app-version">
-              v{config.appVersion}
-            </Text>
+            <HStack spacing={4}>
+              <UserMenu />
+              <Text fontSize="sm" color="gray.500" data-testid="app-version">
+                v{config.appVersion}
+              </Text>
+            </HStack>
           </Flex>
         </Container>
       </Box>

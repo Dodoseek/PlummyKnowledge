@@ -4,7 +4,7 @@
 |---|---|
 | Статус | v0.1 |
 | Источник | [PROJECT_BLUEPRINT.md](PROJECT_BLUEPRINT.md) §13, §19, §21, §22 |
-| Решения | [ADR-001…009](adr/README.md) |
+| Решения | [ADR-001…013](adr/README.md) |
 | Связанные документы | [PRODUCT_SPEC.md](PRODUCT_SPEC.md), [ARCHITECTURE.md](ARCHITECTURE.md), [SECURITY_MODEL.md](SECURITY_MODEL.md) |
 
 Последовательность фаз 0–13 взята из blueprint без изменений. Документ добавляет к каждой фазе решения ADR-005…008,
@@ -51,25 +51,34 @@ security gate (проверки безопасности **внутри** фаз
 ### Фаза 2 — Core backend и data model (§13)
 
 - Async SQLAlchemy session lifecycle и transaction boundaries.
-- Organization, User, Group, Role, Permission и связи; системные роли и permissions — миграцией.
-- `instance_state` и CLI `plummy admin create` — серверный способ создать первого администратора (ADR-006); нужен для
-  разработки до web-setup и остаётся процедурой восстановления.
-- Tenant-aware query patterns, audit events, migrations.
-- **Предварительно:** ADR «Tenant membership».
-- **Security gate:** тесты изоляции двух организаций; составные FK; SC-05 для первых ресурсов.
-- **Выход:** модели и миграции проверены на чистой БД; тесты изоляции проходят.
+- User, Group, Role, Permission и связи; системные роли и permissions — миграцией. Сущности Organization нет:
+  инсталляция принадлежит одной организации ([ADR-012](adr/0012-single-organization-deployment.md)).
+- `instance_state` и CLI `python -m plummy.cli admin create` — серверный способ создать первого администратора
+  (ADR-006); остаётся процедурой восстановления.
+- Query patterns с фильтрами доступа, audit events, migrations.
+- **Предварительно:** ADR-012 (Accepted).
+- **Security gate:** тесты «чужие данные недоступны» для первых ресурсов; SC-05 — с появлением документов (Фаза 5).
+- **Выход:** модели и миграции проверены на чистой БД и upgrade path.
+- *(Текущее состояние: этап «Bootstrap & Authentication» реализовал `users`, `roles`, `permissions`,
+  `role_permissions`, `user_roles`, `sessions`, `instance_state`, `audit_logs`, UnitOfWork и CLI. Не сделано:
+  `groups`, `user_groups`, `group_roles`, API управления пользователями и ролями — этап «Users & RBAC».)*
 
 ### Фаза 3 — Authentication/authorization и bootstrap (§13, ADR-006)
 
-- Password hashing (Argon2id), login/logout, access/refresh strategy, refresh rotation/revocation, session
-  management, rate limiting.
+- Password hashing (Argon2id), login/logout, серверные сессии с отзывом и сроками, rate limiting
+  ([ADR-013](adr/0013-auth-session-strategy.md)); управление своими сессиями и смена пароля.
 - Permission policy service и проверки в use cases; CSRF/cookie strategy.
 - Группа `setup`: bootstrap token, `GET /setup/status`, `POST /setup/initialize`, режим `cli_only`.
-- Instance Settings только на чтение (`GET /system/settings`); Organization Settings с проверкой instance-границ.
-- **Предварительно:** ADR «Auth/session strategy».
+- Instance Settings только на чтение (`GET /system/settings`); Application Settings с проверкой instance-границ.
+- **Предварительно:** ADR-013 (Accepted).
 - **Security gate:** negative RBAC tests; revoked sessions отклоняются; SC-03, SC-04; тела setup-запросов не
-  логируются; SC-02 (часть про Organization Settings).
+  логируются; SC-02 (часть про Application Settings).
 - **Выход:** первый администратор создаётся только с bootstrap token или CLI; защищённый endpoint работает.
+- *(Текущее состояние: реализованы bootstrap token и CLI (`setup init-token`, `admin create`,
+  `admin reset-password`), `GET /setup/status`, `POST /setup/initialize`, режим `cli_only`, login/logout/me,
+  сессии, CSRF, лимиты входа, `SecurityContext.require` (системные роли → permissions), `require_permission`, frontend setup/login/guards;
+  SC-03, SC-04, revoked sessions — тесты есть. Не сделано: `/auth/sessions`, смена пароля, `GET /system/settings`,
+  Application Settings, назначение ролей через API — этапы «Users & RBAC» и далее.)*
 
 ### Фаза 4 — AI provider abstraction и сетевая политика (§13, ADR-007)
 
@@ -97,7 +106,7 @@ security gate (проверки безопасности **внутри** фаз
 
 ### Фаза 6 — Retrieval и RAG evaluation (§13)
 
-- Vector search и PostgreSQL full-text search; hybrid fusion (RRF); tenant/KB/version filters; deduplication.
+- Vector search и PostgreSQL full-text search; hybrid fusion (RRF); KB/source/version filters; deduplication.
 - Bounded context assembly и citation ID validation.
 - Evaluation dataset (30–50 документов, 50–100 вопросов) и метрики Recall@K/citation precision.
 - Prompt injection test cases.
@@ -153,7 +162,7 @@ security gate (проверки безопасности **внутри** фаз
 
 ### Фаза 12 — Security hardening (§13)
 
-- Threat model review и tenant/RBAC audit.
+- Threat model review и RBAC/KB-access audit.
 - OAuth, SSRF, upload/parser, archive bomb и prompt injection tests — полный прогон SC-01…SC-09.
 - XSS/CSRF/CORS, rate limits, logs, deletion lifecycle.
 - Dependency/container scanning и security reporting.
@@ -171,7 +180,7 @@ security gate (проверки безопасности **внутри** фаз
 
 | Релиз | Содержание | Фазы |
 |---|---|---|
-| 0.1.0 | Docker Compose deployment, локальная аутентификация и KB-level авторизация, LLM-провайдеры, upload PDF/DOCX и асинхронная индексация, hybrid retrieval, streamed chat, проверяемые citations и in-app viewer, tenant isolation tests, базовый audit, документация и quick start | 0–8 + минимальный пакет Фазы 13 (README, LICENSE, NOTICE, CONTRIBUTING, SECURITY, quick start) |
+| 0.1.0 | Docker Compose deployment, локальная аутентификация и KB-level авторизация, LLM-провайдеры, upload PDF/DOCX и асинхронная индексация, hybrid retrieval, streamed chat, проверяемые citations и in-app viewer, тесты изоляции KB и пользователей, базовый audit, документация и quick start | 0–8 + минимальный пакет Фазы 13 (README, LICENSE, NOTICE, CONTRIBUTING, SECURITY, quick start) |
 | 0.2.0 | XLSX/CSV и RAG improvements | Доработка 5–6 |
 | 0.3.0 | Google Drive | 9 |
 | 0.4.0 | Microsoft 365 | 10 |
@@ -195,18 +204,18 @@ security gate (проверки безопасности **внутри** фаз
 | 3 | React + TypeScript + Vite, Chakra UI, Redux Toolkit, RTK Query, router | 1 |
 | 4 | PostgreSQL + pgvector и Redis через Compose; SQLAlchemy async и Alembic | 1 |
 | 5 | Celery worker, тестовая задача, retry и наблюдаемое состояние | 1 |
-| 6 | Organization и User, миграции, tenant isolation tests; `instance_state` и `plummy admin create` | 2 |
-| 7 | Минимальный auth flow и защищённый endpoint; обновить docs и зафиксировать milestone | 3 (начало) |
+| 6 | User, роли и permissions, миграции; `instance_state` и `plummy.cli admin create` (выполнено в этапе «Bootstrap & Authentication») | 2 |
+| 7 | Минимальный auth flow и защищённый endpoint; обновить docs и зафиксировать milestone (выполнено в этапе «Bootstrap & Authentication») | 3 (начало) |
 
 ## 5. Контрольные сценарии по фазам
 
 | Сценарий ([SECURITY_MODEL.md §18.1](SECURITY_MODEL.md)) | Фаза первого теста |
 |---|---|
 | SC-01 Нет доступа к одной из KB ассистента | 7 (API), 8 (E2E) |
-| SC-02 Администратор организации расширяет allowlist | 3–4 |
+| SC-02 Administrator приложения расширяет allowlist | 3–4 |
 | SC-03 Повторная первоначальная настройка | 3 |
 | SC-04 Параллельное создание первого администратора | 3 |
-| SC-05 Документ другого tenant по прямому запросу | 2, 5 |
+| SC-05 Документ KB без доступа по прямому запросу | 5 |
 | SC-06 Локальный Ollama по разрешённому адресу | 4 |
 | SC-07 Разрешённый hostname → запрещённый адрес | 4 |
 | SC-08 Prompt injection во внешнем документе | 6, 9 |
