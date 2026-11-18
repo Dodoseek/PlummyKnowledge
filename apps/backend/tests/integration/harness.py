@@ -35,6 +35,8 @@ def harness_settings(database_url: str, redis_url: str, bootstrap_dir: Path, **o
         "redis_url": redis_url,
         "public_url": TEST_ORIGIN,
         "bootstrap_dir": bootstrap_dir,
+        # Production-like cookie (``__Host-``); explicit so the dev compose value (false) does not leak in.
+        "session_cookie_secure": True,
     }
     values.update(overrides)
     return make_settings(**values)

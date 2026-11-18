@@ -20,6 +20,7 @@
 | `redis` | `redis:8.6-alpine` | Redis (AOF) | — | `data` |
 | `migrate` | `apps/backend/Dockerfile` (`dev`) | Одноразово: `alembic upgrade head`, затем `python -m plummy.cli setup init-token` (§6); API стартует только после успешного завершения | — | `data` |
 | `backend` | `apps/backend/Dockerfile` (`dev`) | FastAPI, `uvicorn --reload`; healthcheck = `/api/v1/health/ready` | `127.0.0.1:8000` | `data`, `edge` |
+| `worker` | `apps/backend/Dockerfile` (`dev`) | Celery worker, очередь `default`; healthcheck = `celery inspect ping`. Изменения кода — `docker compose restart worker` (без auto-reload) | — | `data` |
 | `frontend` | `apps/frontend/Dockerfile` (`dev`) | Vite dev server; `/api` проксируется на `backend` (same-origin, без CORS) | `127.0.0.1:5173` | `edge` |
 
 - Сеть `data` — `internal: true`; порты PostgreSQL и Redis не публикуются. Учётные данные БД в `compose.yaml` —
@@ -39,7 +40,11 @@
   `dev`, `build` и `dist` (статические файлы для Nginx Фазы 11). Контекст сборки — корень репозитория (файл
   `VERSION`, ADR-009).
 - Миграции не выполняются при старте API; readiness возвращает `503`, пока ревизия БД не совпадает с head.
-- Celery worker, scheduler, Nginx, MinIO и prod-compose не входят в Фазу 1 (сессия 5 и Фаза 11).
+- Celery ([ARCHITECTURE.md §3](ARCHITECTURE.md)): брокер и хранилище результатов — тот же Redis, ключи с префиксом
+  `plummy:celery:`, только JSON (pickle отклоняется), результаты хранятся 24 ч, `acks_late`. Состояние задач в Redis —
+  не источник истины; долговременное состояние jobs появится в PostgreSQL вместе с ingestion (Фаза 5). Проверка
+  worker: `docker compose exec worker python -m plummy.cli worker check [--simulate-failures N]`.
+- Scheduler (Celery beat), разделение очередей, Nginx, MinIO и prod-compose — Фазы 5 и 11.
 
 **Переменные окружения backend (реализовано).** Имена утверждены в задаче Фазы 1 и заменяют предложенные ниже
 `PLUMMY_ENV`, `PLUMMY_LOG_LEVEL`, `PLUMMY_DATABASE_URL_FILE`, `PLUMMY_REDIS_URL_FILE`, `PLUMMY_DB_POOL_SIZE`,
@@ -64,6 +69,7 @@
 | `BOOTSTRAP_DIR` | `/var/lib/plummy/bootstrap` | Каталог файла `setup-token` (`0700`, файл `0600`) |
 | `BOOTSTRAP_TOKEN_TTL` | `86400` (24 ч) | Срок действия bootstrap token; от 10 мин до 30 дней |
 | `FORWARDED_ALLOW_IPS` | `127.0.0.1` (uvicorn) | Адреса прокси, которым доверяется `X-Forwarded-For` (IP клиента для rate limit и audit) |
+| `WORKER_CONCURRENCY` | `2` (dev compose) | Число процессов Celery worker (флаг `--concurrency` в команде сервиса, не настройка приложения) |
 
 `NAME` и `NAME_FILE` одновременно — ошибка конфигурации. Невалидная конфигурация → сообщение без значений секретов
 и exit code 1. Frontend: `VITE_API_BASE_URL` (по умолчанию `/api/v1`) — публичное значение, попадает в bundle.
@@ -118,7 +124,7 @@ docker compose run --rm migrate cat /var/lib/plummy/bootstrap/setup-token
 | Setup | `SETUP_MODE` (`web` \| `cli_only`), `BOOTSTRAP_DIR`, `BOOTSTRAP_TOKEN_TTL` (реализовано, §0) | — |
 | Безопасность | `CORS_ORIGINS`, `SESSION_IDLE_TTL`, `SESSION_ABSOLUTE_TTL`, `SESSION_COOKIE_SECURE` (реализовано, §0); лимиты rate limit (пока константы, ADR-013 §4) | — |
 | Лимиты | `PLUMMY_UPLOAD_MAX_BYTES`, лимиты страниц/распаковки/времени парсинга, `PLUMMY_MAX_CONCURRENT_GENERATIONS_PER_USER` | — |
-| Jobs | `PLUMMY_WORKER_CONCURRENCY`, параметры retry/backoff | — |
+| Jobs | `WORKER_CONCURRENCY` (реализовано в dev compose, §0); retry/backoff — в определении каждой задачи | — |
 | SMTP | `PLUMMY_SMTP_HOST`, `PLUMMY_SMTP_USER`, `PLUMMY_SMTP_PASSWORD_FILE` | да |
 | Коннекторы | `PLUMMY_GOOGLE_CLIENT_ID`, `PLUMMY_GOOGLE_CLIENT_SECRET_FILE`, `PLUMMY_MS_CLIENT_ID`, `PLUMMY_MS_CLIENT_SECRET_FILE` | да |
 | Сеть | `[[network.allowlist]]` в конфигурационном файле (ADR-007) | — |

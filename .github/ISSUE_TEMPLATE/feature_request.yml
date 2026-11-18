@@ -1,0 +1,31 @@
+name: Feature request
+description: Propose a capability or change in behavior.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check the MVP scope first: docs/PRODUCT_SPEC.md and docs/DEVELOPMENT_ROADMAP.md. Changes to framework,
+        database, queue, auth/session strategy or the public API need an ADR (docs/adr/).
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Who is affected and what can they not do today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+    validations:
+      required: true
+  - type: textarea
+    id: security
+    attributes:
+      label: Access and security impact
+      description: Which roles may use it? Does it touch knowledge-base access, secrets, outbound network or LLM context?
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered

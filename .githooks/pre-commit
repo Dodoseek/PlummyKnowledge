@@ -1,9 +1,13 @@
 #!/bin/sh
-# Automatic version bump on every commit (docs/adr/0009-automatic-versioning.md).
-# Skip once: PLUMMY_SKIP_VERSION_BUMP=1 git commit ...
+# Pre-commit checks, then the automatic version bump (docs/adr/0009-automatic-versioning.md).
+#   1. secret scan of the staged lines (always; scripts/check_secrets.py);
+#   2. ruff / prettier / eslint on staged files (scripts/precommit_lint.py; skip once: PLUMMY_SKIP_LINT=1);
+#   3. VERSION bump (skip once: PLUMMY_SKIP_VERSION_BUMP=1 git commit ...).
 root=$(git rev-parse --show-toplevel) || exit 1
 if ! command -v python3 >/dev/null 2>&1; then
-  echo "pre-commit: python3 is required for automatic versioning (scripts/version.py)" >&2
+  echo "pre-commit: python3 is required (secret scan, lint, automatic versioning)" >&2
   exit 1
 fi
+python3 "$root/scripts/check_secrets.py" --staged || exit 1
+python3 "$root/scripts/precommit_lint.py" || exit 1
 exec python3 "$root/scripts/version.py" bump

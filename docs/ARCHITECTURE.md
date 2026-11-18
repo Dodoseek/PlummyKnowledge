@@ -86,7 +86,7 @@ Workers выполняют parsing, chunking, embeddings, source synchronization
 | `nginx` | TLS termination, раздача собранного SPA, reverse proxy на API, корректная проксировка SSE (без буферизации) | 1+ |
 | `frontend` | Сборка React SPA (в production — статические файлы за Nginx) | — |
 | `api` | HTTP/DTO, аутентификация, вызов use cases, SSE chat streaming. Никаких долгих операций (§11). | Горизонтально, ограниченный DB pool на процесс (§11) |
-| `worker` | Celery tasks: ingestion, embeddings, sync, reindex, delete/purge, cleanup | Регулируемое число workers и concurrency (§11); отдельные очереди — [Proposed] |
+| `worker` | Celery tasks: ingestion, embeddings, sync, reindex, delete/purge, cleanup. Реализовано: `plummy.workers` (фабрика приложения, JSON-only, `acks_late`, журнал жизненного цикла), диагностическая задача `plummy.system.ping`, очередь `default` | Регулируемое число workers и concurrency (§11); отдельные очереди — [Proposed] |
 | `scheduler` | **[Proposed]** Celery beat для расписаний sync, reconciliation (§7) и cleanup quarantine/retention (§8) | Ровно 1 экземпляр |
 | `postgres` | Основное хранилище, pgvector, full-text search | Вертикально; backup/restore (§8, §11) |
 | `redis` | Брокер Celery, кэш, rate limiting, распределённые locks | 1 |
@@ -245,8 +245,11 @@ apps/frontend/src/
 ```
 
 Сессия/транзакции: одна `AsyncSession` на запрос (`get_db_session`); границы транзакций явно задаются в use cases
-(`async with session.begin()`), незакоммиченное откатывается при закрытии сессии. `domain/` и `workers/` появятся с
-первыми сущностями (Фаза 2) и Celery (сессия 5).
+(`async with session.begin()`), незакоммиченное откатывается при закрытии сессии. `workers/` — входной адаптер
+Celery: `app.py` (конфигурация), `main.py` (entrypoint `celery -A plummy.workers.main worker`), `observability.py`
+(события `task.started/finished/retry/failed` без аргументов, результатов и текстов исключений), `tasks/`.
+Задачи вызывают use cases и не содержат бизнес-правил; повторная доставка после сбоя (`acks_late`) требует
+идемпотентности каждой задачи.
 
 Пакеты `packages/*` используются для переиспользуемых, независимых от приложения библиотек (адаптеры провайдеров,
 обработка документов, retrieval, коннекторы). **Открытый вопрос:** какие из них выделять в отдельные Python-пакеты

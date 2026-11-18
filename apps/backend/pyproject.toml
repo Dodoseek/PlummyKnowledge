@@ -17,6 +17,7 @@ dependencies = [
     "redis>=6,<9",
     "argon2-cffi>=23.1,<26",
     "email-validator>=2.2,<3",
+    "celery[redis]>=5.5,<6",
 ]
 
 [dependency-groups]
@@ -56,7 +57,7 @@ plugins = ["pydantic.mypy"]
 warn_unreachable = true
 
 [[tool.mypy.overrides]]
-module = ["asyncpg", "asyncpg.*"]
+module = ["asyncpg", "asyncpg.*", "celery", "celery.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
@@ -68,4 +69,8 @@ markers = [
     "integration: requires running PostgreSQL and Redis (DATABASE_URL / REDIS_URL)",
 ]
 addopts = ["--strict-markers", "-ra"]
-filterwarnings = ["error"]
+filterwarnings = [
+    "error",
+    # celery 5.7 Redis result backend calls redis-py's deprecated setex (third-party, no behavior impact).
+    "ignore:Call to deprecated setex:DeprecationWarning",
+]

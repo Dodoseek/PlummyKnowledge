@@ -1,0 +1,57 @@
+name: Bug report
+description: Something does not work as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Security vulnerabilities must not be reported here** — use a private advisory (link in "New issue").
+        Do not paste secrets, tokens, passwords, document content or private prompts.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Contents of `VERSION` or `GET /api/v1/health` → `version`.
+      placeholder: 0.1.0-dev.3
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Setup / authentication
+        - Backend API
+        - Worker / jobs
+        - Frontend
+        - Deployment / Docker Compose
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. docker compose up --build
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Remove secrets and personal data before pasting.
+      render: text
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Docker / Compose versions, browser, APP_ENV, deployment profile.

@@ -1,0 +1,141 @@
+# Continuous integration (DEVELOPMENT_ROADMAP.md, Phase 1): the same checks as CLAUDE.md "Команды".
+# Third-party actions are pinned to commit SHAs; Dependabot keeps them current (.github/dependabot.yml).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  repository:
+    name: Repository (version, secrets, scripts)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Script tests
+        run: python3 -m unittest discover -s scripts/tests -v
+      - name: Secret scan (tracked files)
+        run: python3 scripts/check_secrets.py
+      - name: VERSION is valid and was bumped (ADR-009)
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT" = "pull_request" ]; then
+            against="origin/$BASE_REF"
+          elif [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ]; then
+            against="$BEFORE"
+          else
+            against="HEAD~1"
+          fi
+          python3 scripts/version.py check --against "$against"
+
+  backend:
+    name: Backend (tests on PostgreSQL + Redis, ruff, mypy, worker)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Start the dev stack (postgres, redis, migrate, backend, worker)
+        run: docker compose up --detach --build --wait --wait-timeout 300 backend worker
+      - name: Tests (unit + API + integration)
+        run: docker compose exec -T backend pytest -p no:cacheprovider
+      - name: Ruff
+        run: |
+          docker compose exec -T backend ruff check --no-cache src tests alembic
+          docker compose exec -T backend ruff format --no-cache --check src tests alembic
+      - name: Mypy (strict)
+        run: docker compose exec -T backend mypy --cache-dir=/dev/null
+      - name: Worker round trip with retries
+        run: docker compose exec -T worker python -m plummy.cli worker check --simulate-failures 1
+      - name: Readiness
+        run: >-
+          docker compose exec -T backend python -c "import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health/ready', timeout=5)"
+      - name: Service logs
+        if: failure()
+        run: docker compose logs --no-color --tail 200
+      - name: Stop the stack
+        if: always()
+        run: docker compose down --volumes
+
+  frontend:
+    name: Frontend (tests, lint, typecheck, format, build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/frontend/package-lock.json
+      - name: npm from packageManager (engine-strict rejects npm 10)
+        run: npm install --global npm@11.21.2
+      - run: npm ci
+      - run: npm test
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run format:check
+      - run: npm run build
+
+  dependencies:
+    name: Dependency audit (pip-audit, npm audit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - name: Python dependencies (uv.lock, runtime + dev)
+        run: |
+          uv export --project apps/backend --frozen --no-hashes --no-emit-project \
+            --format requirements-txt --output-file "$RUNNER_TEMP/requirements.txt"
+          uvx pip-audit==2.10.1 --strict --no-deps --disable-pip --requirement "$RUNNER_TEMP/requirements.txt"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      # Runtime (bundled) packages fail on high; build/test tooling fails on critical only. Tooling advisories
+      # without a fixed release (e.g. picomatch ReDoS via vite/eslint, glob patterns we control) are tracked
+      # through Dependabot instead of blocking every build.
+      - name: npm runtime dependencies (high and critical)
+        working-directory: apps/frontend
+        run: npm audit --omit=dev --audit-level=high --package-lock-only
+      - name: npm all dependencies (critical)
+        working-directory: apps/frontend
+        run: npm audit --audit-level=critical --package-lock-only
+
+  dependency-review:
+    name: Dependency review (new dependencies in the PR)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/dependency-review-action@bbc44d14a204704ccc493733616cd1e93a0321ec # v5.0.1
+        with:
+          fail-on-severity: high

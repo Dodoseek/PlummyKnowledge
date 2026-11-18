@@ -1,0 +1,36 @@
+# Dependency updates (DEVELOPMENT_ROADMAP.md Phase 1: dependency scanning). Every update is a PR that must pass
+# CI; adding or bumping dependencies still needs a reason (CLAUDE.md "Работа с кодом").
+version: 2
+updates:
+  - package-ecosystem: uv
+    directory: /apps/backend
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      backend-dev-tools:
+        dependency-type: development
+
+  - package-ecosystem: npm
+    directory: /apps/frontend
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      frontend-dev-tools:
+        dependency-type: development
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: docker
+    directories: [/apps/backend, /apps/frontend]
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly

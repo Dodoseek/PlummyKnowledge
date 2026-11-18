@@ -13,10 +13,11 @@ PlummyKnowledge — open-source **self-hosted** платформа корпор�
 
 **Текущее состояние:** Этап 1 (Foundation) и Этап 2 (Bootstrap & Authentication). Backend: FastAPI, Pydantic
 Settings, SQLAlchemy async, Alembic (`vector`/`citext`, users, instance_state, RBAC-каталог, sessions, audit_logs),
-Redis (rate limit), health live/ready; первоначальная настройка по bootstrap token и CLI `python -m plummy.cli`;
+Redis (rate limit, брокер Celery), health live/ready; Celery worker с диагностической задачей; первоначальная настройка по bootstrap token и CLI `python -m plummy.cli`;
 login/logout/me на серверных сессиях ([ADR-013](docs/adr/0013-auth-session-strategy.md)); `SecurityContext` и
 `require_permission`. Frontend: React 18, Chakra UI, RTK Query, страницы `/setup` и `/login`, guard, выход.
-Управления пользователями, KB, Celery, Nginx и prod-compose ещё нет ([DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md)).
+CI (GitHub Actions), pre-commit (secret scan, lint), Dependabot. Управления пользователями, KB, Nginx и
+prod-compose ещё нет ([DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md)).
 Не начинать Google OAuth, Microsoft Graph и сложный RAG до стабильного запуска каркаса.
 
 ## Приоритет источников
@@ -220,7 +221,20 @@ docker compose run --rm migrate python -m plummy.cli setup init-token --rotate  
 docker compose run --rm -it migrate python -m plummy.cli admin reset-password --email admin@example.com
 ```
 
-Ещё не существуют: E2E (Playwright), CI (GitHub Actions), Celery worker. **Не выдумывать команды** —
+Worker и проверки репозитория:
+
+```bash
+docker compose exec worker python -m plummy.cli worker check   # задача до worker и обратно
+docker compose restart worker                                  # после изменения кода (нет auto-reload)
+python3 scripts/check_secrets.py                               # secret scan всех tracked-файлов
+python3 -m unittest discover -s scripts/tests                  # тесты scripts/
+```
+
+`.githooks/pre-commit`: secret scan staged-строк → ruff/prettier/eslint staged-файлов (если `uv`/`node_modules`
+есть; `PLUMMY_SKIP_LINT=1` — пропустить lint один раз) → bump `VERSION`. CI — `.github/workflows/ci.yml`: те же
+проверки на Compose-стеке, `pip-audit`, `npm audit`, dependency review в PR.
+
+Ещё не существуют: E2E (Playwright), Celery beat. **Не выдумывать команды** —
 сверяться с фактическими конфигурациями в репозитории.
 
 ## Definition of Done (§12)

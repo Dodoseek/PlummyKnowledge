@@ -44,8 +44,13 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, default=str, ensure_ascii=False)
 
 
-def configure_logging(level: str) -> None:
-    """Route the root logger and uvicorn loggers to a single JSON stdout handler."""
+def configure_logging(level: str, *, quiet_loggers: tuple[str, ...] = ()) -> None:
+    """Route the root logger and uvicorn loggers to a single JSON stdout handler.
+
+    ``quiet_loggers`` are raised to ``CRITICAL``: third-party loggers that would write data we must not log
+    (for example Celery's trace logger prints task return values and exception messages).
+    """
+    quiet = {name: {"level": "CRITICAL", "handlers": [], "propagate": True} for name in quiet_loggers}
     logging.config.dictConfig(
         {
             "version": 1,
@@ -62,6 +67,7 @@ def configure_logging(level: str) -> None:
                 "uvicorn.access": {"level": "WARNING", "handlers": [], "propagate": False},
                 # SQL echo would leak query parameters; keep SQLAlchemy quiet regardless of LOG_LEVEL.
                 "sqlalchemy": {"level": "WARNING", "handlers": [], "propagate": True},
+                **quiet,
             },
         }
     )

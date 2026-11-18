@@ -48,7 +48,7 @@ docker compose up --build
 ## Архитектура вкратце
 
 Модульный монолит ([ADR-002](docs/adr/0002-modular-monolith-and-layering.md)): один backend-артефакт со слоями
-`domain → application → infrastructure` и входами `api` (FastAPI) и `workers` (Celery, появится позже).
+`domain → application → infrastructure` и входами `api` (FastAPI) и `workers` (Celery).
 
 | Слой | Технологии ([ADR-003](docs/adr/0003-technology-stack.md)) |
 |---|---|

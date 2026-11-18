@@ -44,9 +44,13 @@ security gate (проверки безопасности **внутри** фаз
 - **Security gate:** нет секретов в репозитории и `.env.example`; ошибки конфигурации останавливают старт; порты
   БД/Redis не публикуются наружу; dependency scanning в CI (раннее включение пункта Фазы 12).
 - **Выход:** `docker compose up` поднимает сервисы, health/readiness зелёные, CI проходит.
-- *(Текущее состояние: сессии 2–4 выполнены — backend, frontend, PostgreSQL+pgvector, Redis, Alembic, Compose,
-  Ruff/mypy/pytest, ESLint/Prettier/Vitest, версия из `VERSION`. Не сделано: Celery worker (сессия 5), GitHub
-  Actions, pre-commit, issue/PR templates, dependency scanning.)*
+- *(Текущее состояние: фаза выполнена. Сессии 2–5: backend, frontend, PostgreSQL+pgvector, Redis, Alembic, Compose,
+  Ruff/mypy/pytest, ESLint/Prettier/Vitest, версия из `VERSION`, Celery worker с задачей `plummy.system.ping`
+  (retry с backoff, журнал жизненного цикла без payload, `plummy.cli worker check`). GitHub Actions
+  (`.github/workflows/ci.yml`): тесты на Compose-стеке, ruff, mypy, frontend-проверки, `version.py check`, secret
+  scan, `pip-audit`, `npm audit`, dependency review в PR; Dependabot; pre-commit в `.githooks` (secret scan и lint
+  staged-файлов); шаблоны issue/PR. Сознательно отложено: Celery beat и разделение очередей — с первыми задачами
+  ingestion (Фаза 5).)*
 
 ### Фаза 2 — Core backend и data model (§13)
 
@@ -203,7 +207,7 @@ security gate (проверки безопасности **внутри** фаз
 | 2 | FastAPI backend, Pydantic Settings, logging, health endpoints, pytest, Ruff | 1 |
 | 3 | React + TypeScript + Vite, Chakra UI, Redux Toolkit, RTK Query, router | 1 |
 | 4 | PostgreSQL + pgvector и Redis через Compose; SQLAlchemy async и Alembic | 1 |
-| 5 | Celery worker, тестовая задача, retry и наблюдаемое состояние | 1 |
+| 5 | Celery worker, тестовая задача, retry и наблюдаемое состояние (выполнено) | 1 |
 | 6 | User, роли и permissions, миграции; `instance_state` и `plummy.cli admin create` (выполнено в этапе «Bootstrap & Authentication») | 2 |
 | 7 | Минимальный auth flow и защищённый endpoint; обновить docs и зафиксировать milestone (выполнено в этапе «Bootstrap & Authentication») | 3 (начало) |
 
