@@ -1,0 +1,1 @@
+"""Role catalog use cases."""

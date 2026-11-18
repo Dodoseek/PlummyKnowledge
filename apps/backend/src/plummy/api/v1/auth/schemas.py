@@ -7,6 +7,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
+from plummy.application.auth.account import SessionView
 from plummy.application.auth.sessions import IssuedSession
 from plummy.application.security import SecurityContext
 from plummy.core.security import derive_csrf_token
@@ -57,3 +58,49 @@ class SessionResponse(BaseModel):
     @classmethod
     def from_issued(cls, issued: IssuedSession) -> SessionResponse:
         return cls.build(issued.context, derive_csrf_token(issued.token))
+
+
+MAX_TOKEN_INPUT_LENGTH = 128
+
+
+class ChangePasswordRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    current_password: SecretStr = Field(min_length=1, max_length=MAX_PASSWORD_INPUT_LENGTH)
+    new_password: SecretStr = Field(min_length=1, max_length=MAX_PASSWORD_INPUT_LENGTH)
+
+
+class ActivateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    token: SecretStr = Field(min_length=1, max_length=MAX_TOKEN_INPUT_LENGTH)
+    password: SecretStr = Field(min_length=1, max_length=MAX_PASSWORD_INPUT_LENGTH)
+
+
+class SessionItem(BaseModel):
+    """One of the user's own sessions. Token hashes are never exposed."""
+
+    id: UUID
+    created_at: datetime
+    last_seen_at: datetime
+    expires_at: datetime
+    user_agent: str | None
+    ip_address: str | None
+    current: bool
+
+    @classmethod
+    def from_view(cls, view: SessionView) -> SessionItem:
+        session = view.session
+        return cls(
+            id=session.id,
+            created_at=session.created_at,
+            last_seen_at=session.last_seen_at,
+            expires_at=session.expires_at,
+            user_agent=session.user_agent,
+            ip_address=session.ip_address,
+            current=view.current,
+        )
+
+
+class SessionListResponse(BaseModel):
+    items: list[SessionItem]

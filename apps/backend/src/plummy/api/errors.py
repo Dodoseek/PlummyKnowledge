@@ -161,9 +161,15 @@ async def application_exception_handler(request: Request, exc: Exception) -> JSO
         response = problem_response(
             request,
             status=422,
-            code="validation_error",
+            code=app_exc.code,
             detail="Request validation failed.",
-            errors=[{"field": f"body.{app_exc.field}", "code": app_exc.error_code, "message": str(app_exc)}],
+            errors=[
+                {
+                    "field": f"{app_exc.location}.{app_exc.field}",
+                    "code": app_exc.error_code,
+                    "message": str(app_exc),
+                }
+            ],
         )
     else:
         detail = app_exc.message if status < 500 else None

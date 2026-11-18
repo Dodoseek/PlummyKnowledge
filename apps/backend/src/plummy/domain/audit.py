@@ -29,6 +29,22 @@ class AuditAction(StrEnum):
     AUTH_LOGOUT = "auth.logout"
     ADMIN_CREATED_VIA_CLI = "admin.created_via_cli"
     ADMIN_PASSWORD_RESET_VIA_CLI = "admin.password_reset_via_cli"  # noqa: S105 - an event name
+    AUTH_SESSION_REVOKED = "auth.session.revoked"
+    AUTH_SESSION_REVOKED_BY_ADMIN = "auth.session.revoked_by_admin"
+    AUTH_PASSWORD_CHANGED = "auth.password.changed"  # noqa: S105 - an event name
+    USER_CREATED = "user.created"
+    USER_UPDATED = "user.updated"
+    USER_DISABLED = "user.disabled"
+    USER_DELETED = "user.deleted"
+    USER_ACTIVATED = "user.activated"
+    USER_ACTIVATION_REISSUED = "user.activation.reissued"
+    USER_ACTIVATION_REJECTED = "user.activation.rejected"
+    ROLE_ASSIGNED = "role.assigned"
+    ROLE_REVOKED = "role.revoked"
+    GROUP_CREATED = "group.created"
+    GROUP_UPDATED = "group.updated"
+    GROUP_DELETED = "group.deleted"
+    GROUP_MEMBERS_CHANGED = "group.members.changed"
 
 
 @dataclass(frozen=True, slots=True)

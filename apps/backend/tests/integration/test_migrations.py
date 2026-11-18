@@ -102,11 +102,15 @@ async def test_identity_tables_are_created(migrator: Migrator, database_url: str
     assert tables == [
         "alembic_version",
         "audit_logs",
+        "group_roles",
+        "groups",
         "instance_state",
         "permissions",
         "role_permissions",
         "roles",
         "sessions",
+        "user_activation_tokens",
+        "user_groups",
         "user_roles",
         "users",
     ]

@@ -20,7 +20,8 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import make_url, text
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from plummy.core.config import get_settings
 from plummy.core.version import BACKEND_ROOT
@@ -36,6 +37,20 @@ def _base_url() -> str:
     return url
 
 
+async def _drop_database(admin: AsyncEngine, name: str, attempts: int = 5) -> None:
+    """``WITH (FORCE)`` cannot terminate backends of other roles (e.g. an autovacuum worker that just
+    started on the database); those finish quickly, so retry briefly instead of failing the test."""
+    for attempt in range(attempts):
+        try:
+            async with admin.connect() as connection:
+                await connection.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
+            return
+        except DBAPIError as exc:
+            if "permission denied to terminate process" not in str(exc) or attempt == attempts - 1:
+                raise
+            await asyncio.sleep(0.2 * (attempt + 1))
+
+
 @asynccontextmanager
 async def _temporary_database(template: str) -> AsyncIterator[str]:
     base_url = make_url(_base_url())
@@ -45,8 +60,7 @@ async def _temporary_database(template: str) -> AsyncIterator[str]:
         async with admin.connect() as connection:
             await connection.execute(text(f'CREATE DATABASE "{name}" TEMPLATE "{template}"'))
         yield base_url.set(database=name).render_as_string(hide_password=False)
-        async with admin.connect() as connection:
-            await connection.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
+        await _drop_database(admin, name)
     finally:
         await admin.dispose()
 

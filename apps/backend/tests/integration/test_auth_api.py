@@ -110,11 +110,12 @@ async def test_disabled_and_deleted_users_cannot_login(admin: Harness) -> None:
 
 
 async def test_no_self_registration(admin: Harness) -> None:
-    for path in ("/api/v1/auth/register", "/api/v1/auth/signup", "/api/v1/users"):
-        response = await admin.client.post(
-            path, json={"email": "new@example.com", "password": ADMIN_PASSWORD}
-        )
-        assert response.status_code in {404, 405}
+    body = {"email": "new@example.com", "password": ADMIN_PASSWORD}
+    async with admin.new_client() as anonymous:
+        for path in ("/api/v1/auth/register", "/api/v1/auth/signup"):
+            assert (await anonymous.post(path, json=body)).status_code in {404, 405}
+        # Users are created only by an administrator.
+        assert (await anonymous.post("/api/v1/users", json=body)).status_code == 401
     assert await admin.sql("SELECT count(*) FROM users") == [(1,)]
 
 

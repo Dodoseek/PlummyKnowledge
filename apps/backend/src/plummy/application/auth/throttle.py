@@ -1,4 +1,7 @@
-"""Attempt limits for login and setup (ADR-013 §4). Counters live in Redis; Redis down → fail closed."""
+"""Attempt limits for login, setup and account activation (ADR-013 §4, ADR-015).
+
+Counters live in Redis; Redis down → fail closed.
+"""
 
 from __future__ import annotations
 
@@ -24,6 +27,7 @@ LOGIN_IP_EMAIL_PER_HOUR = Limit("login:ip_email:1h", 20, 3600)
 LOGIN_IP_PER_MINUTE = Limit("login:ip:1m", 30, 60)
 LOGIN_FAILURES_PER_EMAIL = Limit("login:email_failures:15m", 10, 900)
 SETUP_IP_PER_MINUTE = Limit("setup:ip:1m", 5, 60)
+ACTIVATION_IP_PER_MINUTE = Limit("activation:ip:1m", 10, 60)
 
 UNKNOWN_IP = "unknown"
 
@@ -67,6 +71,9 @@ class AttemptThrottle:
 
     async def before_setup(self, *, ip_address: str | None) -> None:
         await self._enforce([(SETUP_IP_PER_MINUTE, ip_address or UNKNOWN_IP, True)])
+
+    async def before_activation(self, *, ip_address: str | None) -> None:
+        await self._enforce([(ACTIVATION_IP_PER_MINUTE, ip_address or UNKNOWN_IP, True)])
 
     async def _enforce(self, checks: list[tuple[Limit, str, bool]]) -> None:
         retry_after = 0

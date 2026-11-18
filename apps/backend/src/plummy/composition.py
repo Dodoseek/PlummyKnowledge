@@ -11,17 +11,41 @@ from dataclasses import dataclass
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from plummy.application.auth.account import ChangePassword, ListMySessions, RevokeMySession
+from plummy.application.auth.activation import ActivateAccount
 from plummy.application.auth.sessions import SessionIssuer, SessionPolicy
 from plummy.application.auth.throttle import AttemptThrottle
 from plummy.application.auth.use_cases import AuthenticateSession, Login, Logout
+from plummy.application.groups.use_cases import (
+    CreateGroup,
+    DeleteGroup,
+    GetGroup,
+    ListGroups,
+    SetGroupMembers,
+    SetGroupRoles,
+    UpdateGroup,
+)
 from plummy.application.health import CheckReadiness
 from plummy.application.ports import Clock, PasswordHasher
+from plummy.application.roles.use_cases import ListPermissions, ListRoles
 from plummy.application.setup.use_cases import (
     CreateAdministrator,
     GetSetupStatus,
     InitializeInstance,
     IssueBootstrapToken,
     ResetPassword,
+)
+from plummy.application.system.use_cases import GetInstanceSettings, InstanceSettingsView
+from plummy.application.users.use_cases import (
+    ActivationLinks,
+    CreateUser,
+    DeleteUser,
+    GetUser,
+    ListUsers,
+    ReissueActivation,
+    RevokeUserSessions,
+    SetUserRoles,
+    UpdateUser,
 )
 from plummy.core.config import Settings, SetupMode
 from plummy.infrastructure.clock import SystemClock
@@ -47,6 +71,44 @@ class AuthServices:
     logout: Logout
     setup_status: GetSetupStatus
     initialize: InitializeInstance
+    activate: ActivateAccount
+    list_sessions: ListMySessions
+    revoke_session: RevokeMySession
+    change_password: ChangePassword
+
+
+@dataclass(frozen=True, slots=True)
+class UserServices:
+    list: ListUsers
+    get: GetUser
+    create: CreateUser
+    update: UpdateUser
+    delete: DeleteUser
+    set_roles: SetUserRoles
+    revoke_sessions: RevokeUserSessions
+    reissue_activation: ReissueActivation
+
+
+@dataclass(frozen=True, slots=True)
+class GroupServices:
+    list: ListGroups
+    get: GetGroup
+    create: CreateGroup
+    update: UpdateGroup
+    delete: DeleteGroup
+    set_members: SetGroupMembers
+    set_roles: SetGroupRoles
+
+
+@dataclass(frozen=True, slots=True)
+class AdminServices:
+    """Administration use cases; each one checks the caller's permissions itself."""
+
+    users: UserServices
+    groups: GroupServices
+    roles: ListRoles
+    permissions: ListPermissions
+    instance_settings: GetInstanceSettings
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +120,7 @@ class Resources:
     redis: Redis
     readiness: CheckReadiness
     auth: AuthServices
+    admin: AdminServices
 
     async def aclose(self) -> None:
         """Release connections. Each resource is closed even if another one fails to close."""
@@ -73,6 +136,18 @@ class Resources:
 
 def session_policy(settings: Settings) -> SessionPolicy:
     return SessionPolicy(idle_ttl=settings.session_idle_ttl, absolute_ttl=settings.session_absolute_ttl)
+
+
+def instance_settings_view(settings: Settings) -> InstanceSettingsView:
+    return InstanceSettingsView(
+        app_env=settings.app_env.value,
+        public_url=settings.public_url,
+        setup_mode=settings.setup_mode.value,
+        session_idle_ttl=settings.session_idle_ttl,
+        session_absolute_ttl=settings.session_absolute_ttl,
+        session_cookie_secure=settings.session_cookie_secure,
+        api_docs_enabled=settings.docs_enabled,
+    )
 
 
 def build_resources(
@@ -104,6 +179,35 @@ def build_resources(
         initialize=InitializeInstance(
             uow, clock, hasher, throttle, issuer, web_setup_enabled=web_setup_enabled
         ),
+        activate=ActivateAccount(uow, clock, hasher, throttle, issuer),
+        list_sessions=ListMySessions(uow, clock, issuer),
+        revoke_session=RevokeMySession(uow, clock),
+        change_password=ChangePassword(uow, clock, hasher, throttle, issuer),
+    )
+    links = ActivationLinks(settings.public_url)
+    admin = AdminServices(
+        users=UserServices(
+            list=ListUsers(uow),
+            get=GetUser(uow),
+            create=CreateUser(uow, clock, links),
+            update=UpdateUser(uow, clock),
+            delete=DeleteUser(uow, clock),
+            set_roles=SetUserRoles(uow),
+            revoke_sessions=RevokeUserSessions(uow, clock),
+            reissue_activation=ReissueActivation(uow, clock, links),
+        ),
+        groups=GroupServices(
+            list=ListGroups(uow),
+            get=GetGroup(uow),
+            create=CreateGroup(uow, clock),
+            update=UpdateGroup(uow, clock),
+            delete=DeleteGroup(uow, clock),
+            set_members=SetGroupMembers(uow),
+            set_roles=SetGroupRoles(uow),
+        ),
+        roles=ListRoles(uow),
+        permissions=ListPermissions(uow),
+        instance_settings=GetInstanceSettings(instance_settings_view(settings)),
     )
     return Resources(
         engine=engine,
@@ -111,6 +215,7 @@ def build_resources(
         redis=redis,
         readiness=readiness,
         auth=auth,
+        admin=admin,
     )
 
 

@@ -1,6 +1,14 @@
 """Identity domain: users, sessions, roles, permissions, password and email rules (no I/O, no frameworks)."""
 
 from plummy.domain.identity.emails import InvalidEmailError, canonical_login_email, normalize_email
+from plummy.domain.identity.groups import (
+    ROLES_NOT_ASSIGNABLE_TO_GROUPS,
+    Group,
+    InvalidGroupDescriptionError,
+    InvalidGroupNameError,
+    normalize_group_description,
+    normalize_group_name,
+)
 from plummy.domain.identity.models import (
     InstanceState,
     InvalidDisplayNameError,
@@ -22,10 +30,14 @@ from plummy.domain.identity.permissions import SYSTEM_ROLE_PERMISSIONS, Permissi
 __all__ = [
     "MAX_PASSWORD_LENGTH",
     "MIN_PASSWORD_LENGTH",
+    "ROLES_NOT_ASSIGNABLE_TO_GROUPS",
     "SYSTEM_ROLE_PERMISSIONS",
+    "Group",
     "InstanceState",
     "InvalidDisplayNameError",
     "InvalidEmailError",
+    "InvalidGroupDescriptionError",
+    "InvalidGroupNameError",
     "PasswordPolicyError",
     "Permission",
     "SessionRevokeReason",
@@ -38,4 +50,6 @@ __all__ = [
     "check_password_policy",
     "normalize_display_name",
     "normalize_email",
+    "normalize_group_description",
+    "normalize_group_name",
 ]

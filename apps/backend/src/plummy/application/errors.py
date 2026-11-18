@@ -85,8 +85,52 @@ class InvalidInputError(ApplicationError):
     """A field failed a business rule (email, display name, password policy)."""
 
     code = "validation_error"
+    location = "body"  # where ``field`` lives: ``body`` or ``query``
 
     def __init__(self, field: str, error_code: str, message: str) -> None:
         super().__init__(message)
         self.field = field
         self.error_code = error_code
+
+
+class InvalidQueryParameterError(InvalidInputError):
+    """A query parameter is unknown or invalid (ADR-014)."""
+
+    code = "invalid_query_parameter"
+    location = "query"
+
+
+class EmailTakenError(ConflictError):
+    """Another user already has this email."""
+
+    code = "email_taken"
+
+
+class GroupNameTakenError(ConflictError):
+    """Another group already has this name."""
+
+    code = "group_name_taken"
+
+
+class LastAdministratorError(ConflictError):
+    """The change would leave the instance without an active administrator."""
+
+    code = "last_administrator"
+
+
+class SelfModificationError(ConflictError):
+    """Administrators cannot disable or delete their own account."""
+
+    code = "cannot_modify_self"
+
+
+class InvalidUserStateError(ConflictError):
+    """The operation is not allowed in the user's current state."""
+
+    code = "invalid_user_state"
+
+
+class ActivationTokenInvalidError(ApplicationError):
+    """The activation link is invalid, expired or already used."""
+
+    code = "activation_token_invalid"

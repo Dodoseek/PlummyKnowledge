@@ -42,10 +42,13 @@ class UserModel(Base):
         CheckConstraint("status IN ('active', 'disabled', 'invited')", name="status"),
         CheckConstraint("char_length(display_name) BETWEEN 1 AND 200", name="display_name_length"),
         Index("ix_users_status", "status"),
+        # A soft-deleted user frees its email (ADR-015 / DATABASE_SCHEMA.md §3.2).
+        Index("uq_users_email_active", "email", unique=True, postgresql_where=text("deleted_at IS NULL")),
+        Index("ix_users_created_at_id", "created_at", "id"),
     )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
-    email: Mapped[str] = mapped_column(CITEXT(), nullable=False, unique=True)
+    email: Mapped[str] = mapped_column(CITEXT(), nullable=False)
     display_name: Mapped[str] = mapped_column(Text(), nullable=False)
     password_hash: Mapped[str | None] = mapped_column(Text(), nullable=True)
     status: Mapped[str] = mapped_column(Text(), nullable=False, server_default=text("'active'"))
@@ -124,6 +127,67 @@ class UserRoleModel(Base):
         PG_UUID(as_uuid=True), ForeignKey("roles.id", ondelete="RESTRICT"), primary_key=True
     )
     granted_by: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
+
+
+class GroupModel(Base):
+    __tablename__ = "groups"
+    __table_args__ = (
+        CheckConstraint("char_length(name) BETWEEN 1 AND 100", name="name_length"),
+        CheckConstraint("description IS NULL OR char_length(description) <= 500", name="description_length"),
+        Index("uq_groups_name_active", "name", unique=True, postgresql_where=text("deleted_at IS NULL")),
+        Index("ix_groups_created_at_id", "created_at", "id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    name: Mapped[str] = mapped_column(CITEXT(), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    created_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
+    updated_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
+    deleted_at: Mapped[datetime | None] = _ts()
+
+
+class UserGroupModel(Base):
+    __tablename__ = "user_groups"
+    __table_args__ = (Index("ix_user_groups_group_id", "group_id"),)
+
+    user_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    group_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("groups.id", ondelete="CASCADE"), primary_key=True
+    )
+    created_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
+
+
+class GroupRoleModel(Base):
+    __tablename__ = "group_roles"
+    __table_args__ = (Index("ix_group_roles_role_id", "role_id"),)
+
+    group_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("groups.id", ondelete="CASCADE"), primary_key=True
+    )
+    role_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("roles.id", ondelete="RESTRICT"), primary_key=True
+    )
+    granted_by: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
+
+
+class ActivationTokenModel(Base):
+    __tablename__ = "user_activation_tokens"
+    __table_args__ = (CheckConstraint("octet_length(token_hash) = 32", name="token_hash_length"),)
+
+    user_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    token_hash: Mapped[bytes] = mapped_column(LargeBinary(), nullable=False, unique=True)
+    expires_at: Mapped[datetime] = _ts(nullable=False)
+    created_by: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     created_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
