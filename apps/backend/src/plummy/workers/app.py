@@ -25,7 +25,9 @@ DEFAULT_QUEUE = "default"
 INGESTION_QUEUE = "ingestion"
 EMBEDDINGS_QUEUE = "embeddings"
 MAINTENANCE_QUEUE = "maintenance"
-INGESTION_TASK = "plummy.ingestion.run_job"
+INGESTION_TASK = "plummy.ingestion.run_job"  # stages 2-7, worker-ingestion (no network)
+INDEXING_TASK = "plummy.ingestion.index_job"  # stages 8-12, worker with egress to embedding providers
+VECTOR_INDEX_TASK = "plummy.maintenance.ensure_vector_index"
 RESULT_TTL_SECONDS = 24 * 60 * 60
 # Hard ceiling for any task; long-running tasks set their own limits explicitly.
 DEFAULT_SOFT_TIME_LIMIT_SECONDS = 15 * 60
@@ -33,7 +35,11 @@ DEFAULT_TIME_LIMIT_SECONDS = DEFAULT_SOFT_TIME_LIMIT_SECONDS + 60
 # Redelivery of unacknowledged messages; must exceed the longest task (acks_late).
 VISIBILITY_TIMEOUT_SECONDS = 2 * 60 * 60
 
-TASK_MODULES = ("plummy.workers.tasks.system", "plummy.workers.tasks.ingestion")
+TASK_MODULES = (
+    "plummy.workers.tasks.system",
+    "plummy.workers.tasks.ingestion",
+    "plummy.workers.tasks.maintenance",
+)
 
 
 def celery_config(
@@ -65,7 +71,11 @@ def celery_config(
         # thread-safe, and the connections can be released on shutdown.
         "result_backend_thread_safe": True,
         "task_default_queue": queue,
-        "task_routes": {INGESTION_TASK: {"queue": INGESTION_QUEUE}},
+        "task_routes": {
+            INGESTION_TASK: {"queue": INGESTION_QUEUE},
+            INDEXING_TASK: {"queue": EMBEDDINGS_QUEUE},
+            VECTOR_INDEX_TASK: {"queue": MAINTENANCE_QUEUE},
+        },
         "task_create_missing_queues": True,
         "task_track_started": True,
         "task_acks_late": True,

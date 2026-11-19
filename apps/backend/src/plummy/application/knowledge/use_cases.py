@@ -6,6 +6,7 @@ sources are managed in phase 7; until then the knowledge bases are visible to ``
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Final
 from uuid import UUID
@@ -14,7 +15,14 @@ from plummy.application.audit import by_user
 from plummy.application.errors import InvalidInputError, KnowledgeBaseNameTakenError
 from plummy.application.knowledge.access import effective_access, require_kb_access
 from plummy.application.pagination import Page, PageRequest
-from plummy.application.ports import Clock, IndexingStats, UniqueViolationError, UnitOfWorkFactory
+from plummy.application.ports import (
+    Clock,
+    IndexingStats,
+    JobQueue,
+    JobQueueUnavailableError,
+    UniqueViolationError,
+    UnitOfWorkFactory,
+)
 from plummy.application.security import ClientInfo, SecurityContext
 from plummy.core.ids import new_id
 from plummy.domain.ai import MAX_DIMENSIONS, EmbeddingProfileStatus
@@ -31,6 +39,8 @@ from plummy.domain.knowledge import (
     normalize_kb_name,
     upload_source_name,
 )
+
+logger = logging.getLogger(__name__)
 
 NAME_TAKEN: Final = "A knowledge base with this name already exists."
 PROFILE_FIELD: Final = "embedding_profile_id"
@@ -85,8 +95,8 @@ class GetKnowledgeBase:
 
 
 class CreateKnowledgeBase:
-    def __init__(self, uow: UnitOfWorkFactory, clock: Clock) -> None:
-        self._uow, self._clock = uow, clock
+    def __init__(self, uow: UnitOfWorkFactory, clock: Clock, jobs: JobQueue) -> None:
+        self._uow, self._clock, self._jobs = uow, clock, jobs
 
     async def execute(
         self, context: SecurityContext, client: ClientInfo, data: KnowledgeBaseInput
@@ -159,4 +169,10 @@ class CreateKnowledgeBase:
                 )
             )
             await uow.commit()
+        # The profile's HNSW index is built before the first vectors (ADR-017 §2). Idempotent; if the broker
+        # is down now, the index phase of the first document asks again.
+        try:
+            await self._jobs.enqueue_vector_index(profile.id)
+        except JobQueueUnavailableError:
+            logger.warning("vector index request not sent", extra={"embedding_profile_id": str(profile.id)})
         return KnowledgeBaseView(kb, KbAccessLevel.MANAGE, IndexingStats())

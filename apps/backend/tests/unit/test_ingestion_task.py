@@ -9,7 +9,15 @@ from uuid import UUID, uuid4
 import pytest
 
 from plummy.application.ingestion.pipeline import RunOutcome
-from plummy.workers.app import INGESTION_QUEUE, INGESTION_TASK, celery_config
+from plummy.workers.app import (
+    EMBEDDINGS_QUEUE,
+    INDEXING_TASK,
+    INGESTION_QUEUE,
+    INGESTION_TASK,
+    MAINTENANCE_QUEUE,
+    VECTOR_INDEX_TASK,
+    celery_config,
+)
 from plummy.workers.tasks import ingestion
 from tests.conftest import make_settings
 
@@ -28,14 +36,14 @@ class FakeTask:
         return RetryError()
 
 
-def outcome_of(monkeypatch: pytest.MonkeyPatch, outcome: RunOutcome) -> list[UUID]:
+def outcome_of(monkeypatch: pytest.MonkeyPatch, outcome: RunOutcome, name: str = "run_job") -> list[UUID]:
     seen: list[UUID] = []
 
     async def fake_run(job_id: UUID) -> RunOutcome:
         seen.append(job_id)
         return outcome
 
-    monkeypatch.setattr(ingestion, "run_job", fake_run)
+    monkeypatch.setattr(ingestion, name, fake_run)
     return seen
 
 
@@ -63,7 +71,24 @@ def test_message_must_be_a_job_id(monkeypatch: pytest.MonkeyPatch) -> None:
     assert seen == []
 
 
-def test_ingestion_task_is_routed_to_its_queue() -> None:
+def test_index_task_runs_the_index_phase(monkeypatch: pytest.MonkeyPatch) -> None:
+    job_id = uuid4()
+    seen = outcome_of(monkeypatch, RunOutcome.SUCCEEDED, "index_job")
+    extract = outcome_of(monkeypatch, RunOutcome.SUCCEEDED, "run_job")
+    assert ingestion._index_job(FakeTask(0), str(job_id)) == "succeeded"
+    assert (seen, extract) == ([job_id], [])
+    outcome_of(monkeypatch, RunOutcome.RETRY, "index_job")
+    task = FakeTask(2)
+    with pytest.raises(RetryError):
+        ingestion._index_job(task, str(job_id))
+    assert task.countdowns == [90]
+
+
+def test_tasks_are_routed_to_their_queues() -> None:
     config: dict[str, Any] = celery_config(make_settings())
-    assert config["task_routes"] == {INGESTION_TASK: {"queue": INGESTION_QUEUE}}
+    assert config["task_routes"] == {
+        INGESTION_TASK: {"queue": INGESTION_QUEUE},  # worker-ingestion, no network
+        INDEXING_TASK: {"queue": EMBEDDINGS_QUEUE},  # the worker with egress to providers
+        VECTOR_INDEX_TASK: {"queue": MAINTENANCE_QUEUE},
+    }
     assert config["accept_content"] == ["json"]

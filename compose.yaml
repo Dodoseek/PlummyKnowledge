@@ -147,9 +147,10 @@ services:
       retries: 6
     # No restart policy: a fatal startup error (e.g. invalid configuration) stops the container with exit code 1.
 
-  # Celery worker (ARCHITECTURE.md §3): same image and configuration as the API, no published ports, data
-  # network only (no internet access yet). Takes the default, embeddings and maintenance queues; documents
-  # are parsed by worker-ingestion. Code changes need `docker compose restart worker` (no auto-reload).
+  # Celery worker (ARCHITECTURE.md §3): same image and configuration as the API, no published ports. Takes the
+  # default, embeddings and maintenance queues (documents are parsed by worker-ingestion): the index phase
+  # calls embedding providers, so it has outbound access (edge network); every connection still passes the
+  # egress policy of SafeHttpClient (ADR-007). Code changes need `docker compose restart worker`.
   #   docker compose exec worker python -m plummy.cli worker check
   worker:
     build:
@@ -170,7 +171,7 @@ services:
       - ./VERSION:/VERSION:ro
       - secrets-data:/var/lib/plummy/secrets:ro
       - storage-data:/var/lib/plummy/storage
-    networks: [data]
+    networks: [data, edge]
     depends_on:
       migrate:
         condition: service_completed_successfully

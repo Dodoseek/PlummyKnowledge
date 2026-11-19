@@ -2,22 +2,26 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import math
+from collections.abc import Callable, Sequence
 from datetime import datetime
 from types import TracebackType
 from typing import Any, Self
 from uuid import UUID
 
-from sqlalchemy import Select, delete, func, literal, or_, select, tuple_, union, update
+from sqlalchemy import Select, cast, delete, func, literal, or_, select, tuple_, union, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from plummy.application.ingestion.chunking import ChunkDraft
 from plummy.application.pagination import Page, PageRequest, encode_cursor, escape_like
 from plummy.application.ports import (
     ActivationRecord,
     ActivationTokenRepository,
     AuditLog,
+    ChunkRepository,
+    ChunkToEmbed,
     DataSourceRepository,
     DocumentRepository,
     EmbeddingProfileRepository,
@@ -28,6 +32,7 @@ from plummy.application.ports import (
     InstanceStateRepository,
     KnowledgeBaseRepository,
     ModelConfigRepository,
+    NewEmbedding,
     PermissionInfo,
     ProviderRepository,
     RoleInfo,
@@ -88,8 +93,10 @@ from plummy.infrastructure.db.models import (
     AIProviderModel,
     AuditLogModel,
     DataSourceModel,
+    DocumentChunkModel,
     DocumentModel,
     DocumentVersionModel,
+    EmbeddingModel,
     EmbeddingProfileModel,
     GroupModel,
     GroupRoleModel,
@@ -108,6 +115,7 @@ from plummy.infrastructure.db.models import (
     UserModel,
     UserRoleModel,
 )
+from plummy.infrastructure.db.types import Vector
 
 INSTANCE_STATE_ID = 1
 
@@ -1398,6 +1406,178 @@ class SqlDocumentRepository:
             )
         )
 
+    async def activate_version(
+        self, document_id: UUID, version_id: UUID, *, chunk_set: int, at: datetime
+    ) -> UUID | None:
+        document = await self._db.get(
+            DocumentModel, document_id, with_for_update=True, populate_existing=True
+        )
+        if document is None:
+            return None
+        previous = document.current_version_id if document.current_version_id != version_id else None
+        await self._db.execute(
+            update(DocumentVersionModel)
+            .where(DocumentVersionModel.id == version_id)
+            .values(
+                status=str(VersionStatus.READY),
+                active_chunk_set=chunk_set,
+                error_code=None,
+                error_message=None,
+                processed_at=at,
+                updated_at=at,
+            )
+        )
+        if previous is not None:
+            await self._db.execute(
+                update(DocumentVersionModel)
+                .where(DocumentVersionModel.id == previous)
+                .values(status=str(VersionStatus.OUTDATED), updated_at=at)
+            )
+        await self._db.execute(
+            update(DocumentModel)
+            .where(DocumentModel.id == document_id)
+            .values(
+                current_version_id=version_id, processing_status=str(DocumentStatus.INDEXED), updated_at=at
+            )
+        )
+        return previous
+
+
+def _vector_literal(vector: Sequence[float]) -> str:
+    """pgvector text input; ``repr`` keeps the full float precision. Callers reject NaN and infinity."""
+    if not all(math.isfinite(value) for value in vector):
+        raise ValueError("vector values must be finite")
+    return "[" + ",".join(repr(float(value)) for value in vector) + "]"
+
+
+class SqlChunkRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._db = session
+
+    async def chunk_sets(self, version_id: UUID) -> list[int]:
+        rows = await self._db.scalars(
+            select(DocumentChunkModel.chunk_set)
+            .where(DocumentChunkModel.document_version_id == version_id)
+            .distinct()
+            .order_by(DocumentChunkModel.chunk_set)
+        )
+        return list(rows)
+
+    async def add_chunks(
+        self,
+        *,
+        document_id: UUID,
+        version_id: UUID,
+        data_source_id: UUID,
+        chunk_set: int,
+        drafts: Sequence[ChunkDraft],
+    ) -> None:
+        for start in range(0, len(drafts), 500):
+            batch = drafts[start : start + 500]
+            await self._db.execute(
+                pg_insert(DocumentChunkModel)
+                .values(
+                    [
+                        {
+                            "id": new_id(),
+                            "document_id": document_id,
+                            "document_version_id": version_id,
+                            "data_source_id": data_source_id,
+                            "chunk_set": chunk_set,
+                            "chunk_index": draft.index,
+                            "content": draft.content,
+                            "content_hash": draft.content_hash,
+                            "token_count": draft.token_count,
+                            "page_start": draft.page_start,
+                            "page_end": draft.page_end,
+                            "section_path": list(draft.section_path) or None,
+                            "sheet_name": draft.sheet_name,
+                            "row_start": draft.row_start,
+                            "row_end": draft.row_end,
+                        }
+                        for draft in batch
+                    ]
+                )
+                .on_conflict_do_nothing(index_elements=["document_version_id", "chunk_set", "chunk_index"])
+            )
+
+    async def count(self, version_id: UUID, chunk_set: int) -> int:
+        value = await self._db.scalar(
+            select(func.count())
+            .select_from(DocumentChunkModel)
+            .where(
+                DocumentChunkModel.document_version_id == version_id,
+                DocumentChunkModel.chunk_set == chunk_set,
+            )
+        )
+        return int(value or 0)
+
+    async def without_embedding(
+        self, version_id: UUID, chunk_set: int, profile_id: UUID, *, limit: int
+    ) -> list[ChunkToEmbed]:
+        embedded = (
+            select(EmbeddingModel.id)
+            .where(
+                EmbeddingModel.chunk_id == DocumentChunkModel.id,
+                EmbeddingModel.embedding_config_id == profile_id,
+            )
+            .exists()
+        )
+        rows = await self._db.execute(
+            select(DocumentChunkModel.id, DocumentChunkModel.content)
+            .where(
+                DocumentChunkModel.document_version_id == version_id,
+                DocumentChunkModel.chunk_set == chunk_set,
+                ~embedded,
+            )
+            .order_by(DocumentChunkModel.chunk_index)
+            .limit(limit)
+        )
+        return [ChunkToEmbed(id=row.id, content=row.content) for row in rows]
+
+    async def add_embeddings(
+        self,
+        *,
+        profile_id: UUID,
+        version_id: UUID,
+        data_source_id: UUID,
+        dimensions: int,
+        embeddings: Sequence[NewEmbedding],
+    ) -> None:
+        if not embeddings:
+            return
+        await self._db.execute(
+            pg_insert(EmbeddingModel)
+            .values(
+                [
+                    {
+                        "id": new_id(),
+                        "chunk_id": item.chunk_id,
+                        "embedding_config_id": profile_id,
+                        "document_version_id": version_id,
+                        "data_source_id": data_source_id,
+                        "dimensions": dimensions,
+                        "embedding": cast(_vector_literal(item.vector), Vector()),
+                    }
+                    for item in embeddings
+                ]
+            )
+            .on_conflict_do_nothing(index_elements=["chunk_id", "embedding_config_id"])
+        )
+
+    async def embedding_count(self, version_id: UUID, chunk_set: int, profile_id: UUID) -> int:
+        value = await self._db.scalar(
+            select(func.count())
+            .select_from(EmbeddingModel)
+            .join(DocumentChunkModel, DocumentChunkModel.id == EmbeddingModel.chunk_id)
+            .where(
+                EmbeddingModel.embedding_config_id == profile_id,
+                DocumentChunkModel.document_version_id == version_id,
+                DocumentChunkModel.chunk_set == chunk_set,
+            )
+        )
+        return int(value or 0)
+
 
 def _job(row: IngestionJobModel) -> IngestionJob:
     return IngestionJob(
@@ -1492,6 +1672,7 @@ class SqlAlchemyUnitOfWork:
     data_sources: DataSourceRepository
     documents: DocumentRepository
     ingestion_jobs: IngestionJobRepository
+    chunks: ChunkRepository
     audit: AuditLog
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
@@ -1516,6 +1697,7 @@ class SqlAlchemyUnitOfWork:
         self.data_sources = SqlDataSourceRepository(session)
         self.documents = SqlDocumentRepository(session)
         self.ingestion_jobs = SqlIngestionJobRepository(session)
+        self.chunks = SqlChunkRepository(session)
         self.audit = SqlAuditLog(session)
         return self
 

@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from types import TracebackType
 from typing import Protocol, Self
 from uuid import UUID
 
+from plummy.application.ingestion.chunking import ChunkDraft
 from plummy.application.pagination import Page, PageRequest
 from plummy.domain.ai import AIProvider, EmbeddingProfile, ModelConfig, TestStatus
 from plummy.domain.audit import AuditEntry
@@ -486,6 +487,76 @@ class DocumentRepository(Protocol):
         """Stage 7 result: where the normalized document is and which parser produced it."""
         ...
 
+    async def activate_version(
+        self, document_id: UUID, version_id: UUID, *, chunk_set: int, at: datetime
+    ) -> UUID | None:
+        """Stage 11, in the caller's transaction: the version becomes ``ready`` with ``chunk_set`` active and
+        the document's current version; the previous current version becomes ``outdated`` (returned)."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class ChunkToEmbed:
+    id: UUID
+    content: str
+
+
+@dataclass(frozen=True, slots=True)
+class NewEmbedding:
+    chunk_id: UUID
+    vector: tuple[float, ...]
+
+
+class ChunkRepository(Protocol):
+    """Chunks (stage 8) and their vectors (stage 9). Inserts ignore rows that already exist: a retried or
+    concurrent run of the same job never duplicates them (SC-09)."""
+
+    async def chunk_sets(self, version_id: UUID) -> list[int]:
+        """Distinct ``chunk_set`` numbers of the version, ascending."""
+        ...
+
+    async def add_chunks(
+        self,
+        *,
+        document_id: UUID,
+        version_id: UUID,
+        data_source_id: UUID,
+        chunk_set: int,
+        drafts: Sequence[ChunkDraft],
+    ) -> None: ...
+
+    async def count(self, version_id: UUID, chunk_set: int) -> int: ...
+
+    async def without_embedding(
+        self, version_id: UUID, chunk_set: int, profile_id: UUID, *, limit: int
+    ) -> list[ChunkToEmbed]:
+        """The next chunks of the set (by ``chunk_index``) that have no vector for the profile."""
+        ...
+
+    async def add_embeddings(
+        self,
+        *,
+        profile_id: UUID,
+        version_id: UUID,
+        data_source_id: UUID,
+        dimensions: int,
+        embeddings: Sequence[NewEmbedding],
+    ) -> None: ...
+
+    async def embedding_count(self, version_id: UUID, chunk_set: int, profile_id: UUID) -> int: ...
+
+
+class VectorIndexManager(Protocol):
+    """Per-profile partial HNSW indexes (ADR-017 §2). DDL is built only from the stored profile."""
+
+    async def is_ready(self, profile: EmbeddingProfile) -> bool: ...
+
+    async def ensure(self, profile: EmbeddingProfile) -> bool:
+        """Creates the index (``CONCURRENTLY``), replacing an invalid one; ``True`` if it was created."""
+        ...
+
+    async def drop(self, profile_id: UUID) -> bool: ...
+
 
 class IngestionJobRepository(Protocol):
     async def add(self, job: IngestionJob) -> None:
@@ -514,7 +585,17 @@ class JobQueue(Protocol):
     state (ADR-008, Security considerations)."""
 
     async def enqueue_ingestion(self, job_id: UUID) -> str:
-        """Returns the broker task ID. Raises :class:`JobQueueUnavailableError`."""
+        """Stages 2-7 on the ``ingestion`` queue (no network). Returns the broker task ID.
+
+        Raises :class:`JobQueueUnavailableError` (all methods)."""
+        ...
+
+    async def enqueue_indexing(self, job_id: UUID) -> str:
+        """Stages 8-12 on the ``embeddings`` queue (the worker that may reach embedding providers)."""
+        ...
+
+    async def enqueue_vector_index(self, profile_id: UUID) -> str:
+        """``ensure_vector_index`` on the ``maintenance`` queue (ADR-017 §2)."""
         ...
 
 
@@ -535,6 +616,7 @@ class UnitOfWork(Protocol):
     data_sources: DataSourceRepository
     documents: DocumentRepository
     ingestion_jobs: IngestionJobRepository
+    chunks: ChunkRepository
     audit: AuditLog
 
     async def __aenter__(self) -> Self: ...

@@ -9,6 +9,8 @@ import importlib.metadata
 import logging
 import socket
 import tempfile
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -32,8 +34,11 @@ from plummy.application.groups.use_cases import (
     UpdateGroup,
 )
 from plummy.application.health import CheckReadiness
+from plummy.application.ingestion.indexing import RunIndexingJob
 from plummy.application.ingestion.parsing import ParserRegistry
+from plummy.application.ingestion.pipeline import RunIngestionJob
 from plummy.application.knowledge.use_cases import CreateKnowledgeBase, GetKnowledgeBase, ListKnowledgeBases
+from plummy.application.knowledge.vector_index import EnsureVectorIndex
 from plummy.application.ports import Clock, PasswordHasher, SecretCipher
 from plummy.application.providers.embedding_profiles import (
     CreateEmbeddingProfile,
@@ -87,11 +92,13 @@ from plummy.core.network.addresses import IPAddress
 from plummy.core.network.policy import EgressPolicy
 from plummy.core.network.urls import parse_ip
 from plummy.domain.file_types import DocumentFormat
+from plummy.infrastructure.chunking.structured import StructuredChunker
 from plummy.infrastructure.clock import SystemClock
 from plummy.infrastructure.db import create_engine, create_session_factory
 from plummy.infrastructure.db.checks import DatabaseCheck, MigrationsCheck, SecretsCheck
 from plummy.infrastructure.db.migrations import get_expected_heads
 from plummy.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWorkFactory
+from plummy.infrastructure.db.vector_index import PgVectorIndexManager
 from plummy.infrastructure.http.egress_audit import EgressDenialAuditor
 from plummy.infrastructure.http.safe_client import SafeHttpClient
 from plummy.infrastructure.integrations.ai.factory import HttpProviderGateway
@@ -249,6 +256,63 @@ def create_parsers() -> ParserRegistry:
         scratch_dir=Path(tempfile.gettempdir()) / "plummy-parse",
     )
     return ParserRegistry([PlainTextParser(), isolated])
+
+
+@asynccontextmanager
+async def ingestion_runner(settings: Settings) -> AsyncIterator[RunIngestionJob]:
+    """Extract phase for one task run (worker-ingestion): its own engine, the asyncpg pool belongs to the
+    event loop of the run. Needs no secrets and no outbound network."""
+    engine = create_engine(settings, application_name="plummy-worker-ingestion")
+    jobs = CeleryJobQueue(settings)
+    try:
+        yield RunIngestionJob(
+            SqlAlchemyUnitOfWorkFactory(create_session_factory(engine)),
+            create_storage(settings),
+            SystemClock(),
+            create_parsers(),
+            jobs,
+        )
+    finally:
+        jobs.close()
+        await engine.dispose()
+
+
+@asynccontextmanager
+async def indexing_runner(settings: Settings) -> AsyncIterator[RunIndexingJob]:
+    """Index phase for one task run (the worker with egress): providers through ``SafeHttpClient``."""
+    clock = SystemClock()
+    vault = SecretVault(load_secret_cipher(settings), clock)
+    policy = load_egress_policy(settings)
+    engine = create_engine(settings, application_name="plummy-worker")
+    uow = SqlAlchemyUnitOfWorkFactory(create_session_factory(engine))
+    http = SafeHttpClient(policy, on_denied=EgressDenialAuditor(uow))
+    jobs = CeleryJobQueue(settings)
+    try:
+        yield RunIndexingJob(
+            uow,
+            create_storage(settings),
+            clock,
+            chunker=StructuredChunker(),
+            gateway=HttpProviderGateway(http),
+            vault=vault,
+            indexes=PgVectorIndexManager(engine),
+            jobs=jobs,
+        )
+    finally:
+        jobs.close()
+        await http.aclose()
+        await engine.dispose()
+
+
+@asynccontextmanager
+async def vector_index_runner(settings: Settings) -> AsyncIterator[EnsureVectorIndex]:
+    engine = create_engine(settings, application_name="plummy-worker")
+    try:
+        yield EnsureVectorIndex(
+            SqlAlchemyUnitOfWorkFactory(create_session_factory(engine)), PgVectorIndexManager(engine)
+        )
+    finally:
+        await engine.dispose()
 
 
 def create_storage(settings: Settings) -> LocalFileStorage:
@@ -435,7 +499,9 @@ def build_resources(
         auth=auth,
         admin=admin,
         knowledge=KnowledgeServices(
-            list=ListKnowledgeBases(uow), get=GetKnowledgeBase(uow), create=CreateKnowledgeBase(uow, clock)
+            list=ListKnowledgeBases(uow),
+            get=GetKnowledgeBase(uow),
+            create=CreateKnowledgeBase(uow, clock, jobs),
         ),
         documents=DocumentServices(
             upload=UploadDocument(uow, storage, jobs, limiter, clock, max_bytes=settings.upload_max_bytes)
