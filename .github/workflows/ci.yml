@@ -75,6 +75,25 @@ jobs:
         if: always()
         run: docker compose down --volumes
 
+  ingestion:
+    name: Ingestion (worker-ingestion image, Docling parser offline)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the worker-ingestion image (dependencies and Docling models)
+        run: docker compose build worker-ingestion
+      # The container is on the internal data network only: parsing must work without internet access.
+      - name: Parser tests in the image, without network access
+        run: >-
+          docker compose run --rm --no-deps worker-ingestion
+          pytest -p no:cacheprovider tests/ingestion tests/unit/test_isolated_parser.py
+      - name: Stop the stack
+        if: always()
+        run: docker compose down --volumes
+
   frontend:
     name: Frontend (tests, lint, typecheck, format, build)
     runs-on: ubuntu-latest
@@ -109,10 +128,13 @@ jobs:
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
-      - name: Python dependencies (uv.lock, runtime + dev)
+      # All extras: the worker-ingestion image (Docling, CPU-only PyTorch) included. The CPU wheels carry a local
+      # version (2.15.0+cpu) that PyPI does not know; they are the same upstream release, audited without it.
+      - name: Python dependencies (uv.lock, runtime + dev + ingestion)
         run: |
-          uv export --project apps/backend --frozen --no-hashes --no-emit-project \
+          uv export --project apps/backend --frozen --no-hashes --no-emit-project --all-extras \
             --format requirements-txt --output-file "$RUNNER_TEMP/requirements.txt"
+          sed -i 's/+cpu / /' "$RUNNER_TEMP/requirements.txt"
           uvx pip-audit==2.10.1 --strict --no-deps --disable-pip --requirement "$RUNNER_TEMP/requirements.txt"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:

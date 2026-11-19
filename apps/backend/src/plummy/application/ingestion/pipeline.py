@@ -3,19 +3,22 @@
 The task message carries only the job ID. Every run reloads the job, the document, its source and knowledge
 bases and checks their state again; stages are idempotent, so a redelivered or retried job continues safely.
 
-Implemented stages: authorize (2), validate_type and security_check (3-4), store_original (5). Parsing,
-chunking and embeddings follow in the next phase steps.
+Implemented stages: authorize (2), validate_type and security_check (3-4), store_original (5), parse and
+normalize (6-7). Chunking and embeddings follow in the next phase step.
 """
 
 from __future__ import annotations
 
+import json
 import logging
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final
 from uuid import UUID
 
 from plummy.application.ingestion.inspection import ArchiveLimits, FileRejectedError, inspect_file
+from plummy.application.ingestion.parsing import ParseError, ParseLimits, ParserRegistry
 from plummy.application.ports import Clock, UnitOfWorkFactory
 from plummy.application.storage import (
     StorageArea,
@@ -67,10 +70,14 @@ class RunIngestionJob:
         uow: UnitOfWorkFactory,
         storage: StorageProvider,
         clock: Clock,
+        parsers: ParserRegistry,
+        *,
         archive_limits: ArchiveLimits | None = None,
+        parse_limits: ParseLimits | None = None,
     ) -> None:
-        self._uow, self._storage, self._clock = uow, storage, clock
+        self._uow, self._storage, self._clock, self._parsers = uow, storage, clock, parsers
         self._limits = archive_limits or ArchiveLimits()
+        self._parse_limits = parse_limits or ParseLimits()
 
     async def execute(self, job_id: UUID) -> RunOutcome:
         work = await self._start(job_id)
@@ -82,9 +89,10 @@ class RunIngestionJob:
                 return await self._finish(work, JobStatus.CANCELLED, error_code="resource_unavailable")
             file_format = await self._inspect(work)
             await self._store_original(work, file_format)
-            # Parsing, chunking and embeddings are not wired yet: the stored document waits for them.
+            await self._parse(work, file_format)
+            # Chunking and embeddings are not wired yet: the parsed document waits for them.
             await self._set_document_status(work, DocumentStatus.PENDING)
-        except FileRejectedError as exc:
+        except (FileRejectedError, ParseError) as exc:
             await self._fail_permanently(work, exc.code, exc.message)
             return RunOutcome.FAILED
         except (TransientIngestionError, OSError) as exc:
@@ -160,6 +168,36 @@ class RunIngestionJob:
             )
             await uow.commit()
 
+    async def _parse(self, work: _Work, file_format: DocumentFormat) -> None:
+        """Stages 6-7: text and structure, kept as JSON next to the original (reindex does not re-parse)."""
+        version = work.version
+        if version.extracted_storage_key is not None and await self._storage.exists(
+            StorageArea.DOCUMENTS, StorageKey(version.extracted_storage_key)
+        ):
+            return  # parsed by an earlier attempt
+        await self._set_stage(work, JobStage.PARSE)
+        parser = self._parsers.for_format(file_format)
+        async with self._storage.local_path(StorageArea.DOCUMENTS, StorageKey(version.storage_key)) as path:
+            document = await parser.parse(path, file_format, self._parse_limits)
+        await self._set_stage(work, JobStage.NORMALIZE)
+        payload = json.dumps(document.to_json(), ensure_ascii=False, separators=(",", ":")).encode()
+        key = StorageKey.new()
+        await self._storage.put(StorageArea.DOCUMENTS, key, _single(payload))
+        try:
+            async with self._uow() as uow:
+                await uow.documents.record_extraction(
+                    version.id,
+                    extracted_storage_key=key.value,
+                    parser=parser.name,
+                    page_count=document.page_count,
+                    at=self._clock.now(),
+                )
+                await uow.commit()
+        except BaseException:
+            await self._storage.delete(StorageArea.DOCUMENTS, key)
+            raise
+        version.extracted_storage_key = key.value
+
     async def _set_document_status(self, work: _Work, status: DocumentStatus) -> None:
         async with self._uow() as uow:
             await uow.documents.set_status(work.document.id, status, at=self._clock.now())
@@ -216,6 +254,10 @@ class RunIngestionJob:
                 await uow.ingestion_jobs.save(job)
                 await uow.commit()
         return _OUTCOMES[status]
+
+
+async def _single(payload: bytes) -> AsyncIterator[bytes]:
+    yield payload
 
 
 _OUTCOMES: Final = {

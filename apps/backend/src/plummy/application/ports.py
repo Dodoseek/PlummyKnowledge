@@ -474,6 +474,18 @@ class DocumentRepository(Protocol):
         self, version_id: UUID, *, error_code: str, error_message: str, at: datetime
     ) -> None: ...
 
+    async def record_extraction(
+        self,
+        version_id: UUID,
+        *,
+        extracted_storage_key: str,
+        parser: str,
+        page_count: int | None,
+        at: datetime,
+    ) -> None:
+        """Stage 7 result: where the normalized document is and which parser produced it."""
+        ...
+
 
 class IngestionJobRepository(Protocol):
     async def add(self, job: IngestionJob) -> None:

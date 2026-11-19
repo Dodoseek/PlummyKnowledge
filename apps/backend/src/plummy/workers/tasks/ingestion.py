@@ -13,7 +13,7 @@ from uuid import UUID
 from celery import shared_task
 
 from plummy.application.ingestion.pipeline import RunIngestionJob, RunOutcome
-from plummy.composition import create_storage
+from plummy.composition import create_parsers, create_storage
 from plummy.core.config import get_settings
 from plummy.infrastructure.clock import SystemClock
 from plummy.infrastructure.db.engine import create_engine, create_session_factory
@@ -34,6 +34,7 @@ async def run_job(job_id: UUID) -> RunOutcome:
             SqlAlchemyUnitOfWorkFactory(create_session_factory(engine)),
             create_storage(settings),
             SystemClock(),
+            create_parsers(),
         )
         return await runner.execute(job_id)
     finally:

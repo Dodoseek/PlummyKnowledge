@@ -1377,6 +1377,27 @@ class SqlDocumentRepository:
             )
         )
 
+    async def record_extraction(
+        self,
+        version_id: UUID,
+        *,
+        extracted_storage_key: str,
+        parser: str,
+        page_count: int | None,
+        at: datetime,
+    ) -> None:
+        await self._db.execute(
+            update(DocumentVersionModel)
+            .where(DocumentVersionModel.id == version_id)
+            .values(
+                extracted_storage_key=extracted_storage_key,
+                parser=parser[:100],
+                page_count=page_count,
+                status=str(VersionStatus.PROCESSING),
+                updated_at=at,
+            )
+        )
+
 
 def _job(row: IngestionJobModel) -> IngestionJob:
     return IngestionJob(

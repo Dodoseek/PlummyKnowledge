@@ -5,9 +5,12 @@ Used by the API lifespan now and by Celery workers later, so both roles share th
 
 from __future__ import annotations
 
+import importlib.metadata
 import logging
 import socket
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from redis.asyncio import Redis
@@ -29,6 +32,7 @@ from plummy.application.groups.use_cases import (
     UpdateGroup,
 )
 from plummy.application.health import CheckReadiness
+from plummy.application.ingestion.parsing import ParserRegistry
 from plummy.application.knowledge.use_cases import CreateKnowledgeBase, GetKnowledgeBase, ListKnowledgeBases
 from plummy.application.ports import Clock, PasswordHasher, SecretCipher
 from plummy.application.providers.embedding_profiles import (
@@ -82,6 +86,7 @@ from plummy.core.instance_config import build_egress_policy, load_instance_confi
 from plummy.core.network.addresses import IPAddress
 from plummy.core.network.policy import EgressPolicy
 from plummy.core.network.urls import parse_ip
+from plummy.domain.file_types import DocumentFormat
 from plummy.infrastructure.clock import SystemClock
 from plummy.infrastructure.db import create_engine, create_session_factory
 from plummy.infrastructure.db.checks import DatabaseCheck, MigrationsCheck, SecretsCheck
@@ -90,6 +95,8 @@ from plummy.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWorkFactory
 from plummy.infrastructure.http.egress_audit import EgressDenialAuditor
 from plummy.infrastructure.http.safe_client import SafeHttpClient
 from plummy.infrastructure.integrations.ai.factory import HttpProviderGateway
+from plummy.infrastructure.parsing.isolated import IsolatedParser
+from plummy.infrastructure.parsing.text import PlainTextParser
 from plummy.infrastructure.queue.celery_queue import CeleryJobQueue
 from plummy.infrastructure.redis import create_redis_client
 from plummy.infrastructure.redis.checks import RedisCheck
@@ -228,6 +235,20 @@ class Resources:
             await self.engine.dispose()
         except Exception:
             logger.exception("failed to dispose database engine")
+
+
+def create_parsers() -> ParserRegistry:
+    """Plain text in-process; PDF, DOCX and XLSX in an isolated child process (worker-ingestion image)."""
+    try:
+        docling = f"docling/{importlib.metadata.version('docling')}"
+    except importlib.metadata.PackageNotFoundError:
+        docling = "docling/unavailable"  # the child reports parse_failed outside the ingestion image
+    isolated = IsolatedParser(
+        docling,
+        frozenset({DocumentFormat.PDF, DocumentFormat.DOCX, DocumentFormat.XLSX}),
+        scratch_dir=Path(tempfile.gettempdir()) / "plummy-parse",
+    )
+    return ParserRegistry([PlainTextParser(), isolated])
 
 
 def create_storage(settings: Settings) -> LocalFileStorage:

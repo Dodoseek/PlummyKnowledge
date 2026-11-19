@@ -1,4 +1,4 @@
-"""Upload intake and ingestion stages 2-5 on real PostgreSQL, Redis and local storage.
+"""Upload intake and ingestion stages 2-7 on real PostgreSQL, Redis and local storage.
 
 API_CONTRACTS.md §2.11, ADR-008, SECURITY_MODEL.md §9: access before the file is read, size limit while
 streaming, type by content, server-generated storage keys, a job message with the job ID only.
@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import zipfile
 from collections.abc import AsyncIterator
 from contextlib import aclosing
@@ -19,11 +20,21 @@ from uuid import UUID
 import httpx
 import pytest
 
+from plummy.application.ingestion.parsing import (
+    BlockKind,
+    DocumentBlock,
+    NormalizedDocument,
+    ParseError,
+    ParseLimits,
+    ParserRegistry,
+)
 from plummy.application.ingestion.pipeline import RunIngestionJob, RunOutcome
 from plummy.application.storage import StorageArea, StorageKey
+from plummy.domain.file_types import DocumentFormat
 from plummy.infrastructure.clock import SystemClock
 from plummy.infrastructure.db.engine import create_engine, create_session_factory
 from plummy.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWorkFactory
+from plummy.infrastructure.parsing.text import PlainTextParser
 from plummy.infrastructure.storage.local import LocalFileStorage
 from plummy.workers.app import INGESTION_QUEUE, INGESTION_TASK
 from tests.integration.harness import Harness, running_auth_app
@@ -118,12 +129,42 @@ async def nothing_stored(env: Env) -> None:
     assert await env.harness.sql("SELECT count(*) FROM ingestion_jobs") == [(0,)]
 
 
-async def run(env: Env, job_id: str, storage: Any = None) -> RunOutcome:
+class StubOfficeParser:
+    """Stands in for the isolated Docling parser (tested in tests/ingestion with the real parser stack).
+
+    ``failures`` are raised one by one before it succeeds; it records how often it was called.
+    """
+
+    def __init__(self, *failures: Exception) -> None:
+        self.failures, self.calls = list(failures), 0
+
+    @property
+    def name(self) -> str:
+        return "stub-office/1"
+
+    def supported_formats(self) -> frozenset[DocumentFormat]:
+        return frozenset({DocumentFormat.PDF, DocumentFormat.DOCX, DocumentFormat.XLSX})
+
+    async def parse(self, path: Path, file_format: DocumentFormat, limits: ParseLimits) -> NormalizedDocument:
+        self.calls += 1
+        if self.failures:
+            raise self.failures.pop(0)
+        return NormalizedDocument(
+            blocks=(DocumentBlock(BlockKind.PARAGRAPH, "Office text", page=1),), page_count=1
+        )
+
+
+async def run(
+    env: Env, job_id: str, storage: Any = None, office: StubOfficeParser | None = None
+) -> RunOutcome:
     """What the worker task does, against the harness database and storage."""
     engine = create_engine(env.harness.settings, application_name="plummy-test-worker")
     uow = SqlAlchemyUnitOfWorkFactory(create_session_factory(engine))
+    parsers = ParserRegistry([PlainTextParser(), office or StubOfficeParser()])
     try:
-        return await RunIngestionJob(uow, storage or env.storage, SystemClock()).execute(UUID(job_id))
+        return await RunIngestionJob(uow, storage or env.storage, SystemClock(), parsers).execute(
+            UUID(job_id)
+        )
     finally:
         await engine.dispose()
 
@@ -292,7 +333,7 @@ async def test_csrf_token_is_required(env: Env) -> None:
     await nothing_stored(env)
 
 
-# --- worker stages 2-5 --------------------------------------------------------------------------------------
+# --- worker stages 2-7 --------------------------------------------------------------------------------------
 
 
 async def uploaded(env: Env, filename: str, data: bytes) -> tuple[str, str]:
@@ -311,19 +352,21 @@ async def job_row(env: Env, job_id: str) -> tuple[Any, ...]:
 async def test_worker_validates_and_stores_the_original(env: Env) -> None:
     job_id, document_id = await uploaded(env, "contract.pdf", docx_bytes())  # a DOCX named .pdf
     assert await run(env, job_id) is RunOutcome.SUCCEEDED
-    assert await job_row(env, job_id) == ("succeeded", "store_original", "processed", 1, None)
+    assert await job_row(env, job_id) == ("succeeded", "normalize", "processed", 1, None)
     assert files_in(env.storage, StorageArea.QUARANTINE) == []
-    [stored] = files_in(env.storage, StorageArea.DOCUMENTS)
-    [(mime, version_mime, key)] = await env.harness.sql(
-        "SELECT d.mime_type, v.mime_type, v.storage_key FROM documents d JOIN document_versions v "
-        "ON v.document_id = d.id WHERE d.id = :id",
+    [(mime, version_mime, key, extracted, parser)] = await env.harness.sql(
+        "SELECT d.mime_type, v.mime_type, v.storage_key, v.extracted_storage_key, v.parser FROM documents d "
+        "JOIN document_versions v ON v.document_id = d.id WHERE d.id = :id",
         id=document_id,
     )
     docx = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    assert (mime, version_mime, stored.name) == (docx, docx, key)
+    assert (mime, version_mime, parser) == (docx, docx, "stub-office/1")
+    assert sorted(path.name for path in files_in(env.storage, StorageArea.DOCUMENTS)) == sorted(
+        [key, extracted]
+    )
     # a finished job is not run again (redelivery)
     assert await run(env, job_id) is RunOutcome.SKIPPED
-    assert await job_row(env, job_id) == ("succeeded", "store_original", "processed", 1, None)
+    assert await job_row(env, job_id) == ("succeeded", "normalize", "processed", 1, None)
 
 
 async def test_permanent_rejection_fails_the_document(env: Env) -> None:
@@ -388,7 +431,7 @@ async def test_transient_errors_are_retried_then_dead(env: Env) -> None:
     assert await run(env, job_id, flaky) is RunOutcome.RETRY
     assert await job_row(env, job_id) == ("queued", "store_original", None, 1, "transient_error")
     assert await run(env, job_id, flaky) is RunOutcome.SUCCEEDED
-    assert await job_row(env, job_id) == ("succeeded", "store_original", "processed", 2, None)
+    assert await job_row(env, job_id) == ("succeeded", "normalize", "processed", 2, None)
 
     dead_job, dead_document = await uploaded(env, "b.txt", b"text")
     always = FlakyStorage(env.storage, failures=100)
@@ -399,3 +442,74 @@ async def test_transient_errors_are_retried_then_dead(env: Env) -> None:
         "SELECT processing_status FROM documents WHERE id = :id", id=dead_document
     ) == [("failed",)]
     assert await run(env, dead_job, always) is RunOutcome.SKIPPED
+
+
+async def stored_json(env: Env, key: str) -> dict[str, Any]:
+    [path] = [path for path in files_in(env.storage, StorageArea.DOCUMENTS) if path.name == key]
+    data: dict[str, Any] = json.loads(path.read_bytes())
+    return data
+
+
+async def test_worker_parses_and_keeps_the_normalized_document(env: Env) -> None:
+    markdown = "\n\n".join(["# Отпуск", "Отпуск 28 дней.", "## Перенос", "- по заявлению"]).encode()
+    job_id, document_id = await uploaded(env, "policy.md", markdown)
+    assert await run(env, job_id) is RunOutcome.SUCCEEDED
+    [(version_status, extracted, parser, pages, doc_status)] = await env.harness.sql(
+        "SELECT v.status, v.extracted_storage_key, v.parser, v.page_count, d.processing_status "
+        "FROM documents d JOIN document_versions v ON v.document_id = d.id WHERE d.id = :id",
+        id=document_id,
+    )
+    # chunking and embeddings are not wired yet: the version waits in processing, the document in pending
+    assert (version_status, parser, pages, doc_status) == ("processing", "plummy-text/1", None, "pending")
+    document = NormalizedDocument.from_json(await stored_json(env, extracted))
+    assert [(block.kind, block.text, block.section_path) for block in document.blocks] == [
+        (BlockKind.HEADING, "Отпуск", ("Отпуск",)),
+        (BlockKind.PARAGRAPH, "Отпуск 28 дней.", ("Отпуск",)),
+        (BlockKind.HEADING, "Перенос", ("Отпуск", "Перенос")),
+        (BlockKind.LIST_ITEM, "- по заявлению", ("Отпуск", "Перенос")),
+    ]
+
+
+@pytest.mark.parametrize("code", ["parse_timeout", "page_limit_exceeded", "encrypted_file", "no_text"])
+async def test_parse_errors_fail_the_document(env: Env, code: str) -> None:
+    job_id, document_id = await uploaded(env, "report.docx", docx_bytes())
+    office = StubOfficeParser(ParseError(code, "Parsing failed."))
+    assert await run(env, job_id, office=office) is RunOutcome.FAILED
+    assert await job_row(env, job_id) == ("failed", "parse", None, 1, code)
+    [(doc_status, version_status, version_code, extracted)] = await env.harness.sql(
+        "SELECT d.processing_status, v.status, v.error_code, v.extracted_storage_key FROM documents d "
+        "JOIN document_versions v ON v.document_id = d.id WHERE d.id = :id",
+        id=document_id,
+    )
+    assert (doc_status, version_status, version_code, extracted) == ("failed", "failed", code, None)
+    assert len(files_in(env.storage, StorageArea.DOCUMENTS)) == 1  # the original only, no extracted JSON
+
+
+async def test_empty_text_document_is_rejected(env: Env) -> None:
+    job_id, _ = await uploaded(env, "blank.txt", b"\n   \n\t\n")
+    assert await run(env, job_id) is RunOutcome.FAILED
+    assert (await job_row(env, job_id))[1:] == ("parse", None, 1, "no_text")
+
+
+async def test_transient_parser_error_is_retried_and_parsing_is_not_repeated(env: Env) -> None:
+    job_id, document_id = await uploaded(env, "report.docx", docx_bytes())
+    office = StubOfficeParser(OSError("scratch disk full"))
+    assert await run(env, job_id, office=office) is RunOutcome.RETRY
+    assert await job_row(env, job_id) == ("queued", "parse", None, 1, "transient_error")
+    assert await run(env, job_id, office=office) is RunOutcome.SUCCEEDED
+    assert office.calls == 2
+
+    # a stored extraction is reused: a rerun of the stages does not call the parser again
+    await env.harness.sql(
+        "UPDATE ingestion_jobs SET status = 'queued', finished_at = NULL, result = NULL WHERE id = :id",
+        id=job_id,
+    )
+    assert await run(env, job_id, office=office) is RunOutcome.SUCCEEDED
+    assert office.calls == 2
+    [(count,)] = await env.harness.sql(
+        "SELECT count(*) FROM document_versions "
+        "WHERE document_id = :id AND extracted_storage_key IS NOT NULL",
+        id=document_id,
+    )
+    assert count == 1
+    assert len(files_in(env.storage, StorageArea.DOCUMENTS)) == 2

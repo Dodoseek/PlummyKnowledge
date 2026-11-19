@@ -5,6 +5,9 @@
 # Targets:
 #   dev  — all dependencies (incl. test/lint tools), code is bind-mounted by compose.yaml, auto-reload.
 #   prod — runtime dependencies only, non-root, no build tools.
+#   ingestion-dev / ingestion — the worker-ingestion image: the same code plus the parser stack (the
+#          "ingestion" extra: Docling with CPU-only PyTorch) and the Docling models, downloaded at build time
+#          because the container has no network access at runtime (Hugging Face is forced offline).
 
 ARG PYTHON_IMAGE=python:3.13-slim
 ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.13.8
@@ -64,3 +67,44 @@ USER app
 EXPOSE 8000
 CMD ["uvicorn", "--factory", "plummy.main:create_app", "--app-dir", "src", \
      "--host", "0.0.0.0", "--port", "8000", "--no-access-log", "--no-server-header"]
+
+# ---- worker-ingestion: parser stack and models ----
+FROM base AS ingestion-deps
+COPY --from=uv /uv /usr/local/bin/uv
+COPY apps/backend/pyproject.toml apps/backend/uv.lock ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --no-dev --no-install-project --extra ingestion
+
+# Layout and table-structure models (OCR is off, scanned PDFs are outside the MVP). Downloaded once here;
+# the runtime image never reaches Hugging Face.
+FROM ingestion-deps AS docling-models
+RUN docling-tools models download -o /opt/docling-models layout tableformer \
+    && chmod -R a+rX,go-w /opt/docling-models
+
+FROM base AS ingestion-base
+ENV DOCLING_ARTIFACTS_PATH=/opt/docling-models \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    HF_HUB_DISABLE_TELEMETRY=1
+COPY --from=docling-models /opt/docling-models /opt/docling-models
+
+FROM ingestion-base AS ingestion-dev
+COPY --from=uv /uv /usr/local/bin/uv
+COPY apps/backend/pyproject.toml apps/backend/uv.lock ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --no-install-project --extra ingestion
+COPY apps/backend/src ./src
+COPY apps/backend/tests ./tests
+COPY VERSION /VERSION
+RUN chown app:app /app
+USER app
+CMD ["celery", "-A", "plummy.workers.main", "--quiet", "worker", "--loglevel", "INFO", \
+     "--queues", "ingestion", "--concurrency", "1", "--without-gossip", "--without-mingle"]
+
+FROM ingestion-base AS ingestion
+COPY --from=ingestion-deps /opt/venv /opt/venv
+COPY apps/backend/src ./src
+COPY VERSION /VERSION
+USER app
+CMD ["celery", "-A", "plummy.workers.main", "--quiet", "worker", "--loglevel", "INFO", \
+     "--queues", "ingestion", "--concurrency", "1", "--without-gossip", "--without-mingle"]
