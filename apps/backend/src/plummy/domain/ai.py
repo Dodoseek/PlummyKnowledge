@@ -32,7 +32,7 @@ MAX_DISPLAY_NAME_LENGTH: Final = 200
 MIN_TIMEOUT_SECONDS: Final = 1
 MAX_TIMEOUT_SECONDS: Final = 600
 DEFAULT_TIMEOUT_SECONDS: Final = 60
-MAX_DIMENSIONS: Final = 16000  # pgvector ``vector`` limit
+MAX_DIMENSIONS: Final = 4000  # HNSW limit for halfvec (ADR-017); the DB check still allows 16000
 MAX_TOKENS_LIMIT: Final = 10_000_000
 
 

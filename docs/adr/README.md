@@ -33,6 +33,7 @@
 | [ADR-014](0014-list-pagination.md) | List Pagination | Accepted | 2026-11-18 |
 | [ADR-015](0015-user-activation-links.md) | User Onboarding by Activation Link | Accepted | 2026-11-18 |
 | [ADR-016](0016-secret-encryption.md) | Secret Encryption at Rest | Accepted | 2026-11-18 |
+| [ADR-017](0017-vector-storage.md) | Vector Storage in pgvector | Accepted | 2026-11-19 |
 
 ADR-001…004 оформляют решения, уже зафиксированные в blueprint v1.0; новых решений они не вводят. ADR-012 изменяет
 блупринт: инсталляция принадлежит одной организации (multi-tenancy упразднена); ADR-005…008, 010, 011 содержат
@@ -44,7 +45,6 @@ ADR-001…004 оформляют решения, уже зафиксирован
 
 | Тема | Нужен к | Где описан черновик |
 |---|---|---|
-| Хранение векторов разной размерности в pgvector | Фаза 5 | [DATABASE_SCHEMA.md §5.10](../DATABASE_SCHEMA.md) |
 | Хранилище idempotency keys (пагинация решена в ADR-014) | С первой операцией без естественного ключа | [API_CONTRACTS.md §1.7](../API_CONTRACTS.md) |
 | Разделение роли миграций и runtime-роли API/worker | Фаза 2 / 12 | [ADR-011](0011-database-roles-and-extensions.md) |
 | Генерация ответа в процессе API или в worker | Фаза 8 | [ARCHITECTURE.md §9.4](../ARCHITECTURE.md) |

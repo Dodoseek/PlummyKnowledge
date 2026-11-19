@@ -460,7 +460,7 @@
 
 - `provider_id` должен указывать на существующего провайдера (`422`, `errors[].code = unknown_provider`) с
   embeddings API: `openai`, `ollama`, `openai_compatible` (у `anthropic` — `capability_not_supported`).
-- `dimensions` 1–16000, `distance_metric`: `cosine` (по умолчанию) | `inner_product` | `l2`.
+- `dimensions` 1–4000 (предел HNSW-индекса, [ADR-017](adr/0017-vector-storage.md)), `distance_metric`: `cosine` (по умолчанию) | `inner_product` | `l2`.
 - `status`: `active` → `deprecated` → `retired`; из `retired` вернуться нельзя (`409 invalid_state`). Имя уникально
   без учёта регистра (`409 embedding_profile_name_taken`).
 - Тест отвечает `200`: `{ "status", "latency_ms", "tested_at", "expected_dimensions", "actual_dimensions", "error" }`;

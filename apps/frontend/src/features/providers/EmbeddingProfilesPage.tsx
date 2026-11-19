@@ -146,7 +146,7 @@ function CreateProfileForm({ providers }: { providers: Provider[] }) {
                   <FormLabel>Dimensions</FormLabel>
                   <NumberInput
                     min={1}
-                    max={16000}
+                    max={4000}
                     value={dimensions}
                     onChange={(value) => {
                       setDimensions(value);

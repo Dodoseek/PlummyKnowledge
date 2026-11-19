@@ -485,29 +485,32 @@ credentials удаляются немедленно; строки `knowledge_bas
 
 Индексы: `GIN (search_vector)`, `(document_version_id)`, `(data_source_id)`.
 
-### 5.10 `embeddings` (§6, §9)
+### 5.10 `embeddings` (§6, §9, [ADR-017](adr/0017-vector-storage.md))
 
 | Колонка | Тип | Описание |
 |---|---|---|
-| `chunk_id` | `uuid` | FK |
-| `embedding_config_id` | `uuid` | **Обязателен** — каждая vector row связана с embedding profile (§9) |
+| `chunk_id` | `uuid` | FK `document_chunks` (`ON DELETE CASCADE`) |
+| `embedding_config_id` | `uuid` | **Обязателен** — каждая vector row связана с embedding profile (§9); FK `ON DELETE RESTRICT` |
 | `document_version_id` | `uuid` | Денормализация |
 | `data_source_id` | `uuid` | Денормализация |
-| `embedding` | `vector` | Размерность = `embedding_provider_configs.dimensions` |
+| `dimensions` | `integer` | Копия `dimensions` профиля, 1–4000 |
+| `embedding` | `vector` | Без фиксированной размерности, полная точность; `CHECK (vector_dims(embedding) = dimensions)` |
 
-`UNIQUE (chunk_id, embedding_config_id)`.
+`UNIQUE (chunk_id, embedding_config_id)`; индекс `(embedding_config_id, document_version_id)`.
 
-**[Proposed — ADR «Хранение векторов» (планируется)] Разные размерности.** HNSW-индекс pgvector требует фиксированной размерности. Вариант
-по умолчанию: столбец `vector` без размерности и **partial expression index на каждый profile**:
+**Разные размерности (ADR-017).** HNSW-индекс pgvector требует фиксированной размерности, поэтому на каждый профиль
+создаётся **partial expression index**: `vector(n)` при `n ≤ 2000`, `halfvec(n)` при `n ≤ 4000`, operator class по
+метрике профиля.
 
 ```sql
-CREATE INDEX CONCURRENTLY embeddings_hnsw_<profile>
-  ON embeddings USING hnsw ((embedding::vector(1536)) vector_cosine_ops)
+CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_embeddings_hnsw_<profile_id_hex>
+  ON embeddings USING hnsw ((embedding::halfvec(3072)) halfvec_cosine_ops)
   WHERE embedding_config_id = '<profile-uuid>';
 ```
 
-Индекс создаётся служебной задачей при активации profile. Альтернатива — отдельная таблица на размерность.
-Запрос обязан использовать то же выражение и предикат, что и индекс.
+Индекс создаёт идемпотентная задача `maintenance` при первом использовании профиля KB (до записи векторов); Alembic
+эти индексы игнорирует. Запрос обязан использовать то же выражение и предикат, что и индекс, с литералами UUID и
+размерности из записи профиля.
 
 ### 5.11 Правила retrieval на уровне данных (§6, §9)
 

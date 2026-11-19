@@ -525,6 +525,18 @@ async def test_embedding_profile_needs_an_embedding_capable_provider(env: Env) -
     assert problem["errors"][0]["code"] == "unknown_provider"
 
 
+async def test_embedding_profile_dimensions_fit_an_hnsw_index(env: Env) -> None:
+    """ADR-017: 4000 is the largest size pgvector can index (``halfvec``); 0 and 4001 are refused."""
+    provider = await create(env.admin, name="Ollama", provider_type="ollama", base_url=env.fake.url)
+    cases = (("min", 1, 201), ("max", 4000, 201), ("zero", 0, 422), ("big", 4001, 422))
+    for name, dimensions, expected in cases:
+        body = {"name": name, "provider_id": provider["id"], "model_id": "m", "dimensions": dimensions}
+        response = await env.admin.post("/api/v1/embedding-profiles", json=body)
+        assert response.status_code == expected, (dimensions, response.text)
+        if expected == 422:
+            assert response.json()["errors"][0]["field"] == "body.dimensions"
+
+
 @pytest.mark.parametrize(
     ("dimensions", "status", "code"), [(3, "ok", None), (1536, "failed", "dimension_mismatch")]
 )
