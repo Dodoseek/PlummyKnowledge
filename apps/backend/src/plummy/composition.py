@@ -18,6 +18,7 @@ from plummy.application.auth.activation import ActivateAccount
 from plummy.application.auth.sessions import SessionIssuer, SessionPolicy
 from plummy.application.auth.throttle import AttemptThrottle
 from plummy.application.auth.use_cases import AuthenticateSession, Login, Logout
+from plummy.application.documents.upload import UploadDocument
 from plummy.application.groups.use_cases import (
     CreateGroup,
     DeleteGroup,
@@ -89,6 +90,7 @@ from plummy.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWorkFactory
 from plummy.infrastructure.http.egress_audit import EgressDenialAuditor
 from plummy.infrastructure.http.safe_client import SafeHttpClient
 from plummy.infrastructure.integrations.ai.factory import HttpProviderGateway
+from plummy.infrastructure.queue.celery_queue import CeleryJobQueue
 from plummy.infrastructure.redis import create_redis_client
 from plummy.infrastructure.redis.checks import RedisCheck
 from plummy.infrastructure.redis.rate_limiter import RedisRateLimiter
@@ -96,6 +98,7 @@ from plummy.infrastructure.security.bootstrap_store import FileBootstrapTokenSto
 from plummy.infrastructure.security.passwords import Argon2PasswordHasher
 from plummy.infrastructure.security.secret_cipher import AesGcmSecretCipher, KeyRingError, load_keyring
 from plummy.infrastructure.storage.local import LocalFileStorage, StorageCheck
+from plummy.workers.app import DEFAULT_NAMESPACE
 
 logger = logging.getLogger(__name__)
 
@@ -171,6 +174,13 @@ class KnowledgeServices:
 
 
 @dataclass(frozen=True, slots=True)
+class DocumentServices:
+    """Documents; access to the knowledge base is checked by the use cases."""
+
+    upload: UploadDocument
+
+
+@dataclass(frozen=True, slots=True)
 class AdminServices:
     """Administration use cases; each one checks the caller's permissions itself."""
 
@@ -194,12 +204,18 @@ class Resources:
     auth: AuthServices
     admin: AdminServices
     knowledge: KnowledgeServices
+    documents: DocumentServices
     secrets: SecretVault
     http: SafeHttpClient
     storage: LocalFileStorage
+    jobs: CeleryJobQueue
 
     async def aclose(self) -> None:
         """Release connections. Each resource is closed even if another one fails to close."""
+        try:
+            self.jobs.close()
+        except Exception:
+            logger.exception("failed to close job queue")
         try:
             await self.http.aclose()
         except Exception:
@@ -302,6 +318,7 @@ def build_resources(
     *,
     password_hasher: PasswordHasher | None = None,
     clock: Clock | None = None,
+    job_namespace: str = DEFAULT_NAMESPACE,
 ) -> Resources:
     """Create clients without connecting; connectivity is verified by readiness checks."""
     cipher = load_secret_cipher(settings)
@@ -310,6 +327,7 @@ def build_resources(
     engine = create_engine(settings)
     redis = create_redis_client(settings)
     storage = create_storage(settings)
+    jobs = CeleryJobQueue(settings, namespace=job_namespace)
     readiness = CheckReadiness(
         [
             DatabaseCheck(engine),
@@ -398,9 +416,13 @@ def build_resources(
         knowledge=KnowledgeServices(
             list=ListKnowledgeBases(uow), get=GetKnowledgeBase(uow), create=CreateKnowledgeBase(uow, clock)
         ),
+        documents=DocumentServices(
+            upload=UploadDocument(uow, storage, jobs, limiter, clock, max_bytes=settings.upload_max_bytes)
+        ),
         secrets=vault,
         http=http,
         storage=storage,
+        jobs=jobs,
     )
 
 

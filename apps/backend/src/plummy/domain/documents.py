@@ -6,6 +6,9 @@ status and results change.
 
 from __future__ import annotations
 
+import hashlib
+import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -156,3 +159,21 @@ def display_filename(value: str | None) -> str:
             return stem[: MAX_FILENAME_LENGTH - len(extension) - 1] + "." + extension
         return cleaned[:MAX_FILENAME_LENGTH]
     return cleaned
+
+
+def upload_external_id(document_id: UUID) -> str:
+    """The server-generated source ID of an uploaded document (DATABASE_SCHEMA.md §5.7)."""
+    return f"upload:{document_id.hex}"
+
+
+def chunking_fingerprint(settings: Mapping[str, object]) -> str:
+    """A short stable hash of the chunking settings, part of the job idempotency key (ADR-008 §4)."""
+    canonical = json.dumps(settings, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(canonical.encode()).hexdigest()[:16]
+
+
+def ingest_idempotency_key(
+    version_id: UUID, embedding_profile_id: UUID, chunking: Mapping[str, object]
+) -> str:
+    """``(version, kind, chunking settings, embedding profile)`` (ADR-008 §4)."""
+    return f"ingest:{version_id.hex}:{embedding_profile_id.hex}:{chunking_fingerprint(chunking)}"

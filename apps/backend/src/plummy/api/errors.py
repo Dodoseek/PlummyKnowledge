@@ -24,11 +24,13 @@ from plummy.application.errors import (
     InvalidCredentialsError,
     InvalidInputError,
     NotFoundError,
+    PayloadTooLargeError,
     PermissionDeniedError,
     RateLimitedError,
     ServiceUnavailableError,
     SetupAlreadyCompletedError,
     SetupTokenInvalidError,
+    UnsupportedMediaTypeError,
 )
 from plummy.infrastructure.db.errors import DATABASE_UNAVAILABLE_ERRORS
 
@@ -138,6 +140,8 @@ _APPLICATION_STATUS: tuple[tuple[type[ApplicationError], int], ...] = (
     (NotFoundError, 404),
     (SetupAlreadyCompletedError, 409),
     (ConflictError, 409),
+    (PayloadTooLargeError, 413),
+    (UnsupportedMediaTypeError, 415),
     (InvalidInputError, 422),
     (RateLimitedError, 429),
     (ServiceUnavailableError, 503),

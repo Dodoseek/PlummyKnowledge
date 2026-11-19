@@ -19,10 +19,12 @@ from plummy.application.ports import (
     ActivationTokenRepository,
     AuditLog,
     DataSourceRepository,
+    DocumentRepository,
     EmbeddingProfileRepository,
     EncryptedSecret,
     GroupRepository,
     IndexingStats,
+    IngestionJobRepository,
     InstanceStateRepository,
     KnowledgeBaseRepository,
     ModelConfigRepository,
@@ -51,7 +53,18 @@ from plummy.domain.ai import (
     TestStatus,
 )
 from plummy.domain.audit import AuditEntry
-from plummy.domain.documents import DocumentStatus
+from plummy.domain.documents import (
+    DeletionReason,
+    Document,
+    DocumentStatus,
+    DocumentVersion,
+    IngestionJob,
+    JobKind,
+    JobResult,
+    JobStage,
+    JobStatus,
+    VersionStatus,
+)
 from plummy.domain.identity import (
     Group,
     InstanceState,
@@ -76,9 +89,11 @@ from plummy.infrastructure.db.models import (
     AuditLogModel,
     DataSourceModel,
     DocumentModel,
+    DocumentVersionModel,
     EmbeddingProfileModel,
     GroupModel,
     GroupRoleModel,
+    IngestionJobModel,
     InstanceStateModel,
     KnowledgeBaseAccessModel,
     KnowledgeBaseModel,
@@ -1174,6 +1189,19 @@ class SqlKnowledgeBaseRepository:
             for kb_id, by_status in counts.items()
         }
 
+    async def linked_to_source(self, source_id: UUID) -> list[KnowledgeBase]:
+        rows = await self._db.scalars(
+            select(KnowledgeBaseModel)
+            .join(
+                KnowledgeBaseSourceModel, KnowledgeBaseSourceModel.knowledge_base_id == KnowledgeBaseModel.id
+            )
+            .where(
+                KnowledgeBaseSourceModel.data_source_id == source_id, KnowledgeBaseModel.deleted_at.is_(None)
+            )
+            .order_by(KnowledgeBaseModel.id)
+        )
+        return [_knowledge_base(row) for row in rows]
+
 
 def _data_source(row: DataSourceModel) -> DataSource:
     return DataSource(
@@ -1225,6 +1253,208 @@ class SqlDataSourceRepository:
         )
         return _data_source(row) if row is not None else None
 
+    async def get(self, source_id: UUID) -> DataSource | None:
+        row = await self._db.get(DataSourceModel, source_id)
+        return _data_source(row) if row is not None else None
+
+
+def _document(row: DocumentModel) -> Document:
+    return Document(
+        id=row.id,
+        data_source_id=row.data_source_id,
+        external_id=row.external_id,
+        filename=row.filename,
+        mime_type=row.mime_type,
+        processing_status=DocumentStatus(row.processing_status),
+        current_version_id=row.current_version_id,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+        deleted_at=row.deleted_at,
+        deletion_reason=DeletionReason(row.deletion_reason) if row.deletion_reason else None,
+        purged_at=row.purged_at,
+    )
+
+
+def _version(row: DocumentVersionModel) -> DocumentVersion:
+    return DocumentVersion(
+        id=row.id,
+        document_id=row.document_id,
+        version_number=row.version_number,
+        checksum_sha256=row.checksum_sha256,
+        mime_type=row.mime_type,
+        size_bytes=row.size_bytes,
+        storage_key=row.storage_key,
+        status=VersionStatus(row.status),
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+        page_count=row.page_count,
+        extracted_storage_key=row.extracted_storage_key,
+        parser=row.parser,
+        error_code=row.error_code,
+        active_chunk_set=row.active_chunk_set,
+        processed_at=row.processed_at,
+    )
+
+
+class SqlDocumentRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._db = session
+
+    async def add(self, document: Document) -> None:
+        self._db.add(
+            DocumentModel(
+                id=document.id,
+                data_source_id=document.data_source_id,
+                external_id=document.external_id,
+                filename=document.filename,
+                mime_type=document.mime_type,
+                processing_status=str(document.processing_status),
+                source_metadata=dict(document.source_metadata),
+                created_at=document.created_at,
+                updated_at=document.updated_at,
+            )
+        )
+        await self._db.flush()
+
+    async def get(self, document_id: UUID) -> Document | None:
+        row = await self._db.get(DocumentModel, document_id, populate_existing=True)
+        return _document(row) if row is not None else None
+
+    async def add_version(self, version: DocumentVersion) -> None:
+        self._db.add(
+            DocumentVersionModel(
+                id=version.id,
+                document_id=version.document_id,
+                version_number=version.version_number,
+                checksum_sha256=version.checksum_sha256,
+                mime_type=version.mime_type,
+                size_bytes=version.size_bytes,
+                storage_key=version.storage_key,
+                status=str(version.status),
+                created_at=version.created_at,
+                updated_at=version.updated_at,
+            )
+        )
+        await self._db.flush()
+
+    async def get_version(self, version_id: UUID) -> DocumentVersion | None:
+        row = await self._db.get(DocumentVersionModel, version_id, populate_existing=True)
+        return _version(row) if row is not None else None
+
+    async def set_status(self, document_id: UUID, status: DocumentStatus, *, at: datetime) -> None:
+        await self._db.execute(
+            update(DocumentModel)
+            .where(DocumentModel.id == document_id)
+            .values(processing_status=str(status), updated_at=at)
+        )
+
+    async def set_mime_type(
+        self, document_id: UUID, version_id: UUID, mime_type: str, *, at: datetime
+    ) -> None:
+        await self._db.execute(
+            update(DocumentModel)
+            .where(DocumentModel.id == document_id)
+            .values(mime_type=mime_type, updated_at=at)
+        )
+        await self._db.execute(
+            update(DocumentVersionModel)
+            .where(DocumentVersionModel.id == version_id)
+            .values(mime_type=mime_type, updated_at=at)
+        )
+
+    async def fail_version(
+        self, version_id: UUID, *, error_code: str, error_message: str, at: datetime
+    ) -> None:
+        await self._db.execute(
+            update(DocumentVersionModel)
+            .where(DocumentVersionModel.id == version_id)
+            .values(
+                status=str(VersionStatus.FAILED),
+                error_code=error_code,
+                error_message=error_message[:500],
+                processed_at=at,
+                updated_at=at,
+            )
+        )
+
+
+def _job(row: IngestionJobModel) -> IngestionJob:
+    return IngestionJob(
+        id=row.id,
+        document_id=row.document_id,
+        document_version_id=row.document_version_id,
+        kind=JobKind(row.kind),
+        status=JobStatus(row.status),
+        stage=JobStage(row.stage),
+        idempotency_key=row.idempotency_key,
+        attempt=row.attempt,
+        max_attempts=row.max_attempts,
+        requested_by=row.requested_by,
+        queued_at=row.queued_at,
+        result=JobResult(row.result) if row.result else None,
+        error_code=row.error_code,
+        error_message=row.error_message,
+        started_at=row.started_at,
+        finished_at=row.finished_at,
+    )
+
+
+class SqlIngestionJobRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._db = session
+
+    async def add(self, job: IngestionJob) -> None:
+        self._db.add(
+            IngestionJobModel(
+                id=job.id,
+                document_id=job.document_id,
+                document_version_id=job.document_version_id,
+                kind=str(job.kind),
+                status=str(job.status),
+                stage=str(job.stage),
+                idempotency_key=job.idempotency_key,
+                attempt=job.attempt,
+                max_attempts=job.max_attempts,
+                requested_by=job.requested_by,
+                queued_at=job.queued_at,
+            )
+        )
+        await _flush_unique(self._db, "uq_ingestion_jobs_idempotency_key")
+
+    async def get(self, job_id: UUID) -> IngestionJob | None:
+        row = await self._db.get(IngestionJobModel, job_id, populate_existing=True)
+        return _job(row) if row is not None else None
+
+    async def get_for_update(self, job_id: UUID) -> IngestionJob | None:
+        row = await self._db.scalar(
+            select(IngestionJobModel)
+            .where(IngestionJobModel.id == job_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return _job(row) if row is not None else None
+
+    async def save(self, job: IngestionJob) -> None:
+        await self._db.execute(
+            update(IngestionJobModel)
+            .where(IngestionJobModel.id == job.id)
+            .values(
+                status=str(job.status),
+                stage=str(job.stage),
+                result=str(job.result) if job.result else None,
+                attempt=job.attempt,
+                error_code=job.error_code,
+                error_message=job.error_message[:500] if job.error_message else None,
+                started_at=job.started_at,
+                finished_at=job.finished_at,
+            )
+        )
+
+    async def set_task_id(self, job_id: UUID, task_id: str) -> None:
+        await self._db.execute(
+            update(IngestionJobModel).where(IngestionJobModel.id == job_id).values(celery_task_id=task_id)
+        )
+
 
 class SqlAlchemyUnitOfWork:
     users: UserRepository
@@ -1239,6 +1469,8 @@ class SqlAlchemyUnitOfWork:
     embedding_profiles: EmbeddingProfileRepository
     knowledge_bases: KnowledgeBaseRepository
     data_sources: DataSourceRepository
+    documents: DocumentRepository
+    ingestion_jobs: IngestionJobRepository
     audit: AuditLog
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
@@ -1261,6 +1493,8 @@ class SqlAlchemyUnitOfWork:
         self.embedding_profiles = SqlEmbeddingProfileRepository(session)
         self.knowledge_bases = SqlKnowledgeBaseRepository(session)
         self.data_sources = SqlDataSourceRepository(session)
+        self.documents = SqlDocumentRepository(session)
+        self.ingestion_jobs = SqlIngestionJobRepository(session)
         self.audit = SqlAuditLog(session)
         return self
 

@@ -170,6 +170,8 @@ class Settings(BaseSettings):
     storage_backend: StorageBackend = StorageBackend.LOCAL
     storage_path: Path = DEFAULT_STORAGE_PATH
     quarantine_ttl: timedelta = timedelta(hours=24)
+    # Largest accepted upload, checked while the file streams in (SECURITY_MODEL.md §9).
+    upload_max_bytes: int = Field(default=50 * 1024 * 1024, ge=1024, le=2 * 1024 * 1024 * 1024)
 
     _secret_key_generated: bool = PrivateAttr(default=False)
 
@@ -344,6 +346,7 @@ class Settings(BaseSettings):
             "config_file_configured": self.config_file is not None,
             "storage_backend": self.storage_backend.value,
             "quarantine_ttl_seconds": int(self.quarantine_ttl.total_seconds()),
+            "upload_max_bytes": self.upload_max_bytes,
         }
 
 

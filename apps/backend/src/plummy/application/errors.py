@@ -59,6 +59,18 @@ class RateLimitedError(ApplicationError):
         self.retry_after_seconds = max(1, retry_after_seconds)
 
 
+class PayloadTooLargeError(ApplicationError):
+    """The upload exceeds the size limit."""
+
+    code = "payload_too_large"
+
+
+class UnsupportedMediaTypeError(ApplicationError):
+    """The file is not one of the supported formats (decided by its content)."""
+
+    code = "unsupported_media_type"
+
+
 class ServiceUnavailableError(ApplicationError):
     """A required dependency (database, Redis) is unavailable."""
 

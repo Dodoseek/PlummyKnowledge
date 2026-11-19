@@ -57,6 +57,7 @@ class AuditAction(StrEnum):
     EMBEDDING_PROFILE_CREATED = "embedding_profile.created"
     EMBEDDING_PROFILE_UPDATED = "embedding_profile.updated"
     KB_CREATED = "kb.created"
+    DOCUMENT_UPLOADED = "document.uploaded"
     NETWORK_EGRESS_DENIED = "network.egress.denied"
 
 

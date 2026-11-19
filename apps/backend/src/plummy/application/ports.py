@@ -12,6 +12,7 @@ from uuid import UUID
 from plummy.application.pagination import Page, PageRequest
 from plummy.domain.ai import AIProvider, EmbeddingProfile, ModelConfig, TestStatus
 from plummy.domain.audit import AuditEntry
+from plummy.domain.documents import Document, DocumentStatus, DocumentVersion, IngestionJob
 from plummy.domain.identity import Group, InstanceState, SessionRevokeReason, User, UserSession, UserStatus
 from plummy.domain.knowledge import DataSource, KbAccessLevel, KnowledgeBase
 from plummy.domain.secrets import SecretKind, SecretValue
@@ -433,6 +434,10 @@ class KnowledgeBaseRepository(Protocol):
 
     async def indexing_stats(self, kb_ids: list[UUID]) -> dict[UUID, IndexingStats]: ...
 
+    async def linked_to_source(self, source_id: UUID) -> list[KnowledgeBase]:
+        """Live knowledge bases that include the document source."""
+        ...
+
 
 class DataSourceRepository(Protocol):
     async def add(self, source: DataSource) -> None: ...
@@ -440,6 +445,65 @@ class DataSourceRepository(Protocol):
     async def attach(self, kb_id: UUID, source_id: UUID, *, at: datetime) -> None: ...
 
     async def upload_source_of(self, kb_id: UUID) -> DataSource | None: ...
+
+    async def get(self, source_id: UUID) -> DataSource | None:
+        """Including deleted sources (callers check ``deleted_at``)."""
+        ...
+
+
+class DocumentRepository(Protocol):
+    async def add(self, document: Document) -> None: ...
+
+    async def get(self, document_id: UUID) -> Document | None:
+        """Including deleted documents (callers check ``deleted_at``)."""
+        ...
+
+    async def add_version(self, version: DocumentVersion) -> None: ...
+
+    async def get_version(self, version_id: UUID) -> DocumentVersion | None: ...
+
+    async def set_status(self, document_id: UUID, status: DocumentStatus, *, at: datetime) -> None: ...
+
+    async def set_mime_type(
+        self, document_id: UUID, version_id: UUID, mime_type: str, *, at: datetime
+    ) -> None:
+        """The type confirmed from the whole file, on the document and its version."""
+        ...
+
+    async def fail_version(
+        self, version_id: UUID, *, error_code: str, error_message: str, at: datetime
+    ) -> None: ...
+
+
+class IngestionJobRepository(Protocol):
+    async def add(self, job: IngestionJob) -> None:
+        """Raises :class:`UniqueViolationError` for a taken idempotency key."""
+        ...
+
+    async def get(self, job_id: UUID) -> IngestionJob | None: ...
+
+    async def get_for_update(self, job_id: UUID) -> IngestionJob | None:
+        """Locks the row: two deliveries of one job never run its stages at the same time."""
+        ...
+
+    async def save(self, job: IngestionJob) -> None:
+        """Writes status, stage, result, attempt, error and timestamps."""
+        ...
+
+    async def set_task_id(self, job_id: UUID, task_id: str) -> None: ...
+
+
+class JobQueueUnavailableError(Exception):
+    """The broker is unreachable; the job stays ``queued`` in the database and is sent again later."""
+
+
+class JobQueue(Protocol):
+    """Publishes job IDs to the workers. Messages carry only the ID: the worker reloads and re-checks the
+    state (ADR-008, Security considerations)."""
+
+    async def enqueue_ingestion(self, job_id: UUID) -> str:
+        """Returns the broker task ID. Raises :class:`JobQueueUnavailableError`."""
+        ...
 
 
 class UnitOfWork(Protocol):
@@ -457,6 +521,8 @@ class UnitOfWork(Protocol):
     embedding_profiles: EmbeddingProfileRepository
     knowledge_bases: KnowledgeBaseRepository
     data_sources: DataSourceRepository
+    documents: DocumentRepository
+    ingestion_jobs: IngestionJobRepository
     audit: AuditLog
 
     async def __aenter__(self) -> Self: ...

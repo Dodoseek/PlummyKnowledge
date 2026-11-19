@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import json
+import uuid
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import httpx
 from fastapi import FastAPI
+from redis import Redis
+from redis.exceptions import RedisError
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -63,6 +67,16 @@ class Harness:
     app: FastAPI
     client: httpx.AsyncClient
     settings: Settings
+    # Celery key prefix of this app: a dev worker on the same Redis never sees the test's messages.
+    job_namespace: str = ""
+
+    def queued_messages(self, queue: str) -> list[dict[str, Any]]:
+        """Messages waiting in a Celery queue of this harness (kombu's Redis list)."""
+        client = Redis.from_url(self.settings.redis_url.get_secret_value())
+        try:
+            return [json.loads(raw) for raw in client.lrange(f"{self.job_namespace}{queue}", 0, -1)]
+        finally:
+            client.close()
 
     @property
     def resources(self) -> Resources:
@@ -146,6 +160,23 @@ async def running_auth_app(
     database_url: str, redis_url: str, bootstrap_dir: Path, **overrides: Any
 ) -> AsyncIterator[Harness]:
     settings = harness_settings(database_url, redis_url, bootstrap_dir, **overrides)
-    app = create_app(settings, resources_factory=lambda s: build_resources(s, password_hasher=fast_hasher()))
-    async with app.router.lifespan_context(app), make_https_client(app) as client:
-        yield Harness(app=app, client=client, settings=settings)
+    namespace = f"plummy:test:{uuid.uuid4().hex[:12]}:"
+    app = create_app(
+        settings,
+        resources_factory=lambda s: build_resources(
+            s, password_hasher=fast_hasher(), job_namespace=namespace
+        ),
+    )
+    try:
+        async with app.router.lifespan_context(app), make_https_client(app) as client:
+            yield Harness(app=app, client=client, settings=settings, job_namespace=namespace)
+    finally:
+        redis = Redis.from_url(redis_url)
+        try:
+            # Tests of an unreachable Redis have nothing to clean up.
+            with suppress(RedisError):
+                keys = list(redis.scan_iter(match=f"{namespace}*"))
+                if keys:
+                    redis.delete(*keys)
+        finally:
+            redis.close()
