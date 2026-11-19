@@ -7,7 +7,6 @@ streams; a first look at the type from its first bytes. The worker checks the wh
 
 from __future__ import annotations
 
-import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Final
@@ -23,11 +22,11 @@ from plummy.application.errors import (
     ServiceUnavailableError,
     UnsupportedMediaTypeError,
 )
+from plummy.application.ingestion.dispatch import publish
 from plummy.application.knowledge.access import require_kb_access
 from plummy.application.ports import (
     Clock,
     JobQueue,
-    JobQueueUnavailableError,
     RateLimiter,
     RateLimiterUnavailableError,
     UnitOfWork,
@@ -58,8 +57,6 @@ from plummy.domain.documents import (
 )
 from plummy.domain.file_types import SNIFF_BYTES, provisional_format, sniff_container
 from plummy.domain.knowledge import DataSourceStatus, KbAccessLevel, KnowledgeBase
-
-logger = logging.getLogger(__name__)
 
 UPLOADS_PER_MINUTE: Final = 30
 MAX_ATTEMPTS: Final = 5
@@ -226,11 +223,4 @@ class UploadDocument:
 
     async def _enqueue(self, job: IngestionJob) -> None:
         """The job is durable in PostgreSQL first; a broker outage leaves it ``queued`` for the next sweep."""
-        try:
-            task_id = await self._queue.enqueue_ingestion(job.id)
-        except JobQueueUnavailableError:
-            logger.warning("ingestion job not published, broker unavailable", extra={"job_id": str(job.id)})
-            return
-        async with self._uow() as uow:
-            await uow.ingestion_jobs.set_task_id(job.id, task_id)
-            await uow.commit()
+        await publish(self._uow, self._queue, job)

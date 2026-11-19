@@ -17,6 +17,7 @@ from plummy.workers.app import (
     INGESTION_QUEUE,
     INGESTION_TASK,
     MAINTENANCE_QUEUE,
+    PURGE_TASK,
     VECTOR_INDEX_TASK,
     close_celery_app,
     create_celery_app,
@@ -35,6 +36,9 @@ class CeleryJobQueue:
 
     async def enqueue_vector_index(self, profile_id: UUID) -> str:
         return await self._send(VECTOR_INDEX_TASK, profile_id, MAINTENANCE_QUEUE)
+
+    async def enqueue_purge(self, document_id: UUID) -> str:
+        return await self._send(PURGE_TASK, document_id, MAINTENANCE_QUEUE)
 
     async def _send(self, task: str, object_id: UUID, queue: str) -> str:
         try:

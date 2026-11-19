@@ -6,6 +6,7 @@ from plummy.api.v1.documents.router import router as documents_router
 from plummy.api.v1.embedding_profiles.router import router as embedding_profiles_router
 from plummy.api.v1.groups.router import router as groups_router
 from plummy.api.v1.health.router import router as health_router
+from plummy.api.v1.jobs.router import router as jobs_router
 from plummy.api.v1.knowledge_bases.router import router as knowledge_bases_router
 from plummy.api.v1.providers.router import router as providers_router
 from plummy.api.v1.roles.router import router as roles_router
@@ -25,4 +26,5 @@ router.include_router(providers_router)
 router.include_router(embedding_profiles_router)
 router.include_router(knowledge_bases_router)
 router.include_router(documents_router)
+router.include_router(jobs_router)
 router.include_router(system_router)

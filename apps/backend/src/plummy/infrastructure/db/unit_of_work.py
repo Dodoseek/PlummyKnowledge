@@ -23,6 +23,7 @@ from plummy.application.ports import (
     ChunkRepository,
     ChunkToEmbed,
     DataSourceRepository,
+    DocumentQuery,
     DocumentRepository,
     EmbeddingProfileRepository,
     EncryptedSecret,
@@ -30,6 +31,7 @@ from plummy.application.ports import (
     IndexingStats,
     IngestionJobRepository,
     InstanceStateRepository,
+    JobQuery,
     KnowledgeBaseRepository,
     ModelConfigRepository,
     NewEmbedding,
@@ -1265,6 +1267,15 @@ class SqlDataSourceRepository:
         row = await self._db.get(DataSourceModel, source_id)
         return _data_source(row) if row is not None else None
 
+    async def linked_to(self, kb_id: UUID) -> list[DataSource]:
+        rows = await self._db.scalars(
+            select(DataSourceModel)
+            .join(KnowledgeBaseSourceModel, KnowledgeBaseSourceModel.data_source_id == DataSourceModel.id)
+            .where(KnowledgeBaseSourceModel.knowledge_base_id == kb_id, DataSourceModel.deleted_at.is_(None))
+            .order_by(DataSourceModel.id)
+        )
+        return [_data_source(row) for row in rows]
+
 
 def _document(row: DocumentModel) -> Document:
     return Document(
@@ -1327,6 +1338,97 @@ class SqlDocumentRepository:
     async def get(self, document_id: UUID) -> Document | None:
         row = await self._db.get(DocumentModel, document_id, populate_existing=True)
         return _document(row) if row is not None else None
+
+    async def get_for_update(self, document_id: UUID) -> Document | None:
+        row = await self._db.get(DocumentModel, document_id, with_for_update=True, populate_existing=True)
+        return _document(row) if row is not None else None
+
+    async def page(self, query: DocumentQuery, page: PageRequest) -> Page[Document]:
+        statement = select(DocumentModel).where(
+            DocumentModel.data_source_id.in_(query.source_ids), DocumentModel.deleted_at.is_(None)
+        )
+        if query.status is not None:
+            statement = statement.where(DocumentModel.processing_status == str(query.status))
+        if query.search:
+            statement = statement.where(_search(query.search, DocumentModel.filename))
+        return await _paginate(self._db, statement, DocumentModel, page, _document)
+
+    async def versions(self, document_id: UUID) -> list[DocumentVersion]:
+        rows = await self._db.scalars(
+            select(DocumentVersionModel)
+            .where(DocumentVersionModel.document_id == document_id)
+            .order_by(DocumentVersionModel.version_number.desc())
+        )
+        return [_version(row) for row in rows]
+
+    async def latest_versions(self, document_ids: Sequence[UUID]) -> dict[UUID, DocumentVersion]:
+        if not document_ids:
+            return {}
+        newest = (
+            select(
+                DocumentVersionModel.document_id,
+                func.max(DocumentVersionModel.version_number).label("version_number"),
+            )
+            .where(DocumentVersionModel.document_id.in_(document_ids))
+            .group_by(DocumentVersionModel.document_id)
+            .subquery()
+        )
+        rows = await self._db.scalars(
+            select(DocumentVersionModel).join(
+                newest,
+                (newest.c.document_id == DocumentVersionModel.document_id)
+                & (newest.c.version_number == DocumentVersionModel.version_number),
+            )
+        )
+        return {row.document_id: _version(row) for row in rows}
+
+    async def mark_deleted(self, document_id: UUID, reason: DeletionReason, *, at: datetime) -> None:
+        await self._db.execute(
+            update(DocumentModel)
+            .where(DocumentModel.id == document_id, DocumentModel.deleted_at.is_(None))
+            .values(deleted_at=at, deletion_reason=str(reason), updated_at=at)
+        )
+
+    async def reset_version(self, version_id: UUID, *, at: datetime) -> None:
+        await self._db.execute(
+            update(DocumentVersionModel)
+            .where(
+                DocumentVersionModel.id == version_id,
+                DocumentVersionModel.status == str(VersionStatus.FAILED),
+            )
+            .values(
+                status=str(VersionStatus.PENDING),
+                error_code=None,
+                error_message=None,
+                processed_at=None,
+                updated_at=at,
+            )
+        )
+
+    async def deleted_unpurged(self, *, deleted_before: datetime, limit: int) -> list[UUID]:
+        rows = await self._db.scalars(
+            select(DocumentModel.id)
+            .where(
+                DocumentModel.deleted_at.is_not(None),
+                DocumentModel.deleted_at < deleted_before,
+                DocumentModel.purged_at.is_(None),
+            )
+            .order_by(DocumentModel.deleted_at)
+            .limit(limit)
+        )
+        return list(rows)
+
+    async def mark_purged(self, document_id: UUID, *, at: datetime) -> None:
+        await self._db.execute(
+            update(DocumentVersionModel)
+            .where(DocumentVersionModel.document_id == document_id)
+            .values(status=str(VersionStatus.DELETED), active_chunk_set=None, updated_at=at)
+        )
+        await self._db.execute(
+            update(DocumentModel)
+            .where(DocumentModel.id == document_id, DocumentModel.deleted_at.is_not(None))
+            .values(purged_at=at, updated_at=at)
+        )
 
     async def add_version(self, version: DocumentVersion) -> None:
         self._db.add(
@@ -1578,6 +1680,12 @@ class SqlChunkRepository:
         )
         return int(value or 0)
 
+    async def delete_for_document(self, document_id: UUID) -> int:
+        result = await self._db.execute(
+            delete(DocumentChunkModel).where(DocumentChunkModel.document_id == document_id)
+        )
+        return int(getattr(result, "rowcount", 0) or 0)
+
 
 def _job(row: IngestionJobModel) -> IngestionJob:
     return IngestionJob(
@@ -1648,13 +1756,54 @@ class SqlIngestionJobRepository:
                 error_message=job.error_message[:500] if job.error_message else None,
                 started_at=job.started_at,
                 finished_at=job.finished_at,
+                updated_at=func.now(),
             )
         )
 
-    async def set_task_id(self, job_id: UUID, task_id: str) -> None:
+    async def set_task_id(self, job_id: UUID, task_id: str | None) -> None:
         await self._db.execute(
-            update(IngestionJobModel).where(IngestionJobModel.id == job_id).values(celery_task_id=task_id)
+            update(IngestionJobModel)
+            .where(IngestionJobModel.id == job_id)
+            .values(celery_task_id=task_id, updated_at=func.now())
         )
+
+    async def unfinished_for_document(self, document_id: UUID) -> list[IngestionJob]:
+        rows = await self._db.scalars(
+            select(IngestionJobModel)
+            .where(
+                IngestionJobModel.document_id == document_id,
+                IngestionJobModel.status.in_((str(JobStatus.QUEUED), str(JobStatus.RUNNING))),
+            )
+            .order_by(IngestionJobModel.queued_at, IngestionJobModel.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return [_job(row) for row in rows]
+
+    async def page(self, query: JobQuery, page: PageRequest) -> Page[IngestionJob]:
+        statement = select(IngestionJobModel)
+        if query.status is not None:
+            statement = statement.where(IngestionJobModel.status == str(query.status))
+        if query.source_ids is not None:
+            statement = statement.where(
+                IngestionJobModel.document_id.in_(
+                    select(DocumentModel.id).where(DocumentModel.data_source_id.in_(query.source_ids))
+                )
+            )
+        return await _paginate(self._db, statement, IngestionJobModel, page, _job)
+
+    async def unpublished(self, *, idle_since: datetime, limit: int) -> list[IngestionJob]:
+        rows = await self._db.scalars(
+            select(IngestionJobModel)
+            .where(
+                IngestionJobModel.status == str(JobStatus.QUEUED),
+                IngestionJobModel.celery_task_id.is_(None),
+                IngestionJobModel.updated_at < idle_since,
+            )
+            .order_by(IngestionJobModel.updated_at)
+            .limit(limit)
+        )
+        return [_job(row) for row in rows]
 
 
 class SqlAlchemyUnitOfWork:

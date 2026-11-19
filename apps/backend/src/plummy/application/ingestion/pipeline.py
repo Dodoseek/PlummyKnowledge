@@ -12,6 +12,11 @@ One job runs in two phases on two queues:
 
 ``attempt`` counts runs that start the work again (the first run, a retry after a transient error, a
 redelivery after a crash); the hand-off between the phases is not an attempt.
+
+Deleting a document cancels its jobs. Every write of a run (stored original, extracted text, chunks,
+vectors, hand-off, activation) happens in a transaction that first locks the job and checks that it was not
+cancelled, so nothing is written after the deletion commits and the purge removes everything. Locks are
+taken document first, then job, as the deletion does, so the two never deadlock.
 """
 
 from __future__ import annotations
@@ -26,7 +31,13 @@ from uuid import UUID
 
 from plummy.application.ingestion.inspection import ArchiveLimits, FileRejectedError, inspect_file
 from plummy.application.ingestion.parsing import ParseError, ParseLimits, ParserRegistry
-from plummy.application.ports import Clock, JobQueue, JobQueueUnavailableError, UnitOfWorkFactory
+from plummy.application.ports import (
+    Clock,
+    JobQueue,
+    JobQueueUnavailableError,
+    UnitOfWork,
+    UnitOfWorkFactory,
+)
 from plummy.application.storage import (
     StorageArea,
     StorageKey,
@@ -71,6 +82,19 @@ class TransientIngestionError(Exception):
     """A temporary failure (storage, database, broker, provider): retried until ``max_attempts``."""
 
 
+class JobStoppedError(Exception):
+    """Another actor finished the job while this run worked on it: deletion cancelled it, or a concurrent run
+    (a redelivery) completed it. Stop without writing anything more."""
+
+    def __init__(self, outcome: RunOutcome) -> None:
+        super().__init__(outcome.value)
+        self.outcome = outcome
+
+
+def _stopped(job: IngestionJob | None) -> RunOutcome:
+    return RunOutcome.CANCELLED if job is None or job.status is JobStatus.CANCELLED else RunOutcome.SKIPPED
+
+
 class PermanentIngestionError(Exception):
     """The document cannot be processed as it is; the job fails without retries."""
 
@@ -105,9 +129,10 @@ class JobRunner:
                 await self._set_document_status(work, DocumentStatus.SKIPPED)
                 return await self._finish(work, JobStatus.CANCELLED, error_code="resource_unavailable")
             return await self._run(work)
+        except JobStoppedError as exc:
+            return exc.outcome
         except (FileRejectedError, ParseError, PermanentIngestionError) as exc:
-            await self._fail_permanently(work, exc.code, exc.message)
-            return RunOutcome.FAILED
+            return await self._fail_permanently(work, exc.code, exc.message)
         except (TransientIngestionError, JobQueueUnavailableError, OSError) as exc:
             logger.warning(
                 "ingestion stage failed, will retry",
@@ -123,10 +148,13 @@ class JobRunner:
 
     async def _start(self, job_id: UUID) -> Work | RunOutcome:
         async with self._uow() as uow:
+            unlocked = await uow.ingestion_jobs.get(job_id)
+            if unlocked is None:
+                return RunOutcome.SKIPPED
+            document = await uow.documents.get_for_update(unlocked.document_id)
             job = await uow.ingestion_jobs.get_for_update(job_id)
             if job is None or job.status.finished or job.document_version_id is None:
                 return RunOutcome.SKIPPED
-            document = await uow.documents.get(job.document_id)
             version = await uow.documents.get_version(job.document_version_id)
             if document is None or version is None:
                 return RunOutcome.SKIPPED
@@ -171,17 +199,25 @@ class JobRunner:
             await uow.documents.set_status(work.document.id, status, at=self._clock.now())
             await uow.commit()
 
+    async def _guard(self, uow: UnitOfWork, work: Work, *, document: bool = False) -> IngestionJob:
+        """Locks the job (after the document row when the transaction changes the document) and stops the
+        run if the job was cancelled meanwhile."""
+        if document:
+            await uow.documents.get_for_update(work.document.id)
+        job = await uow.ingestion_jobs.get_for_update(work.job.id)
+        if job is None or job.status.finished:
+            raise JobStoppedError(_stopped(job))
+        return job
+
     async def _set_stage(self, work: Work, stage: JobStage) -> None:
         async with self._uow() as uow:
-            job = await uow.ingestion_jobs.get_for_update(work.job.id)
-            if job is None:
-                raise TransientIngestionError("job disappeared")
+            job = await self._guard(uow, work)
             job.stage = stage
             await uow.ingestion_jobs.save(job)
             await uow.commit()
         work.job.stage = stage
 
-    async def _fail_permanently(self, work: Work, code: str, message: str) -> None:
+    async def _fail_permanently(self, work: Work, code: str, message: str) -> RunOutcome:
         now = self._clock.now()
         async with self._uow() as uow:
             await uow.documents.fail_version(work.version.id, error_code=code, error_message=message, at=now)
@@ -189,19 +225,19 @@ class JobRunner:
         await self._set_document_status(work, DocumentStatus.FAILED)
         # A rejected file is not kept: quarantine holds only files that may still be processed.
         await self._storage.delete(StorageArea.QUARANTINE, StorageKey(work.version.storage_key))
-        await self._finish(work, JobStatus.FAILED, error_code=code, error_message=message)
+        return await self._finish(work, JobStatus.FAILED, error_code=code, error_message=message)
 
     async def _transient(self, work: Work) -> RunOutcome:
         if work.job.attempt >= work.job.max_attempts:
             await self._set_document_status(work, DocumentStatus.FAILED)
-            await self._finish(work, JobStatus.DEAD, error_code="attempts_exhausted")
-            return RunOutcome.DEAD
+            return await self._finish(work, JobStatus.DEAD, error_code="attempts_exhausted")
         async with self._uow() as uow:
             job = await uow.ingestion_jobs.get_for_update(work.job.id)
-            if job is not None:
-                job.status, job.error_code = JobStatus.QUEUED, TRANSIENT_ERROR
-                await uow.ingestion_jobs.save(job)
-                await uow.commit()
+            if job is None or job.status.finished:
+                return _stopped(job)
+            job.status, job.error_code = JobStatus.QUEUED, TRANSIENT_ERROR
+            await uow.ingestion_jobs.save(job)
+            await uow.commit()
         return RunOutcome.RETRY
 
     async def _finish(
@@ -215,12 +251,13 @@ class JobRunner:
     ) -> RunOutcome:
         async with self._uow() as uow:
             job = await uow.ingestion_jobs.get_for_update(work.job.id)
-            if job is not None:
-                job.status, job.result = status, result
-                job.error_code, job.error_message = error_code, error_message
-                job.finished_at = self._clock.now()
-                await uow.ingestion_jobs.save(job)
-                await uow.commit()
+            if job is None or job.status.finished:
+                return _stopped(job)  # finished meanwhile by the deletion or a concurrent run
+            job.status, job.result = status, result
+            job.error_code, job.error_message = error_code, error_message
+            job.finished_at = self._clock.now()
+            await uow.ingestion_jobs.save(job)
+            await uow.commit()
         return _OUTCOMES[status]
 
 
@@ -278,11 +315,17 @@ class RunIngestionJob(JobRunner):
         except StorageObjectNotFoundError:
             if not await self._storage.exists(StorageArea.DOCUMENTS, key):
                 raise
-        async with self._uow() as uow:
-            await uow.documents.set_mime_type(
-                work.document.id, work.version.id, file_format.mime_type, at=self._clock.now()
-            )
-            await uow.commit()
+        try:
+            async with self._uow() as uow:
+                await self._guard(uow, work, document=True)
+                await uow.documents.set_mime_type(
+                    work.document.id, work.version.id, file_format.mime_type, at=self._clock.now()
+                )
+                await uow.commit()
+        except JobStoppedError:
+            # The document was deleted while the file moved; the purge may already have run.
+            await self._storage.delete(StorageArea.DOCUMENTS, key)
+            raise
 
     async def _parse(self, work: Work, file_format: DocumentFormat) -> None:
         """Stages 6-7: text and structure, kept as JSON next to the original (reindex does not re-parse)."""
@@ -301,6 +344,7 @@ class RunIngestionJob(JobRunner):
         await self._storage.put(StorageArea.DOCUMENTS, key, _single(payload))
         try:
             async with self._uow() as uow:
+                await self._guard(uow, work)
                 await uow.documents.record_extraction(
                     version.id,
                     extracted_storage_key=key.value,
@@ -317,12 +361,12 @@ class RunIngestionJob(JobRunner):
     async def _hand_off(self, work: Work) -> None:
         """The job waits for the index phase: ``queued`` at stage ``chunk``, without an error."""
         async with self._uow() as uow:
-            job = await uow.ingestion_jobs.get_for_update(work.job.id)
-            if job is None:
-                raise TransientIngestionError("job disappeared")
+            job = await self._guard(uow, work)
             job.status, job.stage = JobStatus.QUEUED, JobStage.CHUNK
             job.error_code = job.error_message = None
             await uow.ingestion_jobs.save(job)
+            # Without a task ID until the index phase is published: a failed publish is found by the sweep.
+            await uow.ingestion_jobs.set_task_id(job.id, None)
             await uow.commit()
         work.job.stage = JobStage.CHUNK
         task_id = await self._jobs.enqueue_indexing(work.job.id)

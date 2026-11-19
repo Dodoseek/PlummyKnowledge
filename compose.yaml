@@ -185,6 +185,34 @@ services:
       retries: 3
     stop_grace_period: 30s
 
+  # Celery beat (ARCHITECTURE.md §3): sends the periodic maintenance tasks (quarantine cleanup, re-publishing
+  # queued jobs, purge sweep) to the `maintenance` queue. Exactly one instance. It only talks to Redis: no
+  # key ring, storage or provider access. The schedule state file is temporary (intervals, not cron times).
+  scheduler:
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
+      target: dev
+    command:
+      - sh
+      - -c
+      - >-
+        python -m plummy.check_config &&
+        exec celery -A plummy.workers.main --quiet beat --loglevel INFO
+        --schedule /tmp/plummy-beat-schedule
+    environment: *ingestion-env
+    volumes:
+      - ./apps/backend/src:/app/src:ro
+      - ./VERSION:/VERSION:ro
+    networks: [data]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    stop_grace_period: 10s
+
   # Ingestion worker (ADR-008 stages 2-7): its own image with Docling and its models, the `ingestion` queue
   # only, one document at a time. The data network is internal, so the parser has no internet access; the
   # parser itself runs in a child process with a timeout and rlimits. mem_limit bounds the real memory (the

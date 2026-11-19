@@ -131,6 +131,7 @@ class RunIndexingJob(JobRunner):
         if not drafts:
             raise PermanentIngestionError("no_text", "The document contains no extractable text.")
         async with self._uow() as uow:
+            await self._guard(uow, work)
             await uow.chunks.add_chunks(
                 document_id=work.document.id,
                 version_id=version.id,
@@ -183,6 +184,7 @@ class RunIndexingJob(JobRunner):
                 for chunk, vector in zip(batch, vectors, strict=True)
             ]
             async with self._uow() as uow:
+                await self._guard(uow, work)
                 await uow.chunks.add_embeddings(
                     profile_id=profile.id,
                     version_id=work.version.id,
@@ -233,8 +235,8 @@ class RunIndexingJob(JobRunner):
         """Stages 11-12 in one transaction: the new set becomes visible together with the finished job."""
         now = self._clock.now()
         async with self._uow() as uow:
+            document = await uow.documents.get_for_update(work.document.id)
             job = await uow.ingestion_jobs.get_for_update(work.job.id)
-            document = await uow.documents.get(work.document.id)
             if job is None or job.status.finished:
                 return RunOutcome.SKIPPED  # a concurrent run finished it
             if document is None or document.deleted_at is not None:

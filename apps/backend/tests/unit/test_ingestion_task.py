@@ -10,11 +10,15 @@ import pytest
 
 from plummy.application.ingestion.pipeline import RunOutcome
 from plummy.workers.app import (
+    CLEANUP_QUARANTINE_TASK,
     EMBEDDINGS_QUEUE,
     INDEXING_TASK,
     INGESTION_QUEUE,
     INGESTION_TASK,
     MAINTENANCE_QUEUE,
+    PURGE_TASK,
+    REQUEUE_JOBS_TASK,
+    SWEEP_DELETED_TASK,
     VECTOR_INDEX_TASK,
     celery_config,
 )
@@ -90,5 +94,18 @@ def test_tasks_are_routed_to_their_queues() -> None:
         INGESTION_TASK: {"queue": INGESTION_QUEUE},  # worker-ingestion, no network
         INDEXING_TASK: {"queue": EMBEDDINGS_QUEUE},  # the worker with egress to providers
         VECTOR_INDEX_TASK: {"queue": MAINTENANCE_QUEUE},
+        PURGE_TASK: {"queue": MAINTENANCE_QUEUE},
+        CLEANUP_QUARANTINE_TASK: {"queue": MAINTENANCE_QUEUE},
+        REQUEUE_JOBS_TASK: {"queue": MAINTENANCE_QUEUE},
+        SWEEP_DELETED_TASK: {"queue": MAINTENANCE_QUEUE},
     }
     assert config["accept_content"] == ["json"]
+
+
+def test_beat_sends_only_maintenance_tasks_that_expire() -> None:
+    schedule: dict[str, Any] = celery_config(make_settings())["beat_schedule"]
+    assert set(schedule) == {CLEANUP_QUARANTINE_TASK, REQUEUE_JOBS_TASK, SWEEP_DELETED_TASK}
+    for name, entry in schedule.items():
+        assert entry["task"] == name
+        assert 60 <= entry["schedule"] <= 3600
+        assert entry["options"]["expires"] == entry["schedule"]

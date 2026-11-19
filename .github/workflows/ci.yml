@@ -52,8 +52,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Start the dev stack (postgres, redis, migrate, backend, worker)
-        run: docker compose up --detach --build --wait --wait-timeout 300 backend worker
+      - name: Start the dev stack (postgres, redis, migrate, backend, worker, scheduler)
+        run: docker compose up --detach --build --wait --wait-timeout 300 backend worker scheduler
       - name: Tests (unit + API + integration)
         run: docker compose exec -T backend pytest -p no:cacheprovider
       - name: Ruff

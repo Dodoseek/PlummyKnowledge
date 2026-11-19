@@ -24,6 +24,13 @@ from plummy.application.auth.sessions import SessionIssuer, SessionPolicy
 from plummy.application.auth.throttle import AttemptThrottle
 from plummy.application.auth.use_cases import AuthenticateSession, Login, Logout
 from plummy.application.documents.upload import UploadDocument
+from plummy.application.documents.use_cases import (
+    DeleteDocument,
+    GetDocument,
+    ListDocuments,
+    ListDocumentVersions,
+    ReindexDocument,
+)
 from plummy.application.groups.use_cases import (
     CreateGroup,
     DeleteGroup,
@@ -35,8 +42,15 @@ from plummy.application.groups.use_cases import (
 )
 from plummy.application.health import CheckReadiness
 from plummy.application.ingestion.indexing import RunIndexingJob
+from plummy.application.ingestion.maintenance import (
+    CleanupQuarantine,
+    PurgeDocument,
+    RequeueJobs,
+    SweepDeletedDocuments,
+)
 from plummy.application.ingestion.parsing import ParserRegistry
 from plummy.application.ingestion.pipeline import RunIngestionJob
+from plummy.application.jobs.use_cases import GetJob, ListJobs, RetryJob
 from plummy.application.knowledge.use_cases import CreateKnowledgeBase, GetKnowledgeBase, ListKnowledgeBases
 from plummy.application.knowledge.vector_index import EnsureVectorIndex
 from plummy.application.ports import Clock, PasswordHasher, SecretCipher
@@ -192,6 +206,20 @@ class DocumentServices:
     """Documents; access to the knowledge base is checked by the use cases."""
 
     upload: UploadDocument
+    list: ListDocuments
+    get: GetDocument
+    versions: ListDocumentVersions
+    delete: DeleteDocument
+    reindex: ReindexDocument
+
+
+@dataclass(frozen=True, slots=True)
+class JobServices:
+    """Background jobs (``jobs.read`` / ``jobs.manage``, checked by the use cases)."""
+
+    list: ListJobs
+    get: GetJob
+    retry: RetryJob
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,6 +247,7 @@ class Resources:
     admin: AdminServices
     knowledge: KnowledgeServices
     documents: DocumentServices
+    job_admin: JobServices
     secrets: SecretVault
     http: SafeHttpClient
     storage: LocalFileStorage
@@ -312,6 +341,34 @@ async def vector_index_runner(settings: Settings) -> AsyncIterator[EnsureVectorI
             SqlAlchemyUnitOfWorkFactory(create_session_factory(engine)), PgVectorIndexManager(engine)
         )
     finally:
+        await engine.dispose()
+
+
+@dataclass(frozen=True, slots=True)
+class MaintenanceServices:
+    purge: PurgeDocument
+    sweep_deleted: SweepDeletedDocuments
+    requeue: RequeueJobs
+    cleanup_quarantine: CleanupQuarantine
+
+
+@asynccontextmanager
+async def maintenance_runner(settings: Settings) -> AsyncIterator[MaintenanceServices]:
+    """Purge and the periodic sweeps for one task run (the worker on the ``maintenance`` queue)."""
+    clock = SystemClock()
+    storage = create_storage(settings)
+    engine = create_engine(settings, application_name="plummy-worker")
+    uow = SqlAlchemyUnitOfWorkFactory(create_session_factory(engine))
+    jobs = CeleryJobQueue(settings)
+    try:
+        yield MaintenanceServices(
+            purge=PurgeDocument(uow, storage, clock),
+            sweep_deleted=SweepDeletedDocuments(uow, jobs, clock),
+            requeue=RequeueJobs(uow, jobs, clock),
+            cleanup_quarantine=CleanupQuarantine(storage, clock, ttl=settings.quarantine_ttl),
+        )
+    finally:
+        jobs.close()
         await engine.dispose()
 
 
@@ -504,8 +561,14 @@ def build_resources(
             create=CreateKnowledgeBase(uow, clock, jobs),
         ),
         documents=DocumentServices(
-            upload=UploadDocument(uow, storage, jobs, limiter, clock, max_bytes=settings.upload_max_bytes)
+            upload=UploadDocument(uow, storage, jobs, limiter, clock, max_bytes=settings.upload_max_bytes),
+            list=ListDocuments(uow),
+            get=GetDocument(uow),
+            versions=ListDocumentVersions(uow),
+            delete=DeleteDocument(uow, jobs, clock),
+            reindex=ReindexDocument(uow, jobs, limiter, clock),
         ),
+        job_admin=JobServices(list=ListJobs(uow), get=GetJob(uow), retry=RetryJob(uow, jobs, limiter, clock)),
         secrets=vault,
         http=http,
         storage=storage,

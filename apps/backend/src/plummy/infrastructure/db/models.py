@@ -722,6 +722,11 @@ class IngestionJobModel(Base):
         Index("ix_ingestion_jobs_status", "status"),
         Index("ix_ingestion_jobs_document_id", "document_id"),
         Index("ix_ingestion_jobs_queued_at_id", "queued_at", "id"),
+        Index(
+            "ix_ingestion_jobs_unpublished",
+            "updated_at",
+            postgresql_where=text("status = 'queued' AND celery_task_id IS NULL"),
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
@@ -750,3 +755,5 @@ class IngestionJobModel(Base):
     queued_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
     started_at: Mapped[datetime | None] = _ts()
     finished_at: Mapped[datetime | None] = _ts()
+    # Last change of the row (set by the repository): the beat sweep finds queued jobs left unpublished.
+    updated_at: Mapped[datetime] = _ts(nullable=False, default_now=True)

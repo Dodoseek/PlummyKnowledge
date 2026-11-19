@@ -13,7 +13,14 @@ from plummy.application.ingestion.chunking import ChunkDraft
 from plummy.application.pagination import Page, PageRequest
 from plummy.domain.ai import AIProvider, EmbeddingProfile, ModelConfig, TestStatus
 from plummy.domain.audit import AuditEntry
-from plummy.domain.documents import Document, DocumentStatus, DocumentVersion, IngestionJob
+from plummy.domain.documents import (
+    DeletionReason,
+    Document,
+    DocumentStatus,
+    DocumentVersion,
+    IngestionJob,
+    JobStatus,
+)
 from plummy.domain.identity import Group, InstanceState, SessionRevokeReason, User, UserSession, UserStatus
 from plummy.domain.knowledge import DataSource, KbAccessLevel, KnowledgeBase
 from plummy.domain.secrets import SecretKind, SecretValue
@@ -451,12 +458,62 @@ class DataSourceRepository(Protocol):
         """Including deleted sources (callers check ``deleted_at``)."""
         ...
 
+    async def linked_to(self, kb_id: UUID) -> list[DataSource]:
+        """The non-deleted sources included in the knowledge base."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentQuery:
+    """``GET /documents``: the sources of one knowledge base (resolved by the use case) and allowlisted
+    filters. Deleted documents are never listed."""
+
+    source_ids: tuple[UUID, ...]
+    status: DocumentStatus | None = None
+    search: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class JobQuery:
+    """``GET /jobs`` filters; ``source_ids`` limits jobs to documents of these sources."""
+
+    status: JobStatus | None = None
+    source_ids: tuple[UUID, ...] | None = None
+
 
 class DocumentRepository(Protocol):
     async def add(self, document: Document) -> None: ...
 
     async def get(self, document_id: UUID) -> Document | None:
         """Including deleted documents (callers check ``deleted_at``)."""
+        ...
+
+    async def get_for_update(self, document_id: UUID) -> Document | None:
+        """Locks the row: deletion, reindex and retry of one document are serialized."""
+        ...
+
+    async def page(self, query: DocumentQuery, page: PageRequest) -> Page[Document]: ...
+
+    async def versions(self, document_id: UUID) -> list[DocumentVersion]:
+        """Newest first."""
+        ...
+
+    async def latest_versions(self, document_ids: Sequence[UUID]) -> dict[UUID, DocumentVersion]:
+        """The highest-numbered version of each document."""
+        ...
+
+    async def mark_deleted(self, document_id: UUID, reason: DeletionReason, *, at: datetime) -> None:
+        """Soft delete: the document leaves retrieval and listings at once (§8)."""
+        ...
+
+    async def reset_version(self, version_id: UUID, *, at: datetime) -> None:
+        """A ``failed`` version becomes ``pending`` again for a retry or reindex (other states unchanged)."""
+        ...
+
+    async def deleted_unpurged(self, *, deleted_before: datetime, limit: int) -> list[UUID]: ...
+
+    async def mark_purged(self, document_id: UUID, *, at: datetime) -> None:
+        """``purged_at`` on the document; its versions become ``deleted`` without an active chunk set."""
         ...
 
     async def add_version(self, version: DocumentVersion) -> None: ...
@@ -545,6 +602,10 @@ class ChunkRepository(Protocol):
 
     async def embedding_count(self, version_id: UUID, chunk_set: int, profile_id: UUID) -> int: ...
 
+    async def delete_for_document(self, document_id: UUID) -> int:
+        """All chunks of the document; their vectors go with them (``ON DELETE CASCADE``)."""
+        ...
+
 
 class VectorIndexManager(Protocol):
     """Per-profile partial HNSW indexes (ADR-017 §2). DDL is built only from the stored profile."""
@@ -573,7 +634,19 @@ class IngestionJobRepository(Protocol):
         """Writes status, stage, result, attempt, error and timestamps."""
         ...
 
-    async def set_task_id(self, job_id: UUID, task_id: str) -> None: ...
+    async def set_task_id(self, job_id: UUID, task_id: str | None) -> None:
+        """``None`` while the job waits to be published: the maintenance sweep sends it again."""
+        ...
+
+    async def unfinished_for_document(self, document_id: UUID) -> list[IngestionJob]:
+        """``queued`` and ``running`` jobs of the document, locked."""
+        ...
+
+    async def page(self, query: JobQuery, page: PageRequest) -> Page[IngestionJob]: ...
+
+    async def unpublished(self, *, idle_since: datetime, limit: int) -> list[IngestionJob]:
+        """``queued`` jobs without a task ID, unchanged since ``idle_since``."""
+        ...
 
 
 class JobQueueUnavailableError(Exception):
@@ -596,6 +669,10 @@ class JobQueue(Protocol):
 
     async def enqueue_vector_index(self, profile_id: UUID) -> str:
         """``ensure_vector_index`` on the ``maintenance`` queue (ADR-017 §2)."""
+        ...
+
+    async def enqueue_purge(self, document_id: UUID) -> str:
+        """``purge_document`` on the ``maintenance`` queue: derived data and files of a deleted document."""
         ...
 
 
