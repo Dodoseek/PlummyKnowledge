@@ -68,7 +68,7 @@ services:
     restart: unless-stopped
 
   redis:
-    image: redis:8.6-alpine
+    image: redis:8.10-alpine
     command: ["redis-server", "--appendonly", "yes", "--save", ""]
     volumes:
       - redis-data:/data
