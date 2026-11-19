@@ -11,6 +11,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -23,11 +24,12 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
-from sqlalchemy.dialects.postgresql import CITEXT, INET, JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, CITEXT, INET, JSONB
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from plummy.infrastructure.db.base import Base
+from plummy.infrastructure.db.types import Vector
 
 NOW = text("now()")
 
@@ -388,3 +390,363 @@ class EmbeddingProfileModel(Base):
     status: Mapped[str] = mapped_column(Text(), nullable=False, server_default=text("'active'"))
     created_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
     updated_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
+
+
+# --- knowledge (DATABASE_SCHEMA.md §5) ---------------------------------------------------------------------
+
+_KEY_CHECK = "~ '^[0-9a-f]{32}$'"  # server-generated storage keys (application/storage.py)
+_ERROR_CODE_CHECK = "~ '^[a-z_]{1,64}$'"  # typed codes only, never document content or provider output
+
+
+class KnowledgeBaseModel(Base):
+    """Knowledge bases (DATABASE_SCHEMA.md §5.1). Soft-deleted; the name is unique among live ones."""
+
+    __tablename__ = "knowledge_bases"
+    __table_args__ = (
+        CheckConstraint("char_length(name) BETWEEN 1 AND 200", name="name_length"),
+        CheckConstraint("description IS NULL OR char_length(description) <= 2000", name="description_length"),
+        CheckConstraint("jsonb_typeof(chunking_settings) = 'object'", name="chunking_settings_object"),
+        Index(
+            "uq_knowledge_bases_name_active", "name", unique=True, postgresql_where=text("deleted_at IS NULL")
+        ),
+        Index("ix_knowledge_bases_created_at_id", "created_at", "id"),
+        Index("ix_knowledge_bases_embedding_config_id", "embedding_config_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    name: Mapped[str] = mapped_column(CITEXT(), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    embedding_config_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("embedding_provider_configs.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    chunking_settings: Mapped[dict[str, Any]] = mapped_column(
+        JSONB(), nullable=False, server_default=text("'{}'::jsonb")
+    )
+    created_by: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
+    updated_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
+    deleted_at: Mapped[datetime | None] = _ts()
+
+
+class KnowledgeBaseAccessModel(Base):
+    """KB-level grants to a user or a group (DATABASE_SCHEMA.md §5.2)."""
+
+    __tablename__ = "knowledge_base_access"
+    __table_args__ = (
+        CheckConstraint("principal_type IN ('user', 'group')", name="principal_type"),
+        CheckConstraint("access_level IN ('read', 'manage')", name="access_level"),
+        CheckConstraint(
+            "(principal_type = 'user') = (user_id IS NOT NULL) "
+            "AND (principal_type = 'group') = (group_id IS NOT NULL)",
+            name="principal",
+        ),
+        UniqueConstraint("knowledge_base_id", "user_id"),
+        UniqueConstraint("knowledge_base_id", "group_id"),
+        Index("ix_knowledge_base_access_user_id", "user_id"),
+        Index("ix_knowledge_base_access_group_id", "group_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    knowledge_base_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("knowledge_bases.id", ondelete="CASCADE"), nullable=False
+    )
+    principal_type: Mapped[str] = mapped_column(Text(), nullable=False)
+    user_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True
+    )
+    group_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("groups.id", ondelete="CASCADE"), nullable=True
+    )
+    access_level: Mapped[str] = mapped_column(Text(), nullable=False)
+    granted_by: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
+
+
+class DataSourceModel(Base):
+    """Document sources (DATABASE_SCHEMA.md §5.4, ADR-008). Sync columns arrive with the connectors."""
+
+    __tablename__ = "data_sources"
+    __table_args__ = (
+        CheckConstraint("type IN ('upload', 'google_drive', 'microsoft_365')", name="type"),
+        CheckConstraint("status IN ('active', 'paused', 'error', 'disconnected')", name="status"),
+        CheckConstraint("char_length(name) BETWEEN 1 AND 200", name="name_length"),
+        CheckConstraint("jsonb_typeof(config) = 'object'", name="config_object"),
+        CheckConstraint("(type = 'upload') = (owner_knowledge_base_id IS NOT NULL)", name="upload_owner"),
+        UniqueConstraint("owner_knowledge_base_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    type: Mapped[str] = mapped_column(Text(), nullable=False)
+    owner_knowledge_base_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("knowledge_bases.id", ondelete="RESTRICT"), nullable=True
+    )
+    name: Mapped[str] = mapped_column(Text(), nullable=False)
+    status: Mapped[str] = mapped_column(Text(), nullable=False, server_default=text("'active'"))
+    config: Mapped[dict[str, Any]] = mapped_column(
+        JSONB(), nullable=False, server_default=text("'{}'::jsonb")
+    )
+    created_by: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
+    updated_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
+    deleted_at: Mapped[datetime | None] = _ts()
+
+
+class KnowledgeBaseSourceModel(Base):
+    """Sources attached to a knowledge base (DATABASE_SCHEMA.md §5.6)."""
+
+    __tablename__ = "knowledge_base_sources"
+    __table_args__ = (Index("ix_knowledge_base_sources_data_source_id", "data_source_id"),)
+
+    knowledge_base_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("knowledge_bases.id", ondelete="CASCADE"), primary_key=True
+    )
+    data_source_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("data_sources.id", ondelete="CASCADE"), primary_key=True
+    )
+    created_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
+
+
+class DocumentModel(Base):
+    """Documents (DATABASE_SCHEMA.md §5.7). ``filename`` is for display only, never a storage path."""
+
+    __tablename__ = "documents"
+    __table_args__ = (
+        CheckConstraint("char_length(external_id) BETWEEN 1 AND 512", name="external_id_length"),
+        CheckConstraint("char_length(filename) BETWEEN 1 AND 255", name="filename_length"),
+        CheckConstraint(
+            "processing_status IN ('pending', 'processing', 'indexed', 'failed', 'skipped')",
+            name="processing_status",
+        ),
+        CheckConstraint(
+            "deletion_reason IS NULL OR deletion_reason IN "
+            "('user', 'remote_deleted', 'out_of_scope', 'source_deleted', 'kb_deleted')",
+            name="deletion_reason",
+        ),
+        CheckConstraint("(deleted_at IS NULL) = (deletion_reason IS NULL)", name="deletion_consistent"),
+        CheckConstraint("jsonb_typeof(source_metadata) = 'object'", name="source_metadata_object"),
+        UniqueConstraint("data_source_id", "external_id"),
+        Index("ix_documents_data_source_id_created_at_id", "data_source_id", "created_at", "id"),
+        Index("ix_documents_processing_status", "processing_status"),
+        Index("ix_documents_deleted_at", "deleted_at"),
+        Index("ix_documents_updated_at", "updated_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    data_source_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("data_sources.id", ondelete="RESTRICT"), nullable=False
+    )
+    external_id: Mapped[str] = mapped_column(Text(), nullable=False)
+    filename: Mapped[str] = mapped_column(Text(), nullable=False)
+    mime_type: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    external_path: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    external_etag: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    current_version_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey(
+            "document_versions.id",
+            ondelete="SET NULL",
+            deferrable=True,
+            initially="DEFERRED",
+            use_alter=True,
+        ),
+        nullable=True,
+    )
+    processing_status: Mapped[str] = mapped_column(Text(), nullable=False, server_default=text("'pending'"))
+    source_created_at: Mapped[datetime | None] = _ts()
+    source_modified_at: Mapped[datetime | None] = _ts()
+    source_metadata: Mapped[dict[str, Any]] = mapped_column(
+        JSONB(), nullable=False, server_default=text("'{}'::jsonb")
+    )
+    created_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
+    updated_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
+    deleted_at: Mapped[datetime | None] = _ts()
+    deletion_reason: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    purged_at: Mapped[datetime | None] = _ts()
+
+
+class DocumentVersionModel(Base):
+    """Immutable document versions (DATABASE_SCHEMA.md §5.8): content never changes, only processing state."""
+
+    __tablename__ = "document_versions"
+    __table_args__ = (
+        CheckConstraint("version_number > 0", name="version_number"),
+        CheckConstraint("octet_length(checksum_sha256) = 32", name="checksum_length"),
+        CheckConstraint("size_bytes >= 0", name="size_bytes"),
+        CheckConstraint("page_count IS NULL OR page_count >= 0", name="page_count"),
+        CheckConstraint(f"storage_key {_KEY_CHECK}", name="storage_key_format"),
+        CheckConstraint(
+            f"extracted_storage_key IS NULL OR extracted_storage_key {_KEY_CHECK}",
+            name="extracted_storage_key_format",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'processing', 'ready', 'failed', 'outdated', 'deleted')", name="status"
+        ),
+        CheckConstraint(f"error_code IS NULL OR error_code {_ERROR_CODE_CHECK}", name="error_code_format"),
+        CheckConstraint(
+            "error_message IS NULL OR char_length(error_message) <= 500", name="error_message_length"
+        ),
+        CheckConstraint("active_chunk_set IS NULL OR active_chunk_set > 0", name="active_chunk_set"),
+        CheckConstraint("jsonb_typeof(metadata) = 'object'", name="metadata_object"),
+        UniqueConstraint("document_id", "version_number"),
+        UniqueConstraint("document_id", "checksum_sha256"),
+        Index("ix_document_versions_status", "status"),
+        Index("ix_document_versions_document_id_status", "document_id", "status"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    document_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False
+    )
+    version_number: Mapped[int] = mapped_column(Integer(), nullable=False)
+    checksum_sha256: Mapped[bytes] = mapped_column(LargeBinary(), nullable=False)
+    mime_type: Mapped[str] = mapped_column(Text(), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(BigInteger(), nullable=False)
+    page_count: Mapped[int | None] = mapped_column(Integer(), nullable=True)
+    storage_key: Mapped[str] = mapped_column(Text(), nullable=False)
+    extracted_storage_key: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    external_version: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    parser: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    status: Mapped[str] = mapped_column(Text(), nullable=False, server_default=text("'pending'"))
+    error_code: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    metadata_: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSONB(), nullable=False, server_default=text("'{}'::jsonb")
+    )
+    active_chunk_set: Mapped[int | None] = mapped_column(Integer(), nullable=True)
+    processed_at: Mapped[datetime | None] = _ts()
+    created_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
+    updated_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
+
+
+class DocumentChunkModel(Base):
+    """Chunks of a version (DATABASE_SCHEMA.md §5.9). Full-text search columns arrive in Phase 6."""
+
+    __tablename__ = "document_chunks"
+    __table_args__ = (
+        CheckConstraint("chunk_set > 0", name="chunk_set"),
+        CheckConstraint("chunk_index >= 0", name="chunk_index"),
+        CheckConstraint("octet_length(content_hash) = 32", name="content_hash_length"),
+        CheckConstraint("token_count >= 0", name="token_count"),
+        CheckConstraint(
+            "page_start IS NULL OR page_end IS NULL OR page_start <= page_end", name="page_range"
+        ),
+        CheckConstraint("row_start IS NULL OR row_end IS NULL OR row_start <= row_end", name="row_range"),
+        UniqueConstraint("document_version_id", "chunk_set", "chunk_index"),
+        Index("ix_document_chunks_data_source_id", "data_source_id"),
+        Index("ix_document_chunks_document_id", "document_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    document_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False
+    )
+    document_version_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("document_versions.id", ondelete="CASCADE"), nullable=False
+    )
+    data_source_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    chunk_set: Mapped[int] = mapped_column(Integer(), nullable=False)
+    chunk_index: Mapped[int] = mapped_column(Integer(), nullable=False)
+    content: Mapped[str] = mapped_column(Text(), nullable=False)
+    content_hash: Mapped[bytes] = mapped_column(LargeBinary(), nullable=False)
+    token_count: Mapped[int] = mapped_column(Integer(), nullable=False)
+    page_start: Mapped[int | None] = mapped_column(Integer(), nullable=True)
+    page_end: Mapped[int | None] = mapped_column(Integer(), nullable=True)
+    section_path: Mapped[list[str] | None] = mapped_column(ARRAY(Text()), nullable=True)
+    sheet_name: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    row_start: Mapped[int | None] = mapped_column(Integer(), nullable=True)
+    row_end: Mapped[int | None] = mapped_column(Integer(), nullable=True)
+    created_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
+
+
+class EmbeddingModel(Base):
+    """Vectors of chunks per embedding profile (ADR-017 §1); per-profile HNSW indexes are made at runtime."""
+
+    __tablename__ = "embeddings"
+    __table_args__ = (
+        CheckConstraint("dimensions BETWEEN 1 AND 4000", name="dimensions"),
+        CheckConstraint("vector_dims(embedding) = dimensions", name="embedding_dimensions"),
+        UniqueConstraint("chunk_id", "embedding_config_id"),
+        Index("ix_embeddings_config_version", "embedding_config_id", "document_version_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    chunk_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("document_chunks.id", ondelete="CASCADE"), nullable=False
+    )
+    embedding_config_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("embedding_provider_configs.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    document_version_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    data_source_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    dimensions: Mapped[int] = mapped_column(Integer(), nullable=False)
+    embedding: Mapped[Any] = mapped_column(Vector(), nullable=False)
+    created_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
+
+
+class IngestionJobModel(Base):
+    """Ingestion attempts (DATABASE_SCHEMA.md §7.1); ``idempotency_key`` makes repeats a no-op (SC-09)."""
+
+    __tablename__ = "ingestion_jobs"
+    __table_args__ = (
+        CheckConstraint("kind IN ('ingest', 'reindex', 'delete', 'purge')", name="kind"),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled', 'dead')", name="status"
+        ),
+        CheckConstraint(
+            "stage IN ('fetch', 'authorize', 'validate_type', 'security_check', 'store_original', 'parse', "
+            "'normalize', 'chunk', 'embed', 'persist', 'finalize', 'report')",
+            name="stage",
+        ),
+        CheckConstraint(
+            "result IS NULL OR result IN ('processed', 'skipped_already_processed', 'skipped_unchanged')",
+            name="result",
+        ),
+        CheckConstraint("attempt >= 0 AND max_attempts >= 1", name="attempts"),
+        CheckConstraint(f"error_code IS NULL OR error_code {_ERROR_CODE_CHECK}", name="error_code_format"),
+        CheckConstraint(
+            "error_message IS NULL OR char_length(error_message) <= 500", name="error_message_length"
+        ),
+        CheckConstraint("char_length(idempotency_key) BETWEEN 1 AND 200", name="idempotency_key_length"),
+        CheckConstraint("jsonb_typeof(progress) = 'object'", name="progress_object"),
+        UniqueConstraint("idempotency_key"),
+        Index("ix_ingestion_jobs_status", "status"),
+        Index("ix_ingestion_jobs_document_id", "document_id"),
+        Index("ix_ingestion_jobs_queued_at_id", "queued_at", "id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    document_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False
+    )
+    document_version_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("document_versions.id", ondelete="SET NULL"), nullable=True
+    )
+    kind: Mapped[str] = mapped_column(Text(), nullable=False)
+    status: Mapped[str] = mapped_column(Text(), nullable=False, server_default=text("'queued'"))
+    stage: Mapped[str] = mapped_column(Text(), nullable=False, server_default=text("'fetch'"))
+    idempotency_key: Mapped[str] = mapped_column(Text(), nullable=False)
+    result: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    attempt: Mapped[int] = mapped_column(Integer(), nullable=False, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(Integer(), nullable=False, server_default=text("5"))
+    celery_task_id: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    progress: Mapped[dict[str, Any]] = mapped_column(
+        JSONB(), nullable=False, server_default=text("'{}'::jsonb")
+    )
+    requested_by: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    queued_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
+    started_at: Mapped[datetime | None] = _ts()
+    finished_at: Mapped[datetime | None] = _ts()

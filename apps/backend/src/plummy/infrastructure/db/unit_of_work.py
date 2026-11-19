@@ -18,10 +18,13 @@ from plummy.application.ports import (
     ActivationRecord,
     ActivationTokenRepository,
     AuditLog,
+    DataSourceRepository,
     EmbeddingProfileRepository,
     EncryptedSecret,
     GroupRepository,
+    IndexingStats,
     InstanceStateRepository,
+    KnowledgeBaseRepository,
     ModelConfigRepository,
     PermissionInfo,
     ProviderRepository,
@@ -48,6 +51,7 @@ from plummy.domain.ai import (
     TestStatus,
 )
 from plummy.domain.audit import AuditEntry
+from plummy.domain.documents import DocumentStatus
 from plummy.domain.identity import (
     Group,
     InstanceState,
@@ -57,16 +61,28 @@ from plummy.domain.identity import (
     UserSession,
     UserStatus,
 )
+from plummy.domain.knowledge import (
+    DataSource,
+    DataSourceStatus,
+    DataSourceType,
+    KbAccessLevel,
+    KnowledgeBase,
+)
 from plummy.domain.secrets import SecretKind
 from plummy.infrastructure.db.base import Base
 from plummy.infrastructure.db.models import (
     ActivationTokenModel,
     AIProviderModel,
     AuditLogModel,
+    DataSourceModel,
+    DocumentModel,
     EmbeddingProfileModel,
     GroupModel,
     GroupRoleModel,
     InstanceStateModel,
+    KnowledgeBaseAccessModel,
+    KnowledgeBaseModel,
+    KnowledgeBaseSourceModel,
     ModelConfigModel,
     PermissionModel,
     RoleModel,
@@ -1045,6 +1061,171 @@ class SqlEmbeddingProfileRepository:
         return int(count or 0)
 
 
+def _knowledge_base(row: KnowledgeBaseModel) -> KnowledgeBase:
+    return KnowledgeBase(
+        id=row.id,
+        name=row.name,
+        description=row.description,
+        embedding_profile_id=row.embedding_config_id,
+        created_by=row.created_by,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+        deleted_at=row.deleted_at,
+    )
+
+
+def _groups_of(user_id: UUID) -> Select[UUID]:
+    """Non-deleted groups the user belongs to: deleting a group takes its grants away at once."""
+    return (
+        select(UserGroupModel.group_id)
+        .join(GroupModel, GroupModel.id == UserGroupModel.group_id)
+        .where(UserGroupModel.user_id == user_id, GroupModel.deleted_at.is_(None))
+    )
+
+
+class SqlKnowledgeBaseRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._db = session
+
+    async def add(self, kb: KnowledgeBase) -> None:
+        self._db.add(
+            KnowledgeBaseModel(
+                id=kb.id,
+                name=kb.name,
+                description=kb.description,
+                embedding_config_id=kb.embedding_profile_id,
+                created_by=kb.created_by,
+                created_at=kb.created_at,
+                updated_at=kb.updated_at,
+            )
+        )
+        await _flush_unique(self._db, "uq_knowledge_bases_name_active")
+
+    async def get(self, kb_id: UUID) -> KnowledgeBase | None:
+        row = await self._db.scalar(
+            select(KnowledgeBaseModel).where(
+                KnowledgeBaseModel.id == kb_id, KnowledgeBaseModel.deleted_at.is_(None)
+            )
+        )
+        return _knowledge_base(row) if row is not None else None
+
+    async def get_by_name(self, name: str) -> KnowledgeBase | None:
+        row = await self._db.scalar(
+            select(KnowledgeBaseModel).where(
+                KnowledgeBaseModel.name == name, KnowledgeBaseModel.deleted_at.is_(None)
+            )
+        )
+        return _knowledge_base(row) if row is not None else None
+
+    async def page(self, page: PageRequest, *, visible_to: UUID | None) -> Page[KnowledgeBase]:
+        statement = select(KnowledgeBaseModel).where(KnowledgeBaseModel.deleted_at.is_(None))
+        if visible_to is not None:
+            granted = select(KnowledgeBaseAccessModel.knowledge_base_id).where(
+                or_(
+                    KnowledgeBaseAccessModel.user_id == visible_to,
+                    KnowledgeBaseAccessModel.group_id.in_(_groups_of(visible_to)),
+                )
+            )
+            statement = statement.where(KnowledgeBaseModel.id.in_(granted))
+        return await _paginate(self._db, statement, KnowledgeBaseModel, page, _knowledge_base)
+
+    async def grants_of_user(self, user_id: UUID, kb_ids: list[UUID]) -> dict[UUID, list[KbAccessLevel]]:
+        if not kb_ids:
+            return {}
+        rows = await self._db.execute(
+            select(KnowledgeBaseAccessModel.knowledge_base_id, KnowledgeBaseAccessModel.access_level).where(
+                KnowledgeBaseAccessModel.knowledge_base_id.in_(kb_ids),
+                or_(
+                    KnowledgeBaseAccessModel.user_id == user_id,
+                    KnowledgeBaseAccessModel.group_id.in_(_groups_of(user_id)),
+                ),
+            )
+        )
+        grants: dict[UUID, list[KbAccessLevel]] = {}
+        for kb_id, level in rows.all():
+            grants.setdefault(kb_id, []).append(KbAccessLevel(level))
+        return grants
+
+    async def indexing_stats(self, kb_ids: list[UUID]) -> dict[UUID, IndexingStats]:
+        if not kb_ids:
+            return {}
+        rows = await self._db.execute(
+            select(KnowledgeBaseSourceModel.knowledge_base_id, DocumentModel.processing_status, func.count())
+            .join(DataSourceModel, DataSourceModel.id == KnowledgeBaseSourceModel.data_source_id)
+            .join(DocumentModel, DocumentModel.data_source_id == KnowledgeBaseSourceModel.data_source_id)
+            .where(
+                KnowledgeBaseSourceModel.knowledge_base_id.in_(kb_ids),
+                DataSourceModel.deleted_at.is_(None),
+                DocumentModel.deleted_at.is_(None),
+            )
+            .group_by(KnowledgeBaseSourceModel.knowledge_base_id, DocumentModel.processing_status)
+        )
+        counts: dict[UUID, dict[DocumentStatus, int]] = {}
+        for kb_id, status, count in rows.all():
+            counts.setdefault(kb_id, {})[DocumentStatus(status)] = int(count)
+        return {
+            kb_id: IndexingStats(
+                documents_total=sum(by_status.values()),
+                indexed=by_status.get(DocumentStatus.INDEXED, 0),
+                processing=by_status.get(DocumentStatus.PENDING, 0)
+                + by_status.get(DocumentStatus.PROCESSING, 0),
+                failed=by_status.get(DocumentStatus.FAILED, 0),
+            )
+            for kb_id, by_status in counts.items()
+        }
+
+
+def _data_source(row: DataSourceModel) -> DataSource:
+    return DataSource(
+        id=row.id,
+        type=DataSourceType(row.type),
+        name=row.name,
+        status=DataSourceStatus(row.status),
+        owner_knowledge_base_id=row.owner_knowledge_base_id,
+        created_by=row.created_by,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+        deleted_at=row.deleted_at,
+    )
+
+
+class SqlDataSourceRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._db = session
+
+    async def add(self, source: DataSource) -> None:
+        self._db.add(
+            DataSourceModel(
+                id=source.id,
+                type=str(source.type),
+                name=source.name,
+                status=str(source.status),
+                owner_knowledge_base_id=source.owner_knowledge_base_id,
+                created_by=source.created_by,
+                created_at=source.created_at,
+                updated_at=source.updated_at,
+            )
+        )
+        await self._db.flush()
+
+    async def attach(self, kb_id: UUID, source_id: UUID, *, at: datetime) -> None:
+        await self._db.execute(
+            pg_insert(KnowledgeBaseSourceModel)
+            .values(knowledge_base_id=kb_id, data_source_id=source_id, created_at=at)
+            .on_conflict_do_nothing()
+        )
+
+    async def upload_source_of(self, kb_id: UUID) -> DataSource | None:
+        row = await self._db.scalar(
+            select(DataSourceModel).where(
+                DataSourceModel.owner_knowledge_base_id == kb_id,
+                DataSourceModel.type == str(DataSourceType.UPLOAD),
+                DataSourceModel.deleted_at.is_(None),
+            )
+        )
+        return _data_source(row) if row is not None else None
+
+
 class SqlAlchemyUnitOfWork:
     users: UserRepository
     roles: RoleRepository
@@ -1056,6 +1237,8 @@ class SqlAlchemyUnitOfWork:
     providers: ProviderRepository
     models: ModelConfigRepository
     embedding_profiles: EmbeddingProfileRepository
+    knowledge_bases: KnowledgeBaseRepository
+    data_sources: DataSourceRepository
     audit: AuditLog
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
@@ -1076,6 +1259,8 @@ class SqlAlchemyUnitOfWork:
         self.providers = SqlProviderRepository(session)
         self.models = SqlModelConfigRepository(session)
         self.embedding_profiles = SqlEmbeddingProfileRepository(session)
+        self.knowledge_bases = SqlKnowledgeBaseRepository(session)
+        self.data_sources = SqlDataSourceRepository(session)
         self.audit = SqlAuditLog(session)
         return self
 

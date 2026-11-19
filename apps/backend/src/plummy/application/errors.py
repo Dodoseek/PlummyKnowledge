@@ -160,6 +160,12 @@ class EmbeddingProfileNameTakenError(ConflictError):
     code = "embedding_profile_name_taken"
 
 
+class KnowledgeBaseNameTakenError(ConflictError):
+    """Another knowledge base already has this name."""
+
+    code = "knowledge_base_name_taken"
+
+
 class ReindexRequiredError(ConflictError):
     """Changing the model or vector space of an embedding profile needs a new profile and a reindex."""
 

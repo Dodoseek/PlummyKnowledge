@@ -13,7 +13,9 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from plummy.core.config import get_settings
+from plummy.infrastructure.db import models  # noqa: F401 - registers the tables
 from plummy.infrastructure.db.base import Base
+from plummy.infrastructure.db.migrations import include_object
 
 config = context.config
 if config.config_file_name is not None:
@@ -33,13 +35,16 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
+        include_object=include_object,
     )
     with context.begin_transaction():
         context.run_migrations()
 
 
 def _run_sync_migrations(connection: Connection) -> None:
-    context.configure(connection=connection, target_metadata=target_metadata, compare_type=True)
+    context.configure(
+        connection=connection, target_metadata=target_metadata, compare_type=True, include_object=include_object
+    )
     with context.begin_transaction():
         context.run_migrations()
 

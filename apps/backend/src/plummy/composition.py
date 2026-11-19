@@ -28,6 +28,7 @@ from plummy.application.groups.use_cases import (
     UpdateGroup,
 )
 from plummy.application.health import CheckReadiness
+from plummy.application.knowledge.use_cases import CreateKnowledgeBase, GetKnowledgeBase, ListKnowledgeBases
 from plummy.application.ports import Clock, PasswordHasher, SecretCipher
 from plummy.application.providers.embedding_profiles import (
     CreateEmbeddingProfile,
@@ -161,6 +162,15 @@ class EmbeddingProfileServices:
 
 
 @dataclass(frozen=True, slots=True)
+class KnowledgeServices:
+    """Knowledge bases; access to each one is checked by the use cases."""
+
+    list: ListKnowledgeBases
+    get: GetKnowledgeBase
+    create: CreateKnowledgeBase
+
+
+@dataclass(frozen=True, slots=True)
 class AdminServices:
     """Administration use cases; each one checks the caller's permissions itself."""
 
@@ -183,6 +193,7 @@ class Resources:
     readiness: CheckReadiness
     auth: AuthServices
     admin: AdminServices
+    knowledge: KnowledgeServices
     secrets: SecretVault
     http: SafeHttpClient
     storage: LocalFileStorage
@@ -384,6 +395,9 @@ def build_resources(
         readiness=readiness,
         auth=auth,
         admin=admin,
+        knowledge=KnowledgeServices(
+            list=ListKnowledgeBases(uow), get=GetKnowledgeBase(uow), create=CreateKnowledgeBase(uow, clock)
+        ),
         secrets=vault,
         http=http,
         storage=storage,

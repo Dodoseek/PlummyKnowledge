@@ -13,6 +13,7 @@ from plummy.application.pagination import Page, PageRequest
 from plummy.domain.ai import AIProvider, EmbeddingProfile, ModelConfig, TestStatus
 from plummy.domain.audit import AuditEntry
 from plummy.domain.identity import Group, InstanceState, SessionRevokeReason, User, UserSession, UserStatus
+from plummy.domain.knowledge import DataSource, KbAccessLevel, KnowledgeBase
 from plummy.domain.secrets import SecretKind, SecretValue
 
 
@@ -400,6 +401,47 @@ class EmbeddingProfileRepository(Protocol):
     async def count_for_provider(self, provider_id: UUID) -> int: ...
 
 
+@dataclass(frozen=True, slots=True)
+class IndexingStats:
+    """Live documents of a knowledge base by processing status (API_CONTRACTS.md §4)."""
+
+    documents_total: int = 0
+    indexed: int = 0
+    processing: int = 0  # pending or processing
+    failed: int = 0
+
+
+class KnowledgeBaseRepository(Protocol):
+    """Non-deleted knowledge bases and their grants."""
+
+    async def add(self, kb: KnowledgeBase) -> None:
+        """Raises :class:`UniqueViolationError` for a taken name."""
+        ...
+
+    async def get(self, kb_id: UUID) -> KnowledgeBase | None: ...
+
+    async def get_by_name(self, name: str) -> KnowledgeBase | None: ...
+
+    async def page(self, page: PageRequest, *, visible_to: UUID | None) -> Page[KnowledgeBase]:
+        """All knowledge bases with ``visible_to=None``; otherwise those granted to the user directly or
+        through one of their non-deleted groups."""
+        ...
+
+    async def grants_of_user(self, user_id: UUID, kb_ids: list[UUID]) -> dict[UUID, list[KbAccessLevel]]:
+        """Direct and group grants of the user, per knowledge base (absent: no grant)."""
+        ...
+
+    async def indexing_stats(self, kb_ids: list[UUID]) -> dict[UUID, IndexingStats]: ...
+
+
+class DataSourceRepository(Protocol):
+    async def add(self, source: DataSource) -> None: ...
+
+    async def attach(self, kb_id: UUID, source_id: UUID, *, at: datetime) -> None: ...
+
+    async def upload_source_of(self, kb_id: UUID) -> DataSource | None: ...
+
+
 class UnitOfWork(Protocol):
     """One database transaction. Leaving the context without ``commit()`` rolls back."""
 
@@ -413,6 +455,8 @@ class UnitOfWork(Protocol):
     providers: ProviderRepository
     models: ModelConfigRepository
     embedding_profiles: EmbeddingProfileRepository
+    knowledge_bases: KnowledgeBaseRepository
+    data_sources: DataSourceRepository
     audit: AuditLog
 
     async def __aenter__(self) -> Self: ...

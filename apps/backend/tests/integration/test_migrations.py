@@ -103,10 +103,19 @@ async def test_identity_tables_are_created(migrator: Migrator, database_url: str
         "ai_providers",
         "alembic_version",
         "audit_logs",
+        "data_sources",
+        "document_chunks",
+        "document_versions",
+        "documents",
         "embedding_provider_configs",
+        "embeddings",
         "group_roles",
         "groups",
+        "ingestion_jobs",
         "instance_state",
+        "knowledge_base_access",
+        "knowledge_base_sources",
+        "knowledge_bases",
         "model_configs",
         "permissions",
         "role_permissions",
@@ -134,14 +143,26 @@ async def test_models_match_migrated_schema(migrator: Migrator, database_url: st
 
     from plummy.infrastructure.db import models  # noqa: F401 - registers the tables
     from plummy.infrastructure.db.base import Base
+    from plummy.infrastructure.db.migrations import include_object
 
     await migrator.upgrade()
     engine = create_async_engine(database_url)
     try:
         async with engine.connect() as connection:
+            # a runtime index of one embedding profile (ADR-017 §2) is not part of the migrated schema
+            await connection.execute(
+                text(
+                    "CREATE INDEX ix_embeddings_hnsw_0123456789abcdef ON embeddings "
+                    "USING hnsw ((embedding::vector(3)) vector_cosine_ops) "
+                    "WHERE embedding_config_id = '00000000-0000-0000-0000-000000000000'"
+                )
+            )
             diff = await connection.run_sync(
                 lambda sync: compare_metadata(
-                    MigrationContext.configure(sync, opts={"compare_type": True}), Base.metadata
+                    MigrationContext.configure(
+                        sync, opts={"compare_type": True, "include_object": include_object}
+                    ),
+                    Base.metadata,
                 )
             )
     finally:
