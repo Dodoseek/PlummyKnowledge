@@ -94,6 +94,7 @@ from plummy.infrastructure.redis.rate_limiter import RedisRateLimiter
 from plummy.infrastructure.security.bootstrap_store import FileBootstrapTokenStore
 from plummy.infrastructure.security.passwords import Argon2PasswordHasher
 from plummy.infrastructure.security.secret_cipher import AesGcmSecretCipher, KeyRingError, load_keyring
+from plummy.infrastructure.storage.local import LocalFileStorage, StorageCheck
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +185,7 @@ class Resources:
     admin: AdminServices
     secrets: SecretVault
     http: SafeHttpClient
+    storage: LocalFileStorage
 
     async def aclose(self) -> None:
         """Release connections. Each resource is closed even if another one fails to close."""
@@ -199,6 +201,11 @@ class Resources:
             await self.engine.dispose()
         except Exception:
             logger.exception("failed to dispose database engine")
+
+
+def create_storage(settings: Settings) -> LocalFileStorage:
+    """Document storage (ARCHITECTURE.md §8.5); only the local backend exists before Phase 11."""
+    return LocalFileStorage(settings.storage_path)
 
 
 def session_policy(settings: Settings) -> SessionPolicy:
@@ -291,12 +298,14 @@ def build_resources(
     expected_heads = get_expected_heads()
     engine = create_engine(settings)
     redis = create_redis_client(settings)
+    storage = create_storage(settings)
     readiness = CheckReadiness(
         [
             DatabaseCheck(engine),
             MigrationsCheck(engine, expected_heads),
             RedisCheck(redis),
             SecretsCheck(engine, cipher.key_ids if cipher else frozenset()),
+            StorageCheck(storage),
         ]
     )
     session_factory = create_session_factory(engine)
@@ -377,6 +386,7 @@ def build_resources(
         admin=admin,
         secrets=vault,
         http=http,
+        storage=storage,
     )
 
 

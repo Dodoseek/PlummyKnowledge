@@ -37,6 +37,12 @@ def make_keyring(directory: Path, key_id: str = "test-1") -> Path:
     return path
 
 
+def _storage_root(base: Path) -> Path:
+    root = base / "storage"
+    root.mkdir(mode=0o700, exist_ok=True)
+    return root
+
+
 def harness_settings(database_url: str, redis_url: str, bootstrap_dir: Path, **overrides: Any) -> Settings:
     values: dict[str, Any] = {
         "database_url": database_url,
@@ -46,6 +52,7 @@ def harness_settings(database_url: str, redis_url: str, bootstrap_dir: Path, **o
         # Production-like cookie (``__Host-``); explicit so the dev compose value (false) does not leak in.
         "session_cookie_secure": True,
         "secrets_keyring_file": make_keyring(bootstrap_dir.parent),
+        "storage_path": _storage_root(bootstrap_dir.parent),
     }
     values.update(overrides)
     return make_settings(**values)

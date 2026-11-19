@@ -51,6 +51,7 @@ async def test_not_ready_until_migrations_are_applied(
         "migrations": "fail",
         "redis": "ok",
         "secrets": "fail",
+        "storage": "ok",
     }
     assert after.status_code == 200
 
@@ -62,7 +63,13 @@ async def test_not_ready_when_redis_is_unreachable(migrator: Migrator, database_
         ready = await client.get("/api/v1/health/ready")
     assert live.status_code == 200  # the process itself is fine
     assert ready.status_code == 503
-    assert ready.json()["checks"] == {"database": "ok", "migrations": "ok", "redis": "fail", "secrets": "ok"}
+    assert ready.json()["checks"] == {
+        "database": "ok",
+        "migrations": "ok",
+        "redis": "fail",
+        "secrets": "ok",
+        "storage": "ok",
+    }
     assert "127.0.0.1" not in ready.text
 
 
@@ -75,6 +82,7 @@ async def test_not_ready_when_database_is_unreachable(redis_url: str) -> None:
         "migrations": "fail",
         "redis": "ok",
         "secrets": "fail",
+        "storage": "ok",
     }
 
 

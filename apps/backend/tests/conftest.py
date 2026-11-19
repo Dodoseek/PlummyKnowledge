@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import tempfile
 from collections.abc import AsyncIterator, Iterator
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -34,6 +36,9 @@ CONFIG_ENV_VARS = (
     "SESSION_COOKIE_SECURE",
     "SECRETS_KEYRING_FILE",
     "CONFIG_FILE",
+    "STORAGE_BACKEND",
+    "STORAGE_PATH",
+    "QUARANTINE_TTL",
 )
 
 DB_PASSWORD = "db-password-should-never-leak"
@@ -44,6 +49,8 @@ VALID_SECRET_KEY = "s" * 40
 TEST_PUBLIC_URL = "https://testserver"
 # Required in production. Settings validate only its presence; the composition root reads the file.
 TEST_KEYRING_PATH = "/run/secrets/plummy-keyring.json"
+# One writable storage root per test process; integration harnesses use their own tmp_path.
+TEST_STORAGE_ROOT = Path(tempfile.mkdtemp(prefix="plummy-storage-"))
 
 
 @pytest.fixture(autouse=True)
@@ -71,6 +78,7 @@ def make_settings(**overrides: Any) -> Settings:
         # Explicit, so the container's SECRETS_KEYRING_FILE does not leak into tests.
         "secrets_keyring_file": None,
         "config_file": None,
+        "storage_path": TEST_STORAGE_ROOT,
     }
     if overrides.get("app_env") == "production":
         values["secrets_keyring_file"] = TEST_KEYRING_PATH

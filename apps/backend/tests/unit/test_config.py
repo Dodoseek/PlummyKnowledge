@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -279,3 +280,35 @@ def test_empty_secret_file_is_rejected(clean_env: pytest.MonkeyPatch, tmp_path: 
     clean_env.setenv("DATABASE_URL_FILE", str(empty))
     with pytest.raises(ConfigurationError, match="DATABASE_URL_FILE: file is empty"):
         load_settings()
+
+
+def test_storage_defaults(clean_env: pytest.MonkeyPatch) -> None:
+    _set_required_env(clean_env)
+    clean_env.setenv("SECRET_KEY", VALID_SECRET_KEY)
+    settings = load_settings()
+    assert settings.storage_backend.value == "local"
+    assert settings.storage_path == Path("/var/lib/plummy/storage")
+    assert settings.quarantine_ttl == timedelta(hours=24)
+
+
+def test_storage_settings_are_read_from_environment(clean_env: pytest.MonkeyPatch) -> None:
+    _set_required_env(clean_env)
+    clean_env.setenv("STORAGE_PATH", "/srv/plummy/storage")
+    clean_env.setenv("QUARANTINE_TTL", "600")
+    settings = load_settings(app_env="test")
+    assert settings.storage_path == Path("/srv/plummy/storage")
+    assert settings.quarantine_ttl == timedelta(minutes=10)
+
+
+@pytest.mark.parametrize("ttl", ["599", "604801", "PT1M"])
+def test_quarantine_ttl_bounds(ttl: str) -> None:
+    with pytest.raises(ConfigurationError, match="QUARANTINE_TTL"):
+        make_settings(quarantine_ttl=ttl)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"), [("storage_path", "relative/storage"), ("storage_backend", "s3")]
+)
+def test_invalid_storage_settings_are_rejected(field: str, value: str) -> None:
+    with pytest.raises(ConfigurationError, match=field.upper()):
+        make_settings(**{field: value})

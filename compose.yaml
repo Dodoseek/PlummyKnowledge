@@ -30,6 +30,8 @@ x-backend-env: &backend-env
   BOOTSTRAP_DIR: /var/lib/plummy/bootstrap
   # Key ring of stored secrets (ADR-016), created by `migrate` in the secrets-data volume on first start.
   SECRETS_KEYRING_FILE: /var/lib/plummy/secrets/keyring.json
+  # Document storage (originals and quarantine), shared by the API and the workers.
+  STORAGE_PATH: /var/lib/plummy/storage
 
 services:
   postgres:
@@ -113,6 +115,7 @@ services:
       - ./apps/backend/pyproject.toml:/app/pyproject.toml:ro
       - ./VERSION:/VERSION:ro
       - secrets-data:/var/lib/plummy/secrets:ro
+      - storage-data:/var/lib/plummy/storage
     ports:
       - "127.0.0.1:8000:8000"
     networks: [data, edge]
@@ -156,6 +159,7 @@ services:
       - ./apps/backend/src:/app/src:ro
       - ./VERSION:/VERSION:ro
       - secrets-data:/var/lib/plummy/secrets:ro
+      - storage-data:/var/lib/plummy/storage
     networks: [data]
     depends_on:
       migrate:
@@ -208,3 +212,5 @@ volumes:
   bootstrap-data:
   # Development key ring only. `docker compose down -v` deletes it together with the database.
   secrets-data:
+  # Uploaded documents and quarantine (development data, deleted by `docker compose down -v`).
+  storage-data:

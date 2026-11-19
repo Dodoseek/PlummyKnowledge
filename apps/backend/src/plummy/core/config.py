@@ -38,6 +38,9 @@ MIN_BOOTSTRAP_TOKEN_TTL = timedelta(minutes=10)
 MAX_BOOTSTRAP_TOKEN_TTL = timedelta(days=30)
 
 DEFAULT_BOOTSTRAP_DIR = Path("/var/lib/plummy/bootstrap")
+DEFAULT_STORAGE_PATH = Path("/var/lib/plummy/storage")
+MIN_QUARANTINE_TTL = timedelta(minutes=10)
+MAX_QUARANTINE_TTL = timedelta(days=7)
 
 # Secret fields that may also be provided as ``<NAME>_FILE`` (path to a file with the value).
 FILE_SECRET_FIELDS: tuple[str, ...] = ("database_url", "redis_url", "secret_key")
@@ -58,6 +61,10 @@ class SetupMode(StrEnum):
 
     WEB = "web"  # setup wizard with a bootstrap token (and the CLI)
     CLI_ONLY = "cli_only"  # web initialization is disabled; only `python -m plummy.cli admin create`
+
+
+class StorageBackend(StrEnum):
+    LOCAL = "local"  # S3-compatible storage arrives with the production profile (roadmap Phase 11)
 
 
 class LogLevel(StrEnum):
@@ -158,6 +165,12 @@ class Settings(BaseSettings):
     # only public https endpoints are reachable.
     config_file: Path | None = None
 
+    # Document storage (ARCHITECTURE.md §8.5): originals and quarantine. Quarantined files older than the TTL
+    # are removed by the cleanup task.
+    storage_backend: StorageBackend = StorageBackend.LOCAL
+    storage_path: Path = DEFAULT_STORAGE_PATH
+    quarantine_ttl: timedelta = timedelta(hours=24)
+
     _secret_key_generated: bool = PrivateAttr(default=False)
 
     @classmethod
@@ -223,12 +236,28 @@ class Settings(BaseSettings):
             return None
         return _validate_origin(value.strip())
 
-    @field_validator("bootstrap_token_ttl", "session_idle_ttl", "session_absolute_ttl", mode="before")
+    @field_validator(
+        "bootstrap_token_ttl", "session_idle_ttl", "session_absolute_ttl", "quarantine_ttl", mode="before"
+    )
     @classmethod
     def _parse_seconds(cls, value: object) -> object:
         # Environment variables are strings: "86400" means seconds (ISO 8601 "PT24H" is also accepted).
         if isinstance(value, str) and value.strip().isdigit():
             return int(value.strip())
+        return value
+
+    @field_validator("quarantine_ttl")
+    @classmethod
+    def _check_quarantine_ttl(cls, value: timedelta) -> timedelta:
+        if not MIN_QUARANTINE_TTL <= value <= MAX_QUARANTINE_TTL:
+            raise ValueError("must be between 10 minutes and 7 days")
+        return value
+
+    @field_validator("storage_path")
+    @classmethod
+    def _check_storage_path(cls, value: Path) -> Path:
+        if not value.is_absolute():
+            raise ValueError("must be an absolute path")
         return value
 
     @field_validator("bootstrap_token_ttl")
@@ -313,6 +342,8 @@ class Settings(BaseSettings):
             "session_cookie_secure": self.session_cookie_secure,
             "secrets_keyring_configured": self.secrets_keyring_file is not None,
             "config_file_configured": self.config_file is not None,
+            "storage_backend": self.storage_backend.value,
+            "quarantine_ttl_seconds": int(self.quarantine_ttl.total_seconds()),
         }
 
 
