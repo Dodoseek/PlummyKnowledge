@@ -43,7 +43,10 @@ def _ts(name: str, *, nullable: bool = True, default_now: bool = False) -> sa.Co
 
 
 def _created_updated() -> list[sa.Column[object]]:
-    return [_ts("created_at", nullable=False, default_now=True), _ts("updated_at", nullable=False, default_now=True)]
+    return [
+        _ts("created_at", nullable=False, default_now=True),
+        _ts("updated_at", nullable=False, default_now=True),
+    ]
 
 
 def _ck(table: str, name: str, condition: str) -> sa.CheckConstraint:
@@ -62,7 +65,9 @@ def upgrade() -> None:
         *_created_updated(),
         _ts("deleted_at"),
         _ck("knowledge_bases", "name_length", "char_length(name) BETWEEN 1 AND 200"),
-        _ck("knowledge_bases", "description_length", "description IS NULL OR char_length(description) <= 2000"),
+        _ck(
+            "knowledge_bases", "description_length", "description IS NULL OR char_length(description) <= 2000"
+        ),
         _ck("knowledge_bases", "chunking_settings_object", "jsonb_typeof(chunking_settings) = 'object'"),
         sa.ForeignKeyConstraint(
             ["embedding_config_id"],
@@ -71,7 +76,10 @@ def upgrade() -> None:
             ondelete="RESTRICT",
         ),
         sa.ForeignKeyConstraint(
-            ["created_by"], ["users.id"], name=op.f("fk_knowledge_bases_created_by_users"), ondelete="SET NULL"
+            ["created_by"],
+            ["users.id"],
+            name=op.f("fk_knowledge_bases_created_by_users"),
+            ondelete="SET NULL",
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_knowledge_bases")),
     )
@@ -113,7 +121,10 @@ def upgrade() -> None:
             ["user_id"], ["users.id"], name=op.f("fk_knowledge_base_access_user_id_users"), ondelete="CASCADE"
         ),
         sa.ForeignKeyConstraint(
-            ["group_id"], ["groups.id"], name=op.f("fk_knowledge_base_access_group_id_groups"), ondelete="CASCADE"
+            ["group_id"],
+            ["groups.id"],
+            name=op.f("fk_knowledge_base_access_group_id_groups"),
+            ondelete="CASCADE",
         ),
         sa.ForeignKeyConstraint(
             ["granted_by"],
@@ -178,7 +189,9 @@ def upgrade() -> None:
             name=op.f("fk_knowledge_base_sources_data_source_id_data_sources"),
             ondelete="CASCADE",
         ),
-        sa.PrimaryKeyConstraint("knowledge_base_id", "data_source_id", name=op.f("pk_knowledge_base_sources")),
+        sa.PrimaryKeyConstraint(
+            "knowledge_base_id", "data_source_id", name=op.f("pk_knowledge_base_sources")
+        ),
     )
     op.create_index("ix_knowledge_base_sources_data_source_id", "knowledge_base_sources", ["data_source_id"])
 
@@ -222,7 +235,9 @@ def upgrade() -> None:
             ondelete="RESTRICT",
         ),
         sa.PrimaryKeyConstraint("id", name=op.f("pk_documents")),
-        sa.UniqueConstraint("data_source_id", "external_id", name=op.f("uq_documents_data_source_id_external_id")),
+        sa.UniqueConstraint(
+            "data_source_id", "external_id", name=op.f("uq_documents_data_source_id_external_id")
+        ),
     )
     op.create_index(
         "ix_documents_data_source_id_created_at_id", "documents", ["data_source_id", "created_at", "id"]
@@ -266,7 +281,9 @@ def upgrade() -> None:
             "status",
             "status IN ('pending', 'processing', 'ready', 'failed', 'outdated', 'deleted')",
         ),
-        _ck("document_versions", "error_code_format", f"error_code IS NULL OR error_code {ERROR_CODE_FORMAT}"),
+        _ck(
+            "document_versions", "error_code_format", f"error_code IS NULL OR error_code {ERROR_CODE_FORMAT}"
+        ),
         _ck(
             "document_versions",
             "error_message_length",
@@ -324,7 +341,11 @@ def upgrade() -> None:
         _ck("document_chunks", "chunk_index", "chunk_index >= 0"),
         _ck("document_chunks", "content_hash_length", "octet_length(content_hash) = 32"),
         _ck("document_chunks", "token_count", "token_count >= 0"),
-        _ck("document_chunks", "page_range", "page_start IS NULL OR page_end IS NULL OR page_start <= page_end"),
+        _ck(
+            "document_chunks",
+            "page_range",
+            "page_start IS NULL OR page_end IS NULL OR page_start <= page_end",
+        ),
         _ck("document_chunks", "row_range", "row_start IS NULL OR row_end IS NULL OR row_start <= row_end"),
         sa.ForeignKeyConstraint(
             ["document_id"],
@@ -459,7 +480,9 @@ def downgrade() -> None:
     op.drop_table("ingestion_jobs")
     op.drop_table("embeddings")
     op.drop_table("document_chunks")
-    op.drop_constraint(op.f("fk_documents_current_version_id_document_versions"), "documents", type_="foreignkey")
+    op.drop_constraint(
+        op.f("fk_documents_current_version_id_document_versions"), "documents", type_="foreignkey"
+    )
     op.drop_table("document_versions")
     op.drop_table("documents")
     op.drop_table("knowledge_base_sources")
