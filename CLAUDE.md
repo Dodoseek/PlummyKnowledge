@@ -11,8 +11,8 @@ PlummyKnowledge — open-source **self-hosted** платформа корпор�
 Лицензия — Apache License 2.0. Одна инсталляция принадлежит **одной** организации и работает на её серверах или в её
 облаке: multi-tenancy, сущности Organization и `organization_id` нет ([ADR-012](docs/adr/0012-single-organization-deployment.md)).
 
-**Текущее состояние:** Фазы 1–5 roadmap завершены (Foundation, Bootstrap & Authentication, Users & RBAC, AI providers
-& network policy, Local document ingestion). Backend:
+**Текущее состояние:** Фазы 1–6 roadmap завершены (Foundation, Bootstrap & Authentication, Users & RBAC, AI providers
+& network policy, Local document ingestion, Retrieval & RAG evaluation). Backend:
 FastAPI, Pydantic Settings, SQLAlchemy async, Alembic (`vector`/`citext`, users, activation tokens, groups,
 RBAC-каталог и назначения ролей, sessions, audit_logs), Redis (rate limit, брокер Celery), health live/ready; Celery
 worker с диагностической задачей; первоначальная настройка по bootstrap token и CLI `python -m plummy.cli`;
@@ -29,7 +29,10 @@ local storage с quarantine, KB с источником `upload`, upload док�
 переключение версии), API `knowledge-bases`, `documents`, `jobs`, удаление с purge, Celery beat `scheduler`.
 Frontend: React 18, Chakra UI, RTK Query, страницы `/setup`, `/login`, `/activate`, `/account`, `/admin/users`,
 `/admin/groups`, `/admin/providers`, `/admin/embedding-profiles`, `/knowledge-bases`, `/knowledge-bases/:id`, guard,
-выход. CI (GitHub Actions), pre-commit (secret scan, lint), Dependabot. Application Settings, retrieval, assistants,
+выход. CI (GitHub Actions), pre-commit (secret scan, lint), Dependabot. Фаза 6: FTS ([ADR-018](docs/adr/0018-full-text-search-configuration.md), миграции `0011`/`0012`),
+hybrid retrieval (`application/retrieval`: vector + FTS, RRF, dedup, бюджет), context assembly и citation IDs
+`c1…cn` с потоковой валидацией, `POST /knowledge-bases/{id}/search` и поиск на странице KB, evaluation
+(`synthetic-v1`, `eval run`, baseline — [docs/evaluation/](docs/evaluation/README.md)). Application Settings, assistants,
 chat, Nginx и prod-compose ещё нет ([DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md)).
 Не начинать Google OAuth, Microsoft Graph и сложный RAG до стабильного запуска каркаса.
 

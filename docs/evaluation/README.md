@@ -69,3 +69,28 @@ JSON: набор (имя, fingerprint, число документов и воп
 режима — `summary` (Recall/MRR/nDCG по `all` и тегам), средняя длительность запроса и результаты по вопросам
 (id, теги, метрики, ранг первого релевантного chunk, имена файлов в выдаче). Текст документов и вопросов в
 отчёт **не** попадает.
+
+## Baseline
+
+[baseline-2026-11.md](baseline-2026-11.md) — первый прогон на `bge-m3` в локальном Ollama, вместе с отчётом
+[`synthetic-v1-bge-m3-baseline.json`](synthetic-v1-bge-m3-baseline.json). Изменения retrieval (параметры fusion,
+FTS, chunking, embedding profile) сравниваются с ним повторным прогоном.
+
+Воспроизведение на машине разработчика (Docker Desktop, модель на хосте; бесплатно, без внешних запросов):
+
+1. `ollama serve` и `ollama pull bge-m3` (≈ 1,2 ГБ).
+2. Файл Instance Settings с allowlist и `CONFIG_FILE` для `backend` и `worker` (например, через отдельный
+   compose override, не коммитится):
+
+   ```toml
+   [[network.allowlist]]
+   name           = "local-ollama"
+   url            = "http://host.docker.internal:11434"
+   purposes       = ["embedding"]
+   provider_types = ["ollama"]
+   allowed_cidrs  = ["192.168.65.254/32"]   # адрес host.docker.internal в Docker Desktop; проверить в контейнере
+   ```
+
+3. Провайдер `ollama` с `base_url` `http://host.docker.internal:11434` и embedding profile `bge-m3`, 1024
+   измерения, cosine; connection test профиля должен пройти.
+4. `eval run` с id этого профиля (раздел «Запуск»).

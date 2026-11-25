@@ -494,6 +494,21 @@ sequenceDiagram
 8. Генерацию можно остановить (§5): отмена закрывает поток провайдера через `CancellationToken`, сообщение
    сохраняется со статусом `stopped`.
 
+**Реализовано в фазе 6** (без генерации — она в фазе 8):
+
+- `application/retrieval`: `RetrieveChunks` — нормализация запроса (NFC, 1–1000 символов), авторизация каждой KB
+  (`read`) и вычисление источников **до** embedding; KB с разными embedding profiles вместе не ищутся
+  (`mixed_embedding_profiles`). Ветки: vector (`infrastructure/db/retrieval.py`, выражение и предикат partial
+  HNSW-индекса [ADR-017](adr/0017-vector-storage.md); точный перебор при < 10 000 кандидатов, иначе iterative
+  scan) и FTS (совпадение по любому слову: `plainto_tsquery` с `&` → `|`, ранжирование `ts_rank`,
+  [ADR-018](adr/0018-full-text-search-configuration.md) §3; запрос из одних стоп-слов пропускает FTS). Далее RRF (`k = 60`), dedup по `content_hash`, top-k и бюджет
+  токенов (по умолчанию 8 chunks, 40 кандидатов на ветку, 8000 токенов). Текст запроса не логируется.
+- `application/retrieval/context.py`: `CitationRegistry` (`c1…cn` только для отобранных chunks),
+  `build_chat_request` (system rules первыми, chunks — только в `ChatRequest.context`, который адаптеры
+  экранируют в блоке `<documents>`), `CitationFilter` для потока ответа (API_CONTRACTS §3.4).
+- `POST /api/v1/knowledge-bases/{id}/search` — retrieval без генерации для пользователей с `read`.
+- Оценка качества — [docs/evaluation/](evaluation/README.md) (`python -m plummy.cli eval run`).
+
 **[Proposed] Генерация выполняется в процессе API** (стриминг токенов — I/O-bound, не «долгая операция» в смысле
 §11), с жёстким timeout и лимитом одновременных генераций на пользователя (§8 п.5). Альтернатива — генерация в
 worker с ретрансляцией через Redis pub/sub — требует ADR.

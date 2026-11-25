@@ -512,7 +512,7 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_embeddings_hnsw_<profile_id_hex>
 эти индексы игнорирует. Запрос обязан использовать то же выражение и предикат, что и индекс, с литералами UUID и
 размерности из записи профиля.
 
-### 5.11 Правила retrieval на уровне данных (§6, §9)
+### 5.11 Правила retrieval на уровне данных (§6, §9) — реализовано (фаза 6)
 
 Retrieval-запрос (vector и FTS-ветки) обязан содержать **все** условия:
 
@@ -526,7 +526,12 @@ WHERE c.data_source_id = ANY(:allowed_source_ids)       -- источники KB
 ```
 
 `allowed_source_ids` вычисляется policy service до запроса (§8 п.2): источники KB ассистента ∩ источники KB,
-доступных пользователю ([ADR-005](adr/0005-assistant-access-model.md)). Значения от клиента в расчёте не участвуют. **[Proposed — ADR «PostgreSQL RLS» (планируется)]** PostgreSQL Row
+доступных пользователю ([ADR-005](adr/0005-assistant-access-model.md)). Значения от клиента в расчёте не участвуют. Реализация —
+`infrastructure/db/retrieval.py`: обе ветки дополнительно проверяют `d.data_source_id = ANY(:allowed_source_ids)`,
+vector-ветка повторяет предикат partial-индекса (`e.embedding_config_id = '<profile>'`, [ADR-017](adr/0017-vector-storage.md)),
+FTS-ветка — `c.search_vector @@ <tsquery>`, где `<tsquery>` — `plainto_tsquery('russian', :query)` с OR между
+словами ([ADR-018](adr/0018-full-text-search-configuration.md) §3).
+Пост-фильтрации нет: chunk вне scope не возвращается, не ранжируется и не считается. **[Proposed — ADR «PostgreSQL RLS» (планируется)]** PostgreSQL Row
 Level Security по доступным KB как второй рубеж (нужна ли — решается в Фазе 12).
 
 ---

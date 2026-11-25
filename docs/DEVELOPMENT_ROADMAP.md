@@ -147,6 +147,17 @@ security gate (проверки безопасности **внутри** фаз
 - **Предварительно:** ADR «FTS-конфигурация».
 - **Security gate:** unauthorized chunks не попадают в LLM; выдуманные citation IDs отклоняются; SC-08.
 - **Выход:** метрики evaluation зафиксированы как baseline.
+- *(Текущее состояние: **фаза реализована** (6.0–6.6). FTS — [ADR-018](adr/0018-full-text-search-configuration.md)
+  (поправка §3 по итогам baseline: совпадение по любому слову, `ts_rank`), миграции `0011`/`0012`. Hybrid
+  retrieval (`RetrieveChunks`): авторизация KB до embedding, фильтры §5.11 в SQL обеих веток, RRF, dedup, бюджет;
+  context assembly и citation IDs `c1…cn` с потоковой валидацией; SC-08 — детерминированные тесты prompt layout.
+  `POST /knowledge-bases/{id}/search` и поиск на странице KB. Evaluation: набор `synthetic-v1` (36 документов,
+  87 вопросов), Recall@K/MRR/nDCG, `python -m plummy.cli eval run`; baseline на `bge-m3` (Ollama) —
+  [docs/evaluation/baseline-2026-11.md](evaluation/baseline-2026-11.md): vector R@10 0,99 / MRR 0,89, hybrid
+  R@10 0,99 / MRR 0,81, keyword R@10 0,94 / MRR 0,70. **Отклонения от плана:** citation precision и прочие
+  метрики генерации перенесены в harness Фазы 8 (нужны ответы LLM); равновесный RRF уступает vector в top-1 —
+  решение по весам fusion/режиму по умолчанию не принято; rate limit поиска — новый профиль `search`
+  **[Proposed]**.)*
 
 ### Фаза 7 — Knowledge Bases и Assistants (§13, ADR-005)
 
