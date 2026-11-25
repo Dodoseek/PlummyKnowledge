@@ -169,7 +169,8 @@ API и worker запускаются независимо (§11). Healthcheck и
 plummy-knowledge/
 ├── apps/
 │   ├── backend/
-│   └── frontend/
+│   ├── frontend/
+│   └── e2e/                      # Playwright (compose.e2e.yaml, фейковый провайдер — deploy/e2e)
 ├── packages/
 │   ├── ai-providers/
 │   ├── document-processing/
@@ -242,6 +243,8 @@ apps/frontend/src/
 ├── app/                          # providers (Redux, Chakra), store, routes, theme
 ├── shared/                       # api (baseApi RTK Query, нормализация ошибок), config (env), components
 ├── features/health/              # healthApi (readiness), SystemStatusCard
+├── features/chat/                # /chat: SSE-клиент (sse.ts, chatStream.ts), useChatTurn, Markdown ответа
+├── features/viewer/              # /viewer: защищённый просмотр цитируемого фрагмента
 ├── layouts/, pages/              # AppLayout; Home, NotFound, RouteError
 └── test/                         # setup и утилиты Vitest
 ```
@@ -609,10 +612,20 @@ sequenceDiagram
 - Setup wizard работает только при `GET /setup/status = uninitialized`, но решение о допуске принимает backend
   (ADR-006). System Settings: настройки приложения (редактирование) и настройки инсталляции (только чтение для
   Administrator).
-- SSE-клиент с типизированными событиями и остановкой генерации (§13 Фаза 8). Поскольку отправка сообщения —
-  `POST`, используется `fetch` + чтение `ReadableStream` (нативный `EventSource` поддерживает только `GET`).
-- Citation display и защищённый in-app viewer — открываются через internal viewer route, а не внешнюю ссылку
-  Drive/SharePoint (§5).
+- SSE-клиент с типизированными событиями и остановкой генерации (§13 Фаза 8, реализовано). Поскольку отправка
+  сообщения — `POST` с CSRF-заголовком, используется `fetch` + чтение `ReadableStream` (нативный `EventSource`
+  поддерживает только `GET`): инкрементальный парсер `text/event-stream` (`features/chat/sse.ts`), события
+  `message_start`/`token`/`citation`/`message_complete`/`error`, heartbeat-комментарии пропускаются. Уход со
+  страницы или из диалога прерывает запрос (`AbortController`) — backend останавливает генерацию и сохраняет
+  частичный ответ ([ADR-019](adr/0019-answer-generation-in-api-process.md)); кнопка Stop — `POST /chat/runs/{id}/stop`.
+  Новый диалог получает адрес `/chat/{id}` по `message_start` без перемонтирования страницы (один маршрут
+  `chat/:conversationId?`). Session ID и CSRF-токен не попадают в `localStorage`.
+- Ответ модели — Markdown (`react-markdown` + `remark-gfm`): сырой HTML отбрасывается (`skipHtml`), изображения не
+  загружаются (вместо них ссылка), ссылки — только http(s), `target="_blank"`, `rel="noopener noreferrer nofollow"` и
+  домен рядом; маркеры `[cN]` становятся ссылками на viewer только для цитат, выданных backend.
+- Citation display и защищённый in-app viewer — открываются через internal viewer route
+  `/viewer/documents/{id}/versions/{vid}?chunk={cid}`, а не внешнюю ссылку Drive/SharePoint (§5); маршрут строится
+  из проверенных UUID, текст документа показывается только как текст, backend проверяет доступ на каждом открытии.
 - Loading/error/empty states и accessibility обязательны (§13 Фаза 8).
 - Frontend **не является security boundary** (§5): скрытие кнопок — UX, не защита.
 - **[Proposed]** Типы DTO генерируются из OpenAPI-схемы FastAPI, чтобы контракт не расходился.
@@ -624,7 +637,7 @@ sequenceDiagram
 | Unit | Permissions, chunking, citation validation, domain rules |
 | Integration | PostgreSQL/pgvector, Redis, storage, provider adapters |
 | Contract | AI providers и connectors (общий набор тестов на каждый адаптер) |
-| E2E | Основные пользовательские сценарии (Playwright) |
+| E2E | Основные пользовательские сценарии (Playwright, `apps/e2e`): отдельный Compose-проект `compose.e2e.yaml` без опубликованных портов, фейковый OpenAI-compatible провайдер в allowlist тестового `CONFIG_FILE`; login → вопрос → ответ с цитатой → viewer, stop, SC-01 из браузера |
 | Security | Изоляция KB и пользователей, RBAC, sessions/CSRF, SSRF, uploads, prompt injection |
 | Performance | Retrieval, ingestion, concurrent chat |
 | Recovery | Backup restore, worker restart, interrupted sync |

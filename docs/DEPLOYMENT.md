@@ -99,6 +99,23 @@ docker compose run --rm migrate cat /var/lib/plummy/bootstrap/setup-token
 Повторные `up` действующий токен не меняют; после настройки `init-token` ничего не выпускает и удаляет файл.
 Полный сброс локальной инсталляции — `docker compose down -v` (удаляет все данные разработки).
 
+**E2E-стек (Playwright, Фаза 8).** `compose.e2e.yaml` накладывается на `compose.yaml` в отдельном проекте
+`plummy-e2e`: порты не публикуются (стек работает рядом с dev-стеком), фейковый OpenAI-compatible провайдер
+`fake-llm` (`deploy/e2e/fake_llm.py`, только stdlib) живёт во внутренней сети `llm` с фиксированной подсетью, и
+backend/worker достигают его только через запись allowlist в тестовом `CONFIG_FILE` (`deploy/e2e/plummy.toml`,
+[ADR-007](adr/0007-network-access-and-local-llm.md)). `worker-ingestion` собирается из образа `dev` (тесты
+загружают Markdown; Docling проверяет job CI «Ingestion»). Раннер `e2e` (образ Playwright) работает в сетевом
+пространстве `frontend`, поэтому браузер открывает доверенный origin `http://localhost:5173`; том bootstrap
+смонтирован ему только для чтения — global setup создаёт первого администратора на свежем стеке. Всё это —
+тестовая инфраструктура, в production не используется.
+
+```bash
+export COMPOSE_PROJECT_NAME=plummy-e2e COMPOSE_FILE=compose.yaml:compose.e2e.yaml COMPOSE_PROFILES=e2e
+docker compose up --build --detach --wait backend worker worker-ingestion scheduler frontend fake-llm
+docker compose run --rm -T e2e
+docker compose down --volumes
+```
+
 ## 1. Модель развёртывания
 
 - Docker + Docker Compose + Nginx (§3). Один хост для MVP; API и worker масштабируются независимо (§11).

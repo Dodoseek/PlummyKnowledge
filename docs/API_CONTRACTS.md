@@ -747,6 +747,8 @@ instructions.
 ассистентом, которым нельзя пользоваться сейчас (ADR-005; `disabled` — и для `assistants.manage`), → `404`. Название
 по умолчанию — `New conversation`; первое сообщение в новом диалоге задаёт название из начала вопроса (§3). История
 своего диалога читается и после потери доступа к ассистенту; `assistant.available` показывает, можно ли продолжить.
+Ответы группы — `Cache-Control: no-store`; `POST`/`PATCH`/`DELETE` требуют `X-CSRF-Token` и доверенный `Origin`
+(`403 csrf_failed`), как и `POST /chat/stream` и stop.
 
 ```jsonc
 // Conversation

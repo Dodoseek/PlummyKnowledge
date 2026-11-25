@@ -451,7 +451,11 @@ OpenAI/Anthropic). Полный алгоритм — в ADR-007; здесь — 
   стили Chakra UI/emotion требуют nonce или `style-src 'self' 'unsafe-inline'` — решить при реализации),
   `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Permissions-Policy`, `Cross-Origin-Opener-Policy: same-origin`.
 - **XSS:** React-экранирование по умолчанию; `dangerouslySetInnerHTML` запрещён без санитизации; содержимое
-  документов и ответы модели рендерятся как недоверенные данные.
+  документов и ответы модели рендерятся как недоверенные данные. Реализовано (Фаза 8): ответ — Markdown без сырого
+  HTML; изображения из ответа не загружаются (утечка данных через URL), остаётся ссылка; ссылки только http(s) с
+  `rel="noopener noreferrer nofollow"` и показом домена; `javascript:`/`data:`/`mailto:` и прочие схемы — текст;
+  ссылки на источники строятся из UUID цитат, выданных backend; текст документа в viewer — только текст
+  (`AnswerMarkdown.test.tsx`, `viewer.test.tsx`). CSP — вместе с Nginx (Фаза 11).
 - **CORS:** same-origin; при необходимости — явный allowlist origins, никогда `*` вместе с credentials.
 - **Session theft:** HttpOnly cookies, хэш токена в БД, idle и абсолютный срок, немедленный отзыв, новая сессия при входе (ADR-013).
 
@@ -536,14 +540,20 @@ OpenAI/Anthropic). Полный алгоритм — в ADR-007; здесь — 
 
 Негативные тесты обязательны:
 
-- [ ] KB / документ без доступа и чужой диалог недоступны;
-- [ ] unauthorized chunks не попадают в LLM;
+- [x] KB / документ без доступа и чужой диалог недоступны (Фазы 5–8: SC-05, `test_source_viewer.py`,
+  `test_conversations_api.py`, `test_chat_stream.py`, E2E `access.spec.ts`/`chat.spec.ts`);
+- [x] unauthorized chunks не попадают в LLM (Фазы 6–8: `test_retrieval.py`, `test_chat_stream.py`, E2E — журнал
+  запросов фейкового провайдера);
 - [x] revoked sessions отклоняются (Фаза 3);
 - [x] secrets не возвращаются (Фаза 4: API провайдеров, frontend store и storage);
-- [ ] malicious filenames не выходят из storage;
-- [ ] повторные jobs не дублируют chunks;
-- [ ] deleted docs не находятся;
-- [ ] выдуманные citation IDs отклоняются.
+- [x] malicious filenames не выходят из storage (Фаза 5: `test_local_storage.py`, `test_file_inspection.py`);
+- [x] повторные jobs не дублируют chunks (Фаза 5: SC-09, `test_indexing.py`);
+- [x] deleted docs не находятся (Фаза 5–6: `test_retrieval.py`, viewer);
+- [x] выдуманные citation IDs отклоняются (Фазы 6, 8: потоковый фильтр, `test_chat_stream.py`, E2E).
+
+Security gate Фазы 8 — `test_chat_security_gate.py`: CSRF-токен и доверенный `Origin` на каждом изменяющем запросе
+чата (поток, stop, rename, delete), отказ не занимает слот генерации и лимит, приватные ответы с `no-store`, текст
+вопроса, ответа и документов не попадает в логи.
 
 Плюс категории (§12): изоляция данных KB и пользователей, RBAC, SSRF, uploads, prompt injection; recovery: backup restore, worker
 restart, interrupted sync.

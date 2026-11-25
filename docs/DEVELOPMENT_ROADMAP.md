@@ -4,7 +4,7 @@
 |---|---|
 | Статус | v0.1 |
 | Источник | [PROJECT_BLUEPRINT.md](PROJECT_BLUEPRINT.md) §13, §19, §21, §22 |
-| Решения | [ADR-001…016](adr/README.md) |
+| Решения | [ADR-001…019](adr/README.md) |
 | Связанные документы | [PRODUCT_SPEC.md](PRODUCT_SPEC.md), [ARCHITECTURE.md](ARCHITECTURE.md), [SECURITY_MODEL.md](SECURITY_MODEL.md) |
 
 Последовательность фаз 0–13 взята из blueprint без изменений. Документ добавляет к каждой фазе решения ADR-005…008,
@@ -191,6 +191,22 @@ security gate (проверки безопасности **внутри** фаз
   CSRF; viewer повторно проверяет доступ; E2E для SC-01.
 - **Выход:** вертикальный сценарий §22 работает end-to-end → **релиз 0.1.0** (вместе с минимальным open-source
   пакетом, см. §3).
+- *(Текущее состояние: **фаза реализована** (8.0–8.7), релиз 0.1.0 — по решению владельца. ADR-019: генерация в
+  процессе API, Redis-семафор (2 генерации на пользователя), stop-флаг, жёсткий таймаут, heartbeat, разрыв
+  соединения сохраняет ответ как `stopped`; миграция `0014` (диалоги, сообщения, цитаты, generation runs).
+  API: `/conversations` (список, карточка, история, rename, delete с purge), `POST /chat/stream` (SSE, ADR-005 на
+  каждом сообщении, потоковый фильтр citation IDs), `POST /chat/runs/{id}/stop`, viewer
+  `GET /documents/{id}/versions/{vid}/chunks/{cid}/view` (±2 фрагмента, повторная проверка доступа), sweep
+  зависших ответов в `scheduler`. Frontend: `/chat` (fetch + `ReadableStream`, Stop, карточки цитат, история),
+  `/viewer`, ссылка «Chat», «Start chat» на странице ассистентов; Markdown ответа без сырого HTML и без загрузки
+  изображений. E2E: `apps/e2e` (Playwright) на `compose.e2e.yaml` с фейковым OpenAI-compatible провайдером,
+  job CI «E2E». Security gate: XSS — Vitest `AnswerMarkdown.test.tsx`/`viewer.test.tsx`; CSRF/Origin, `no-store`,
+  отсутствие текста диалога в логах — `test_chat_security_gate.py`; viewer — `test_source_viewer.py`; SC-01 из
+  браузера — `apps/e2e/tests/access.spec.ts`. **Отложено:** метрики качества генерации (citation precision,
+  groundedness) — нужен отдельный harness с настоящей моделью; `Idempotency-Key`; audit `document.viewed` и
+  отдельный rate limit viewer; формальный аудит accessibility; CSP и Nginx — Фаза 11. Snippet цитаты и имя
+  удалённого ассистента остаются в истории диалога после потери доступа (сам фрагмент открывается только при
+  доступе).)*
 
 ### Фаза 9 — Google Drive (§13)
 

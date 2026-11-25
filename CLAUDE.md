@@ -11,8 +11,9 @@ PlummyKnowledge — open-source **self-hosted** платформа корпор�
 Лицензия — Apache License 2.0. Одна инсталляция принадлежит **одной** организации и работает на её серверах или в её
 облаке: multi-tenancy, сущности Organization и `organization_id` нет ([ADR-012](docs/adr/0012-single-organization-deployment.md)).
 
-**Текущее состояние:** Фазы 1–7 roadmap завершены (Foundation, Bootstrap & Authentication, Users & RBAC, AI providers
-& network policy, Local document ingestion, Retrieval & RAG evaluation, Knowledge Bases & Assistants). Backend:
+**Текущее состояние:** Фазы 1–8 roadmap завершены (Foundation, Bootstrap & Authentication, Users & RBAC, AI providers
+& network policy, Local document ingestion, Retrieval & RAG evaluation, Knowledge Bases & Assistants, Chat UI &
+streaming); релиз 0.1.0 — по решению владельца. Backend:
 FastAPI, Pydantic Settings, SQLAlchemy async, Alembic (`vector`/`citext`, users, activation tokens, groups,
 RBAC-каталог и назначения ролей, sessions, audit_logs), Redis (rate limit, брокер Celery), health live/ready; Celery
 worker с диагностической задачей; первоначальная настройка по bootstrap token и CLI `python -m plummy.cli`;
@@ -29,14 +30,18 @@ local storage с quarantine, KB с источником `upload`, upload док�
 переключение версии), API `knowledge-bases`, `documents`, `jobs`, удаление с purge, Celery beat `scheduler`.
 Frontend: React 18, Chakra UI, RTK Query, страницы `/setup`, `/login`, `/activate`, `/account`, `/admin/users`,
 `/admin/groups`, `/admin/providers`, `/admin/embedding-profiles`, `/admin/assistants`, `/assistants`, `/knowledge-bases`,
-`/knowledge-bases/:id`, guard, выход.
+`/knowledge-bases/:id`, `/chat`, `/viewer`, guard, выход.
 CI (GitHub Actions), pre-commit (secret scan, lint), Dependabot. Фаза 6: FTS ([ADR-018](docs/adr/0018-full-text-search-configuration.md), миграции `0011`/`0012`),
 hybrid retrieval (`application/retrieval`: vector + FTS, RRF, dedup, бюджет), context assembly и citation IDs
 `c1…cn` с потоковой валидацией, `POST /knowledge-bases/{id}/search` и поиск на странице KB, evaluation
 (`synthetic-v1`, `eval run`, baseline — [docs/evaluation/](docs/evaluation/README.md)). Фаза 7: управление KB (`PATCH`,
 `DELETE` с purge, `/access`, `/reindex`), миграция `0013` и ассистенты с политикой доступа ADR-005
 (`application/assistants/access.py`), CRUD `/assistants` с `availability`, страницы `/admin/assistants` и `/assistants`.
-Application Settings, chat, Nginx и prod-compose ещё нет ([DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md)).
+Фаза 8: генерация в процессе API ([ADR-019](docs/adr/0019-answer-generation-in-api-process.md): Redis-семафор,
+stop-флаг, таймаут, heartbeat), миграция `0014`, `/conversations`, `POST /chat/stream` (SSE) и stop, viewer
+`…/chunks/{cid}/view`, страницы `/chat` и `/viewer` (Markdown без сырого HTML и внешних изображений), E2E на
+Playwright (`apps/e2e`, `compose.e2e.yaml`). Application Settings, Nginx/CSP и prod-compose ещё нет
+([DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md)).
 Не начинать Google OAuth, Microsoft Graph и сложный RAG до стабильного запуска каркаса.
 
 ## Приоритет источников
