@@ -148,7 +148,7 @@ security gate (проверки безопасности **внутри** фаз
 - **Security gate:** unauthorized chunks не попадают в LLM; выдуманные citation IDs отклоняются; SC-08.
 - **Выход:** метрики evaluation зафиксированы как baseline.
 - *(Текущее состояние: **фаза реализована** (6.0–6.6). FTS — [ADR-018](adr/0018-full-text-search-configuration.md)
-  (поправка §3 по итогам baseline: совпадение по любому слову, `ts_rank`), миграции `0011`/`0012`. Hybrid
+  (поправка §3 по итогам baseline, утверждена: совпадение по любому слову, `ts_rank`), миграции `0011`/`0012`. Hybrid
   retrieval (`RetrieveChunks`): авторизация KB до embedding, фильтры §5.11 в SQL обеих веток, RRF, dedup, бюджет;
   context assembly и citation IDs `c1…cn` с потоковой валидацией; SC-08 — детерминированные тесты prompt layout.
   `POST /knowledge-bases/{id}/search` и поиск на странице KB. Evaluation: набор `synthetic-v1` (36 документов,

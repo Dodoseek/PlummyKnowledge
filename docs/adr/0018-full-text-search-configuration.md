@@ -1,7 +1,7 @@
 # ADR-018: Full-Text Search Configuration
 
 - **Status:** Accepted
-- **Date:** 2026-11-25 (поправка §3 — 2026-11-25)
+- **Date:** 2026-11-25 (поправка §3 — 2026-11-25, утверждена владельцем проекта 2026-11-25)
 
 ## Context
 
@@ -55,7 +55,7 @@ CREATE INDEX CONCURRENTLY ix_document_chunks_search_vector ON document_chunks US
   продолжается по vector-ветке.
 - В запросе обязательны все фильтры доступа и версий §5.11; фильтр `search_vector @@ query` использует GIN-индекс.
 
-### 3. Поправка 2026-11-25 (baseline evaluation Фазы 6)
+### 3. Поправка 2026-11-25 (baseline evaluation Фазы 6) — утверждена
 
 Baseline на наборе `synthetic-v1` ([docs/evaluation/](../evaluation/README.md)) показал, что AND-семантика
 `websearch_to_tsquery` делает FTS-ветку бесполезной для вопросов на естественном языке: chunk должен содержать
