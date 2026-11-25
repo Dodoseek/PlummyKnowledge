@@ -557,6 +557,8 @@ UI обязан показывать **фактические** `granted_scopes`
 ```
 
 `score` — RRF-оценка (сумма `1/(60 + rank)` по веткам), `vector_rank`/`keyword_rank` — место в ветке или `null`.
+Keyword-ветка ищет по **любому** слову запроса (стемминг русского и английского, операторы и кавычки — обычные
+символы, [ADR-018](adr/0018-full-text-search-configuration.md) §3).
 Одинаковый текст (`content_hash`) возвращается один раз. `keyword_query_empty: true` — запрос состоит только из
 стоп-слов, работала лишь векторная ветка. Ошибки: `404` (нет KB или доступа), `422 validation_error` (`body.query`:
 `empty_query`, `query_too_long`; `body.top_k`, `body.mode`), `409 embedding_unavailable` (профиль выведен из

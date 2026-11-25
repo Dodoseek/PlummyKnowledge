@@ -394,3 +394,30 @@ async def test_invalid_queries(env: Env, corpus: dict[str, Any]) -> None:
         await search(manager, [], "отпуск")
     with pytest.raises(NotFoundError):
         await search(manager, [str(uuid4())], "отпуск")
+
+
+async def test_keyword_branch_matches_any_term_and_ranks_more_terms_first(
+    env: Env, corpus: dict[str, Any]
+) -> None:
+    manager = context(corpus["admin"].user_id, "knowledge_bases.manage")
+    search = Retriever(env, corpus["embedder"])
+    # A natural question: most of its words are in no chunk, yet the chunk with "перенести", "дней" and
+    # "отпуска" is found, ahead of chunks that share fewer terms.
+    result = await search(
+        manager,
+        [env.kb_id],
+        "Сколько дней отпуска разрешено перенести на будущий год?",
+        mode=SearchMode.KEYWORD,
+    )
+    assert "перенести" in result.chunks[0].hit.content
+    assert len(result.chunks) >= 2  # the other leave chunk shares "дней" / "отпуска"
+
+
+async def test_keyword_operators_are_plain_words(env: Env, corpus: dict[str, Any]) -> None:
+    manager = context(corpus["admin"].user_id, "knowledge_bases.manage")
+    search = Retriever(env, corpus["embedder"])
+    # "-" is not an exclusion and quotes are not a phrase: both still find the leave policy.
+    for query in ("-отпуск", '"отпуск год" OR !перенос', "отпуск & | ! <-> ( ) :*"):
+        result = await search(manager, [env.kb_id], query, mode=SearchMode.KEYWORD)
+        assert "leave.md" in files(result), query
+        assert "expenses.md" not in files(result), query

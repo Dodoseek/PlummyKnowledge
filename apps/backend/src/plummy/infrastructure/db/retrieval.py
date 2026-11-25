@@ -9,6 +9,12 @@ profile UUID and dimensions are literals from the stored, validated profile; the
 source ids are parameters). With few candidates an exact scan is cheaper and exact, so the index is turned
 off for that statement; otherwise an iterative index scan keeps filtering from starving the result, and the
 candidates are sorted again by exact distance.
+
+The keyword branch matches **any** term of the query (ADR-018, amendment of the evaluation baseline): the
+query is parsed with ``plainto_tsquery`` (no operator syntax: quotes, ``-``, ``or`` are plain words) and its
+``&`` are turned into ``|``; ``ts_rank`` (normalized by the log of the chunk length) then ranks chunks with
+more of the query's terms first; ``ts_rank_cd`` ties such chunks under OR. A natural question rarely has all
+its words in one chunk, so AND semantics found almost nothing.
 """
 
 from __future__ import annotations
@@ -49,20 +55,23 @@ _COLUMNS: Final = """
 
 _SOURCES = bindparam("sources", type_=ARRAY(PG_UUID(as_uuid=True)))
 
+# Rendered tsquery text quotes every lexeme, so swapping the operators re-parses safely.
+_ANY_TERM: Final = f"replace(plainto_tsquery('{FTS_CONFIG}', :query)::text, ' & ', ' | ')::tsquery"
+
 _KEYWORDS = text(
     f"""
-    WITH q AS (SELECT websearch_to_tsquery('{FTS_CONFIG}', :query) AS query)
-    SELECT {_COLUMNS}, ts_rank_cd(c.search_vector, q.query) AS score
+    WITH q AS (SELECT {_ANY_TERM} AS query)
+    SELECT {_COLUMNS}, ts_rank(c.search_vector, q.query, 1) AS score
     FROM q, document_chunks c
     JOIN documents d ON d.id = c.document_id
     JOIN document_versions v ON v.id = c.document_version_id
     WHERE c.search_vector @@ q.query AND {_SCOPE_FILTER}
     ORDER BY score DESC, c.id
     LIMIT :limit
-    """  # noqa: S608 - a constant: FTS_CONFIG and the filter are module literals, values are parameters
+    """  # noqa: S608 - a constant: the expression and the filter are module literals, values are parameters
 ).bindparams(_SOURCES)
 
-_LEXEMES = text(f"SELECT numnode(websearch_to_tsquery('{FTS_CONFIG}', :query))")
+_LEXEMES = text(f"SELECT numnode({_ANY_TERM})")
 
 _CANDIDATES = text(
     "SELECT count(*) FROM embeddings e "

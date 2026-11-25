@@ -54,8 +54,9 @@ async def test_search_returns_ranked_chunks_with_citation_metadata(env: Env, emb
     assert body["keyword_query_empty"] is False
     first = body["items"][0]
     assert first["filename"] == "leave.md"
-    assert first["keyword_rank"] == 1
+    assert first["keyword_rank"] is not None
     assert first["vector_rank"] is not None
+    assert any(i["filename"] == "leave.md" and i["keyword_rank"] == 1 for i in body["items"])
     assert set(first) == {
         "chunk_id", "document_id", "document_version_id", "filename", "chunk_index", "content", "token_count",
         "page_start", "page_end", "section_path", "sheet_name", "row_start", "row_end", "score",
