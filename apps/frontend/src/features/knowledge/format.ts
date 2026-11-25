@@ -47,3 +47,22 @@ export function formatBytes(bytes: number): string {
   }
   return `${value.toFixed(value < 10 ? 1 : 0)} ${units[unit] ?? 'GB'}`;
 }
+
+/** Where a search hit sits in its document: section, pages, sheet and rows (null parts are left out). */
+export function hitLocation(hit: {
+  section_path: string[];
+  page_start: number | null;
+  page_end: number | null;
+  sheet_name: string | null;
+  row_start: number | null;
+  row_end: number | null;
+}): string {
+  const range = (start: number, end: number | null) =>
+    end === null || end === start ? String(start) : `${String(start)}–${String(end)}`;
+  const parts: string[] = [];
+  if (hit.section_path.length > 0) parts.push(hit.section_path.join(' › '));
+  if (hit.page_start !== null) parts.push(`p. ${range(hit.page_start, hit.page_end)}`);
+  if (hit.sheet_name !== null) parts.push(`sheet ${hit.sheet_name}`);
+  if (hit.row_start !== null) parts.push(`rows ${range(hit.row_start, hit.row_end)}`);
+  return parts.join(' · ');
+}

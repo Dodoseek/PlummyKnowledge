@@ -57,6 +57,36 @@ export interface UploadResult {
   job: JobSummary;
 }
 
+export type SearchMode = 'hybrid' | 'vector' | 'keyword';
+
+export interface SearchHit {
+  chunk_id: string;
+  document_id: string;
+  document_version_id: string;
+  /** Display only. */
+  filename: string;
+  chunk_index: number;
+  /** Untrusted document text: rendered as plain text only. */
+  content: string;
+  token_count: number;
+  page_start: number | null;
+  page_end: number | null;
+  section_path: string[];
+  sheet_name: string | null;
+  row_start: number | null;
+  row_end: number | null;
+  score: number;
+  vector_rank: number | null;
+  keyword_rank: number | null;
+}
+
+export interface SearchResult {
+  mode: SearchMode;
+  items: SearchHit[];
+  total_tokens: number;
+  keyword_query_empty: boolean;
+}
+
 export const UPLOAD_TIMEOUT_MS = 10 * 60_000;
 
 /** Documents still moving through the pipeline: the list polls while there are any. */
@@ -106,6 +136,14 @@ export const knowledgeApi = baseApi.injectEndpoints({
       query: ({ id }) => ({ url: documentPath(id), method: 'DELETE' }),
       invalidatesTags: (_result, _error, { kbId }) => [documentsTag(kbId), kbTag(kbId), KNOWLEDGE_BASES_TAG],
     }),
+    // A mutation: every search is a fresh POST (rate limited per user), nothing is cached between queries.
+    searchKnowledgeBase: build.mutation<SearchResult, { kbId: string; query: string; mode: SearchMode }>({
+      query: ({ kbId, query, mode }) => ({
+        url: `/knowledge-bases/${encodeURIComponent(kbId)}/search`,
+        method: 'POST',
+        body: { query, mode },
+      }),
+    }),
     reindexDocument: build.mutation<{ job: JobSummary; created: boolean }, { kbId: string; id: string }>({
       query: ({ id }) => ({ url: `${documentPath(id)}/reindex`, method: 'POST' }),
       invalidatesTags: (_result, _error, { kbId }) => [documentsTag(kbId), kbTag(kbId)],
@@ -121,4 +159,5 @@ export const {
   useUploadDocumentMutation,
   useDeleteDocumentMutation,
   useReindexDocumentMutation,
+  useSearchKnowledgeBaseMutation,
 } = knowledgeApi;

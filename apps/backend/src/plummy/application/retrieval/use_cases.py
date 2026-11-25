@@ -11,6 +11,7 @@ import logging
 import time
 import unicodedata
 from collections.abc import Iterable
+from typing import Final
 from uuid import UUID
 
 from plummy.application.ai.embedding import (
@@ -29,14 +30,17 @@ from plummy.application.ai.ports import (
 from plummy.application.errors import (
     ConflictError,
     InvalidInputError,
+    RateLimitedError,
+    ServiceUnavailableError,
     UpstreamEgressDeniedError,
     UpstreamProviderError,
     UpstreamTimeoutError,
 )
 from plummy.application.knowledge.access import require_kb_access
-from plummy.application.ports import UnitOfWork, UnitOfWorkFactory
+from plummy.application.ports import RateLimiter, RateLimiterUnavailableError, UnitOfWork, UnitOfWorkFactory
 from plummy.application.retrieval.fusion import deduplicate, fit_budget, reciprocal_rank_fusion
 from plummy.application.retrieval.model import (
+    DEFAULT_TOP_K,
     MAX_KNOWLEDGE_BASES,
     MAX_QUERY_LENGTH,
     ChunkHit,
@@ -51,6 +55,8 @@ from plummy.domain.ai import EmbeddingProfileStatus
 from plummy.domain.knowledge import KbAccessLevel, KnowledgeBase
 
 logger = logging.getLogger(__name__)
+
+SEARCHES_PER_MINUTE: Final = 30  # API_CONTRACTS.md §5 ``search`` [Proposed]: one embedding call each
 
 
 class EmbeddingUnavailableError(ConflictError):
@@ -194,3 +200,40 @@ class RetrieveChunks:
             return checked_vector(vectors[0], profile)
         except InvalidVectorError as exc:
             raise UpstreamProviderError(exc.code) from None
+
+
+class SearchKnowledgeBase:
+    """``POST /knowledge-bases/{id}/search``: retrieval without generation, for people with ``read``.
+
+    The knowledge base is authorized first (``404`` without access, nothing counted), then the per-user
+    ``search`` limit is taken, then the query is embedded: a refused caller never reaches the provider.
+    """
+
+    def __init__(self, uow: UnitOfWorkFactory, retrieve: RetrieveChunks, limiter: RateLimiter) -> None:
+        self._uow, self._retrieve, self._limiter = uow, retrieve, limiter
+
+    async def execute(
+        self,
+        context: SecurityContext,
+        knowledge_base_id: UUID,
+        query: str,
+        *,
+        mode: SearchMode = SearchMode.HYBRID,
+        top_k: int = DEFAULT_TOP_K,
+    ) -> RetrievalResult:
+        text = normalize_query(query)
+        try:
+            settings = RetrievalSettings(top_k=top_k)
+        except ValueError:
+            raise InvalidInputError("top_k", "out_of_range", "top_k must be between 1 and 50.") from None
+        async with self._uow() as uow:
+            scope = await resolve_scope(uow, context, [knowledge_base_id])
+        try:
+            status = await self._limiter.hit(
+                f"search:user:{context.user_id.hex}:1m", limit=SEARCHES_PER_MINUTE, window_seconds=60
+            )
+        except RateLimiterUnavailableError:
+            raise ServiceUnavailableError() from None
+        if not status.allowed:
+            raise RateLimitedError(status.retry_after_seconds)
+        return await self._retrieve.search(scope, text, settings, mode)

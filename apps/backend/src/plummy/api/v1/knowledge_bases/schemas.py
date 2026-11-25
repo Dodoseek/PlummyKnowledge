@@ -9,6 +9,14 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from plummy.application.knowledge.use_cases import KnowledgeBaseView
 from plummy.application.pagination import Page
+from plummy.application.retrieval.model import (
+    DEFAULT_TOP_K,
+    MAX_QUERY_LENGTH,
+    MAX_TOP_K,
+    RankedChunk,
+    RetrievalResult,
+    SearchMode,
+)
 from plummy.domain.knowledge import MAX_KB_DESCRIPTION_LENGTH, MAX_KB_NAME_LENGTH, KbAccessLevel
 
 
@@ -69,3 +77,69 @@ class CreateKnowledgeBaseRequest(BaseModel):
     name: str = Field(min_length=1, max_length=MAX_KB_NAME_LENGTH * 2)  # normalized and checked by the domain
     description: str | None = Field(default=None, max_length=MAX_KB_DESCRIPTION_LENGTH * 2)
     embedding_profile_id: UUID
+
+
+class SearchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # Whitespace is collapsed by the use case, which enforces the real 1-1000 character limit.
+    query: str = Field(min_length=1, max_length=MAX_QUERY_LENGTH * 4)
+    mode: SearchMode = SearchMode.HYBRID
+    top_k: int = Field(default=DEFAULT_TOP_K, ge=1, le=MAX_TOP_K)
+
+
+class SearchHitResponse(BaseModel):
+    chunk_id: UUID
+    document_id: UUID
+    document_version_id: UUID
+    filename: str
+    chunk_index: int
+    content: str
+    token_count: int
+    page_start: int | None
+    page_end: int | None
+    section_path: list[str]
+    sheet_name: str | None
+    row_start: int | None
+    row_end: int | None
+    score: float
+    vector_rank: int | None
+    keyword_rank: int | None
+
+    @classmethod
+    def build(cls, item: RankedChunk) -> SearchHitResponse:
+        hit = item.hit
+        return cls(
+            chunk_id=hit.chunk_id,
+            document_id=hit.document_id,
+            document_version_id=hit.version_id,
+            filename=hit.filename,
+            chunk_index=hit.chunk_index,
+            content=hit.content,
+            token_count=hit.token_count,
+            page_start=hit.page_start,
+            page_end=hit.page_end,
+            section_path=list(hit.section_path),
+            sheet_name=hit.sheet_name,
+            row_start=hit.row_start,
+            row_end=hit.row_end,
+            score=round(item.fused_score, 6),
+            vector_rank=item.vector_rank,
+            keyword_rank=item.keyword_rank,
+        )
+
+
+class SearchResponse(BaseModel):
+    mode: SearchMode
+    items: list[SearchHitResponse]
+    total_tokens: int
+    keyword_query_empty: bool
+
+    @classmethod
+    def build(cls, result: RetrievalResult) -> SearchResponse:
+        return cls(
+            mode=result.mode,
+            items=[SearchHitResponse.build(item) for item in result.chunks],
+            total_tokens=result.total_tokens,
+            keyword_query_empty=result.keyword_query_empty,
+        )

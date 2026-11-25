@@ -496,7 +496,7 @@ Document Source типа `upload` создаётся и удаляется вм�
 UI обязан показывать **фактические** `granted_scopes` и предупреждение, что выбор папки не ограничивает OAuth token
 (§7).
 
-### 2.10 `knowledge-bases` (§5) — реализованы list, create, get
+### 2.10 `knowledge-bases` (§5) — реализованы list, create, get, search
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
@@ -511,6 +511,7 @@ UI обязан показывать **фактические** `granted_scopes`
 | PUT | `/api/v1/knowledge-bases/{id}/sources/{data_source_id}` | Привязать источник | KB `manage` + `data_sources.read` | auth | — | `kb.source.attached` | — |
 | DELETE | `/api/v1/knowledge-bases/{id}/sources/{data_source_id}` | Отвязать (документы источника исключаются из KB) | KB `manage` | auth | — | `kb.source.detached` | — |
 | POST | `/api/v1/knowledge-bases/{id}/reindex` | Переиндексация KB | KB `manage` | auth | Idem | `kb.reindex.requested` | expensive |
+| POST | `/api/v1/knowledge-bases/{id}/search` | Hybrid-поиск фрагментов без генерации ответа | KB `read` | auth | — | — | search |
 
 Остальные строки таблицы (PATCH, DELETE, access, sources, reindex KB) ещё не реализованы.
 
@@ -534,6 +535,33 @@ UI обязан показывать **фактические** `granted_scopes`
 `embedding_profile_not_active`, `dimensions_not_indexable`, `provider_unavailable`; занятое имя —
 `409 knowledge_base_name_taken`. Настройки chunking через API не задаются (**[Proposed]**, всегда значения по
 умолчанию — [ARCHITECTURE.md §8.4](ARCHITECTURE.md)).
+
+**Поиск (`POST /knowledge-bases/{id}/search`)** — retrieval без LLM ([ARCHITECTURE.md §9.4](ARCHITECTURE.md),
+[ADR-017](adr/0017-vector-storage.md), [ADR-018](adr/0018-full-text-search-configuration.md)). Тело
+`{query, mode?, top_k?}`: `query` после нормализации (NFC, управляющие символы → пробелы, пробелы схлопываются)
+1–1000 символов; `mode` — `hybrid` (по умолчанию), `vector`, `keyword`; `top_k` 1–50 (по умолчанию 8). Доступ к KB
+проверяется до rate limit и до обращения к провайдеру; фильтры доступа и версий — в SQL (DATABASE_SCHEMA §5.11).
+
+```json
+{
+  "mode": "hybrid",
+  "items": [{
+    "chunk_id": "…", "document_id": "…", "document_version_id": "…", "filename": "leave.md", "chunk_index": 1,
+    "content": "…", "token_count": 42, "page_start": null, "page_end": null, "section_path": ["Отпуск", "Перенос"],
+    "sheet_name": null, "row_start": null, "row_end": null,
+    "score": 0.032787, "vector_rank": 1, "keyword_rank": 2
+  }],
+  "total_tokens": 42,
+  "keyword_query_empty": false
+}
+```
+
+`score` — RRF-оценка (сумма `1/(60 + rank)` по веткам), `vector_rank`/`keyword_rank` — место в ветке или `null`.
+Одинаковый текст (`content_hash`) возвращается один раз. `keyword_query_empty: true` — запрос состоит только из
+стоп-слов, работала лишь векторная ветка. Ошибки: `404` (нет KB или доступа), `422 validation_error` (`body.query`:
+`empty_query`, `query_too_long`; `body.top_k`, `body.mode`), `409 embedding_unavailable` (профиль выведен из
+эксплуатации, провайдер отключён или нет ключа; `mode: keyword` при этом работает), `429 rate_limited`,
+`502 provider_error`, `502 egress_denied`, `504 provider_timeout` (без вывода провайдера).
 
 Привязка источника к KB требует подтверждения, что все участники KB имеют право видеть все документы источника
 (§8 Document ACL); UI показывает предупреждение, API принимает флаг `acl_acknowledged: true` **[Proposed]**.
@@ -883,7 +911,7 @@ data: {"delta":"Перенос возможен "}
 
 ## 5. Rate limits (§5, §8 п.5)
 
-`login`, `setup`, `activation` и `provider_test` реализованы ([ADR-013](adr/0013-auth-session-strategy.md),
+`login`, `setup`, `activation`, `provider_test` и `search` реализованы ([ADR-013](adr/0013-auth-session-strategy.md),
 [ADR-015](adr/0015-user-activation-links.md)); остальные значения — **[Proposed]** (по умолчанию, настраиваются).
 Хранилище счётчиков — Redis; при его недоступности эти endpoints отвечают `503`.
 
@@ -897,6 +925,7 @@ data: {"delta":"Перенос возможен "}
 | `provider_test` | 10/мин | инсталляция |
 | `sync` | 6/час | источник |
 | `expensive` (reindex, retry) | 10/час | инсталляция |
+| `search` | 30/мин | пользователь |
 | `general` | 300/мин | пользователь |
 
 При превышении — `429 rate_limited` + `Retry-After`.

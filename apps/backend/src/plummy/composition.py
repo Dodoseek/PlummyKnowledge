@@ -73,6 +73,7 @@ from plummy.application.providers.use_cases import (
     UpdateModel,
     UpdateProvider,
 )
+from plummy.application.retrieval.use_cases import RetrieveChunks, SearchKnowledgeBase
 from plummy.application.roles.use_cases import ListPermissions, ListRoles
 from plummy.application.secret_storage.use_cases import GetSecretsStatus, RotateSecrets
 from plummy.application.secret_storage.vault import SecretVault
@@ -199,6 +200,7 @@ class KnowledgeServices:
     list: ListKnowledgeBases
     get: GetKnowledgeBase
     create: CreateKnowledgeBase
+    search: SearchKnowledgeBase
 
 
 @dataclass(frozen=True, slots=True)
@@ -559,6 +561,7 @@ def build_resources(
             list=ListKnowledgeBases(uow),
             get=GetKnowledgeBase(uow),
             create=CreateKnowledgeBase(uow, clock, jobs),
+            search=SearchKnowledgeBase(uow, RetrieveChunks(uow, gateway, vault), limiter),
         ),
         documents=DocumentServices(
             upload=UploadDocument(uow, storage, jobs, limiter, clock, max_bytes=settings.upload_max_bytes),

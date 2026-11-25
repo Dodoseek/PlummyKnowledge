@@ -46,6 +46,12 @@ const MESSAGES: Record<string, string> = {
   source_unavailable: 'Uploads to this knowledge base are not possible right now.',
   no_version: 'The document has no version to index.',
   job_not_retryable: 'This job cannot be retried in its current state.',
+  embedding_unavailable:
+    'Search by meaning is not available: the embedding profile is retired or its AI provider is disabled. ' +
+    'Keyword search still works.',
+  provider_error: 'The AI provider request failed. Try again later.',
+  provider_timeout: 'The AI provider did not answer in time. Try again.',
+  egress_denied: 'The server’s network policy blocked the request to the AI provider.',
   activation_token_invalid:
     'This activation link is invalid, expired or already used. Ask your administrator for a new one.',
 };

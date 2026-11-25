@@ -23,18 +23,22 @@ class SearchMode(StrEnum):
     KEYWORD = "keyword"
 
 
+DEFAULT_TOP_K: Final = 8
+MAX_TOP_K: Final = 50
+
+
 @dataclass(frozen=True, slots=True)
 class RetrievalSettings:
     """Defaults from API_CONTRACTS.md §4 (assistant ``retrieval``); later part of the assistant profile."""
 
-    top_k: int = 8
+    top_k: int = DEFAULT_TOP_K
     vector_top_k: int = 40
     keyword_top_k: int = 40
     rrf_k: int = 60
     max_context_tokens: int = 8000
 
     def __post_init__(self) -> None:
-        if not 1 <= self.top_k <= 50:
+        if not 1 <= self.top_k <= MAX_TOP_K:
             raise ValueError("top_k must be 1-50")
         if not self.top_k <= self.vector_top_k <= 200 or not self.top_k <= self.keyword_top_k <= 200:
             raise ValueError("branch limits must be top_k-200")

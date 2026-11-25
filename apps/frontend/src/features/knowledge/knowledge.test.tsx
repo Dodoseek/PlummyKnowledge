@@ -324,3 +324,84 @@ describe('knowledge base page', () => {
     expect(await screen.findByText('Knowledge base not available')).toBeInTheDocument();
   });
 });
+
+describe('knowledge base search', () => {
+  const HIT = {
+    chunk_id: '0190a000-0000-7000-8000-000000000091',
+    document_id: INDEXED.id,
+    document_version_id: '0190a000-0000-7000-8000-000000000070',
+    filename: 'Policy.pdf',
+    chunk_index: 2,
+    content: 'Up to five days carry over. <img src=y onerror=alert(1)> **not bold**',
+    token_count: 12,
+    page_start: 3,
+    page_end: 4,
+    section_path: ['Leave', 'Carry-over'],
+    sheet_name: null,
+    row_start: null,
+    row_end: null,
+    score: 0.0325,
+    vector_rank: 1,
+    keyword_rank: 2,
+  };
+
+  function renderSearch(response: Response) {
+    return renderAt(`/knowledge-bases/${KB_ID}`, MEMBER_SESSION, {
+      [`GET /knowledge-bases/${KB_ID}`]: jsonResponse({ ...KB, my_access_level: 'read' }),
+      'GET /documents': page([INDEXED]),
+      [`POST /knowledge-bases/${KB_ID}/search`]: response,
+    });
+  }
+
+  it('searches with read access and shows hits as plain text with their location', async () => {
+    const user = userEvent.setup();
+    const { fetchMock } = renderSearch(
+      jsonResponse({ mode: 'keyword', items: [HIT], total_tokens: 12, keyword_query_empty: false }),
+    );
+    const search = await screen.findByRole('button', { name: 'Search' });
+    expect(search).toBeDisabled();
+    await user.type(screen.getByRole('textbox', { name: 'Query' }), 'carry over');
+    await user.selectOptions(screen.getByRole('combobox', { name: 'Mode' }), 'keyword');
+    await user.click(search);
+
+    const hit = await screen.findByTestId('search-hit');
+    expect(within(hit).getByText('Policy.pdf')).toBeInTheDocument();
+    expect(within(hit).getByText('Leave › Carry-over · p. 3–4')).toBeInTheDocument();
+    expect(within(hit).getByText('keywords #2')).toBeInTheDocument();
+    expect(within(hit).getByText('meaning #1')).toBeInTheDocument();
+    expect(within(hit).getByText(/<img src=y onerror=alert\(1\)> \*\*not bold\*\*/)).toBeInTheDocument();
+    expect(document.querySelector('img[src="y"]')).toBeNull();
+    const [request] = requests(fetchMock, 'POST', `/knowledge-bases/${KB_ID}/search`);
+    expect(await request?.json()).toEqual({ query: 'carry over', mode: 'keyword' });
+  });
+
+  it('says when nothing was found and when only common words were given', async () => {
+    const user = userEvent.setup();
+    renderSearch(jsonResponse({ mode: 'hybrid', items: [], total_tokens: 0, keyword_query_empty: true }));
+    await user.type(await screen.findByRole('textbox', { name: 'Query' }), 'the of');
+    await user.click(screen.getByRole('button', { name: 'Search' }));
+    expect(await screen.findByText('Nothing found.')).toBeInTheDocument();
+    expect(screen.getByText(/only common words/)).toBeInTheDocument();
+  });
+
+  it('shows the query field error from the server', async () => {
+    const user = userEvent.setup();
+    renderSearch(
+      problem(422, 'validation_error', {
+        errors: [{ field: 'body.query', code: 'query_too_long', message: 'The search query is too long.' }],
+      }),
+    );
+    await user.type(await screen.findByRole('textbox', { name: 'Query' }), 'x');
+    await user.click(screen.getByRole('button', { name: 'Search' }));
+    expect(await screen.findByText('The search query is too long.')).toBeInTheDocument();
+    expect(screen.queryByText('Search failed')).not.toBeInTheDocument();
+  });
+
+  it('explains that search by meaning is unavailable', async () => {
+    const user = userEvent.setup();
+    renderSearch(problem(409, 'embedding_unavailable'));
+    await user.type(await screen.findByRole('textbox', { name: 'Query' }), 'leave');
+    await user.click(screen.getByRole('button', { name: 'Search' }));
+    expect(await screen.findByText(/Search by meaning is not available/)).toBeInTheDocument();
+  });
+});

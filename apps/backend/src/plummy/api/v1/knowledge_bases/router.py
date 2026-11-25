@@ -16,6 +16,8 @@ from plummy.api.v1.knowledge_bases.schemas import (
     CreateKnowledgeBaseRequest,
     KnowledgeBaseListResponse,
     KnowledgeBaseResponse,
+    SearchRequest,
+    SearchResponse,
 )
 from plummy.application.knowledge.use_cases import KnowledgeBaseInput
 from plummy.application.pagination import SortSpec
@@ -69,3 +71,13 @@ async def get_knowledge_base(
     kb_id: UUID, context: CurrentContext, resources: ResourcesDep
 ) -> KnowledgeBaseResponse:
     return KnowledgeBaseResponse.build(await resources.knowledge.get.execute(context, kb_id))
+
+
+@router.post("/{kb_id}/search", response_model=SearchResponse)
+async def search_knowledge_base(
+    kb_id: UUID, body: SearchRequest, context: CurrentContext, resources: ResourcesDep
+) -> SearchResponse:
+    result = await resources.knowledge.search.execute(
+        context, kb_id, body.query, mode=body.mode, top_k=body.top_k
+    )
+    return SearchResponse.build(result)
