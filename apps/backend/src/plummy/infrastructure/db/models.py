@@ -482,7 +482,21 @@ class DataSourceModel(Base):
         CheckConstraint("char_length(name) BETWEEN 1 AND 200", name="name_length"),
         CheckConstraint("jsonb_typeof(config) = 'object'", name="config_object"),
         CheckConstraint("(type = 'upload') = (owner_knowledge_base_id IS NOT NULL)", name="upload_owner"),
+        CheckConstraint(
+            "sync_interval_minutes IS NULL OR sync_interval_minutes BETWEEN 5 AND 1440", name="sync_interval"
+        ),
+        CheckConstraint(
+            "last_sync_status IS NULL OR last_sync_status IN ('succeeded', 'failed', 'cancelled')",
+            name="last_sync_status",
+        ),
+        CheckConstraint("sync_cursor IS NULL OR char_length(sync_cursor) <= 2048", name="cursor_length"),
+        CheckConstraint(f"last_error IS NULL OR last_error {_ERROR_CODE_CHECK}", name="last_error_format"),
         UniqueConstraint("owner_knowledge_base_id"),
+        Index(
+            "ix_data_sources_next_sync_at",
+            "next_sync_at",
+            postgresql_where=text("status = 'active' AND deleted_at IS NULL AND next_sync_at IS NOT NULL"),
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
@@ -495,6 +509,14 @@ class DataSourceModel(Base):
     config: Mapped[dict[str, Any]] = mapped_column(
         JSONB(), nullable=False, server_default=text("'{}'::jsonb")
     )
+    # Sync state of external sources (ADR-020 §8); the cursor moves only after a processed page.
+    sync_cursor: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    sync_interval_minutes: Mapped[int | None] = mapped_column(Integer(), nullable=True)
+    next_sync_at: Mapped[datetime | None] = _ts()
+    last_sync_at: Mapped[datetime | None] = _ts()
+    last_reconciled_at: Mapped[datetime | None] = _ts()
+    last_sync_status: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text(), nullable=True)
     created_by: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
@@ -503,11 +525,101 @@ class DataSourceModel(Base):
     deleted_at: Mapped[datetime | None] = _ts()
 
 
+class DataSourceCredentialModel(Base):
+    """OAuth credentials of an external source (DATABASE_SCHEMA.md §5.5, ADR-020 §7): a reference to the
+    encrypted refresh token only; the access token is never stored."""
+
+    __tablename__ = "data_source_credentials"
+    __table_args__ = (
+        CheckConstraint("status IN ('valid', 'expired', 'revoked')", name="status"),
+        CheckConstraint(
+            "account_label IS NULL OR char_length(account_label) <= 320", name="account_label_length"
+        ),
+        CheckConstraint("(status = 'revoked') = (revoked_at IS NOT NULL)", name="revoked_consistent"),
+        UniqueConstraint("secret_ref_id"),
+    )
+
+    data_source_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("data_sources.id", ondelete="CASCADE"), primary_key=True
+    )
+    secret_ref_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("secret_references.id", ondelete="RESTRICT"), nullable=False
+    )
+    account_label: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    granted_scopes: Mapped[list[str]] = mapped_column(ARRAY(Text()), nullable=False)
+    status: Mapped[str] = mapped_column(Text(), nullable=False)
+    created_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
+    updated_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
+    last_refreshed_at: Mapped[datetime | None] = _ts()
+    revoked_at: Mapped[datetime | None] = _ts()
+    connected_by: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+
+class SyncJobModel(Base):
+    """Sync runs of an external source (DATABASE_SCHEMA.md §7.2, ADR-020 §8); one active per source."""
+
+    __tablename__ = "sync_jobs"
+    __table_args__ = (
+        CheckConstraint("trigger IN ('manual', 'schedule', 'reconciliation', 'initial')", name="trigger"),
+        CheckConstraint("mode IN ('initial', 'incremental', 'reconciliation')", name="mode"),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled', 'dead')", name="status"
+        ),
+        CheckConstraint("jsonb_typeof(stats) = 'object'", name="stats_object"),
+        CheckConstraint("attempt >= 0 AND max_attempts BETWEEN 1 AND 20", name="attempts"),
+        CheckConstraint(f"error_code IS NULL OR error_code {_ERROR_CODE_CHECK}", name="error_code_format"),
+        CheckConstraint(
+            "error_message IS NULL OR char_length(error_message) <= 500", name="error_message_length"
+        ),
+        Index(
+            "sync_jobs_one_active_per_source",
+            "data_source_id",
+            unique=True,
+            postgresql_where=text("status IN ('queued', 'running')"),
+        ),
+        Index(
+            "ix_sync_jobs_data_source_id_queued_at", "data_source_id", text("queued_at DESC"), text("id DESC")
+        ),
+        Index(
+            "ix_sync_jobs_status_updated_at",
+            "status",
+            "updated_at",
+            postgresql_where=text("status IN ('queued', 'running')"),
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    data_source_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("data_sources.id", ondelete="CASCADE"), nullable=False
+    )
+    trigger: Mapped[str] = mapped_column(Text(), nullable=False)
+    mode: Mapped[str] = mapped_column(Text(), nullable=False)
+    status: Mapped[str] = mapped_column(Text(), nullable=False)
+    cursor_before: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    cursor_after: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    stats: Mapped[dict[str, Any]] = mapped_column(JSONB(), nullable=False, server_default=text("'{}'::jsonb"))
+    attempt: Mapped[int] = mapped_column(Integer(), nullable=False, server_default=text("0"))
+    max_attempts: Mapped[int] = mapped_column(Integer(), nullable=False, server_default=text("5"))
+    celery_task_id: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    requested_by: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    queued_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
+    started_at: Mapped[datetime | None] = _ts()
+    finished_at: Mapped[datetime | None] = _ts()
+    updated_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
+
+
 class KnowledgeBaseSourceModel(Base):
     """Sources attached to a knowledge base (DATABASE_SCHEMA.md §5.6)."""
 
     __tablename__ = "knowledge_base_sources"
-    __table_args__ = (Index("ix_knowledge_base_sources_data_source_id", "data_source_id"),)
+    # A source belongs to one knowledge base (ADR-020 §6).
+    __table_args__ = (UniqueConstraint("data_source_id"),)
 
     knowledge_base_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("knowledge_bases.id", ondelete="CASCADE"), primary_key=True

@@ -11,6 +11,8 @@ class EgressDenialReason(StrEnum):
     ADDRESS_NOT_ALLOWED = "address_not_allowed"  # internal address without a matching allowlist entry
     ADDRESS_NEVER_ALLOWED = "address_never_allowed"  # link-local/metadata/multicast/unspecified/platform
     UNSUPPORTED_TRANSPORT = "unsupported_transport"
+    REDIRECT_NOT_ALLOWED = "redirect_not_allowed"  # not https, or a host outside the connector's list
+    TOO_MANY_REDIRECTS = "too_many_redirects"
 
 
 class EgressDeniedError(Exception):

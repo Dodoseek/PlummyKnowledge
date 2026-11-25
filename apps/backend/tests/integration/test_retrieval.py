@@ -316,7 +316,8 @@ async def test_only_the_active_chunk_set_of_the_current_ready_version_is_searche
 async def test_vector_branch_uses_only_the_profile_of_the_knowledge_base(
     env: Env, corpus: dict[str, Any]
 ) -> None:
-    # A second KB with another profile includes the same source: its chunks have no vectors of that profile.
+    # The source moves to a KB with another profile (a source belongs to one KB, ADR-020 §6): its chunks have
+    # no vectors of that profile.
     provider_id = (await env.admin.get("/api/v1/providers")).json()["items"][0]["id"]
     profile = await env.admin.post(
         "/api/v1/embedding-profiles",
@@ -324,8 +325,8 @@ async def test_vector_branch_uses_only_the_profile_of_the_knowledge_base(
     )
     other_kb = await create_kb(env, "Mirror", profile.json()["id"])
     await env.harness.sql(
-        "INSERT INTO knowledge_base_sources (knowledge_base_id, data_source_id, created_at) "
-        "SELECT :kb, data_source_id, now() FROM documents WHERE id = :doc",
+        "UPDATE knowledge_base_sources SET knowledge_base_id = :kb "
+        "WHERE data_source_id = (SELECT data_source_id FROM documents WHERE id = :doc)",
         kb=other_kb,
         doc=corpus["leave"],
     )

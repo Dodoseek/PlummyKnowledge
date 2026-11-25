@@ -106,6 +106,7 @@ async def test_identity_tables_are_created(migrator: Migrator, database_url: str
         "assistants",
         "audit_logs",
         "conversations",
+        "data_source_credentials",
         "data_sources",
         "document_chunks",
         "document_versions",
@@ -128,6 +129,7 @@ async def test_identity_tables_are_created(migrator: Migrator, database_url: str
         "roles",
         "secret_references",
         "sessions",
+        "sync_jobs",
         "user_activation_tokens",
         "user_groups",
         "user_roles",
@@ -319,3 +321,92 @@ async def test_chat_tables_downgrade_and_upgrade_again(migrator: Migrator, datab
     assert await _query(database_url, exists) == [False]
     await migrator.upgrade()
     assert await _query(database_url, exists) == [True]
+
+
+async def test_source_sync_tables_link_and_protect(migrator: Migrator, database_url: str) -> None:
+    # ADR-020: credentials and jobs go with their source; a secret in use cannot be deleted; one knowledge
+    # base per source; at most one queued or running sync job per source.
+    await migrator.upgrade()
+    actions = await _query(
+        database_url,
+        "SELECT conname::text || ':' || confdeltype::text FROM pg_constraint "
+        "WHERE contype = 'f' AND conrelid IN ('data_source_credentials'::regclass, 'sync_jobs'::regclass) "
+        "ORDER BY conname",
+    )
+    assert actions == [
+        "fk_data_source_credentials_connected_by_users:n",
+        "fk_data_source_credentials_data_source_id_data_sources:c",
+        "fk_data_source_credentials_secret_ref_id_secret_references:r",
+        "fk_sync_jobs_data_source_id_data_sources:c",
+        "fk_sync_jobs_requested_by_users:n",
+    ]
+    assert await _query(
+        database_url,
+        "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+        "WHERE conname = 'uq_knowledge_base_sources_data_source_id'",
+    ) == ["UNIQUE (data_source_id)"]
+    assert await _query(
+        database_url,
+        "SELECT indexdef LIKE '%UNIQUE%' AND indexdef LIKE '%status = ANY%' FROM pg_indexes "
+        "WHERE indexname = 'sync_jobs_one_active_per_source'",
+    ) == [True]
+
+
+_SOURCE = "00000000-0000-0000-0000-0000000000a1"
+_JOB = text(
+    "INSERT INTO sync_jobs (id, data_source_id, trigger, mode, status, error_code) "
+    "VALUES (gen_random_uuid(), :source, 'manual', 'incremental', :status, :code)"
+)
+
+
+async def test_one_active_sync_job_per_source(migrator: Migrator, database_url: str) -> None:
+    await migrator.upgrade()
+    engine = create_async_engine(database_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO data_sources (id, type, name, status) "
+                    "VALUES (:source, 'google_drive', 'Drive', 'active')"
+                ),
+                {"source": _SOURCE},
+            )
+            for status in ("succeeded", "queued"):
+                await connection.execute(_JOB, {"source": _SOURCE, "status": status, "code": None})
+        with pytest.raises(DBAPIError, match="sync_jobs_one_active_per_source"):
+            async with engine.begin() as connection:
+                await connection.execute(_JOB, {"source": _SOURCE, "status": "running", "code": None})
+        with pytest.raises(DBAPIError, match="ck_sync_jobs_error_code_format"):
+            async with engine.begin() as connection:
+                await connection.execute(
+                    _JOB, {"source": _SOURCE, "status": "failed", "code": "Not Found: report.pdf"}
+                )
+        with pytest.raises(DBAPIError, match="ck_data_sources_sync_interval"):
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text("UPDATE data_sources SET sync_interval_minutes = 1 WHERE id = :source"),
+                    {"source": _SOURCE},
+                )
+        async with engine.begin() as connection:
+            await connection.execute(text("DELETE FROM data_sources WHERE id = :source"), {"source": _SOURCE})
+            remaining = await connection.scalar(text("SELECT count(*) FROM sync_jobs"))
+        assert remaining == 0
+    finally:
+        await engine.dispose()
+
+
+async def test_source_sync_downgrade_and_upgrade_again(migrator: Migrator, database_url: str) -> None:
+    await migrator.upgrade()
+    await migrator.downgrade("0014")
+    exists = (
+        "SELECT to_regclass('sync_jobs') IS NOT NULL OR to_regclass('data_source_credentials') IS NOT NULL"
+    )
+    assert await _query(database_url, exists) == [False]
+    columns = (
+        "SELECT count(*) FROM information_schema.columns "
+        "WHERE table_name = 'data_sources' AND column_name = 'sync_cursor'"
+    )
+    assert await _query(database_url, columns) == [0]
+    await migrator.upgrade()
+    assert await _query(database_url, exists) == [True]
+    assert await _query(database_url, columns) == [1]

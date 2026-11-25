@@ -5,7 +5,7 @@ Pure data and rules; no I/O. Access is granted per knowledge base (no document-l
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from typing import Final
@@ -87,6 +87,12 @@ class KbGrant:
         return (self.principal_type, self.principal_id)
 
 
+class SyncOutcome(StrEnum):
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
 @dataclass(slots=True)
 class DataSource:
     id: UUID
@@ -98,6 +104,19 @@ class DataSource:
     created_at: datetime
     updated_at: datetime
     deleted_at: datetime | None = None
+    # External sources only (ADR-020): the selected folder and the sync state. ``config`` never holds secrets.
+    config: dict[str, str] = field(default_factory=dict)
+    sync_cursor: str | None = None
+    sync_interval_minutes: int | None = None
+    next_sync_at: datetime | None = None
+    last_sync_at: datetime | None = None
+    last_reconciled_at: datetime | None = None
+    last_sync_status: SyncOutcome | None = None
+    last_error: str | None = None  # a typed error code, never provider output
+
+    @property
+    def is_external(self) -> bool:
+        return self.type is not DataSourceType.UPLOAD
 
 
 def normalize_kb_name(value: str) -> str:

@@ -7,8 +7,11 @@ Enforcement happens where the TCP connection is made, inside a custom ``httpcore
 3. the socket is opened to the vetted IP itself, so there is no second resolution (no DNS rebinding window);
    the TLS handshake still uses the original hostname for SNI and certificate verification.
 
-Redirects are never followed, proxy environment variables are ignored, response bodies are size-limited, and
-every refusal is reported (``network.egress.denied``) without the path, query or body of the request.
+Redirects are not followed unless the caller passes a :class:`RedirectPolicy` (connectors only, ADR-007 §4
+step 7): then every hop is checked again — ``https``, a host from the connector's list, at most three hops —
+and goes through the same pinned transport. Credentials are not sent to a host other than the original one.
+Proxy environment variables are ignored, response bodies are size-limited, and every refusal is reported
+(``network.egress.denied``) without the path, query or body of the request.
 """
 
 from __future__ import annotations
@@ -27,7 +30,7 @@ import httpx
 
 from plummy.core.network.addresses import IPAddress
 from plummy.core.network.errors import EgressDenialReason, EgressDeniedError, ResponseTooLargeError
-from plummy.core.network.policy import EgressPolicy, EgressPurpose, EgressRule
+from plummy.core.network.policy import EgressPolicy, EgressPurpose, EgressRule, RedirectPolicy
 from plummy.core.network.urls import EgressUrl, parse_egress_url, parse_ip
 
 logger = logging.getLogger(__name__)
@@ -35,6 +38,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_RESPONSE_BYTES: Final = 10 * 1024 * 1024
 DEFAULT_TIMEOUT: Final = httpx.Timeout(30.0, connect=10.0)
 _CONTEXT_EXTENSION: Final = "plummy.egress"
+_REDIRECT_STATUSES: Final = frozenset({301, 302, 303, 307, 308})
+_CREDENTIAL_HEADERS: Final = frozenset({"authorization", "cookie", "proxy-authorization"})
 
 
 class Resolver(Protocol):
@@ -77,6 +82,25 @@ class EgressDenial:
 
 
 DenialHook = Callable[[EgressDenial], Awaitable[None]]
+
+
+async def _report(denial: EgressDenial, on_denied: DenialHook | None) -> None:
+    logger.warning(
+        "outbound connection denied",
+        extra={
+            "purpose": denial.purpose.value,
+            "provider_type": denial.provider_type,
+            "host": denial.host,
+            "port": denial.port,
+            "reason": denial.reason.value,
+            "rule": denial.rule,
+        },
+    )
+    if on_denied is not None:
+        try:
+            await on_denied(denial)
+        except Exception:
+            logger.exception("failed to record an egress denial")
 
 
 class _PinnedNetworkBackend(httpcore.AsyncNetworkBackend):
@@ -245,22 +269,7 @@ class _EgressTransport(httpx.AsyncBaseTransport):
             reason=exc.reason,
             rule=rule.entry if rule else None,
         )
-        logger.warning(
-            "outbound connection denied",
-            extra={
-                "purpose": denial.purpose.value,
-                "provider_type": denial.provider_type,
-                "host": denial.host,
-                "port": denial.port,
-                "reason": denial.reason.value,
-                "rule": denial.rule,
-            },
-        )
-        if self._on_denied is not None:
-            try:
-                await self._on_denied(denial)
-            except Exception:
-                logger.exception("failed to record an egress denial")
+        await _report(denial, self._on_denied)
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         context = request.extensions.get(_CONTEXT_EXTENSION)
@@ -314,7 +323,7 @@ class _EgressTransport(httpx.AsyncBaseTransport):
 
 
 class SafeHttpClient:
-    """Outbound HTTP for adapters (AI providers now, connectors later). Shared per process."""
+    """Outbound HTTP for adapters (AI providers and document-source connectors). Shared per process."""
 
     def __init__(
         self,
@@ -327,6 +336,7 @@ class SafeHttpClient:
         on_denied: DenialHook | None = None,
     ) -> None:
         self.policy = policy
+        self._on_denied = on_denied
         self._client = httpx.AsyncClient(
             transport=_EgressTransport(
                 policy,
@@ -383,8 +393,10 @@ class SafeHttpClient:
         params: Mapping[str, str] | None = None,
         timeout: httpx.Timeout | None = None,  # noqa: ASYNC109 - per-phase httpx timeouts
         max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
+        redirects: RedirectPolicy | None = None,
     ) -> httpx.Response:
-        """Sends the request and reads the whole (size-limited) body. Redirects are returned, not followed."""
+        """Sends the request and reads the whole (size-limited) body. Redirects are returned, not followed,
+        unless ``redirects`` is given (``GET``/``HEAD`` only)."""
         request = self._build(
             method,
             url,
@@ -397,7 +409,13 @@ class SafeHttpClient:
             timeout=timeout,
             max_response_bytes=max_response_bytes,
         )
-        response = await self._client.send(request)
+        if redirects is None:
+            return await self._client.send(request)
+        response = await self._send_following(request, redirects)
+        try:
+            await response.aread()
+        finally:
+            await response.aclose()
         return response
 
     @asynccontextmanager
@@ -414,8 +432,10 @@ class SafeHttpClient:
         params: Mapping[str, str] | None = None,
         timeout: httpx.Timeout | None = None,  # noqa: ASYNC109 - per-phase httpx timeouts
         max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
+        redirects: RedirectPolicy | None = None,
     ) -> AsyncIterator[httpx.Response]:
-        """A streamed response (SSE, NDJSON); the size limit applies to the whole stream."""
+        """A streamed response (SSE, NDJSON, downloads); the size limit applies to the whole stream and to
+        each response of a redirect chain."""
         request = self._build(
             method,
             url,
@@ -428,11 +448,77 @@ class SafeHttpClient:
             timeout=timeout,
             max_response_bytes=max_response_bytes,
         )
-        response = await self._client.send(request, stream=True)
+        if redirects is None:
+            response = await self._client.send(request, stream=True)
+        else:
+            response = await self._send_following(request, redirects)
         try:
             yield response
         finally:
             await response.aclose()
+
+    async def _send_following(self, request: httpx.Request, redirects: RedirectPolicy) -> httpx.Response:
+        """Sends ``request`` and follows redirects under ``redirects``; returns an open streamed response."""
+        if request.method not in ("GET", "HEAD"):
+            raise ValueError("redirects are followed only for GET and HEAD requests")
+        origin_host = request.url.host
+        hops = 0
+        while True:
+            response = await self._client.send(request, stream=True)
+            location = response.headers.get("location")
+            if response.status_code not in _REDIRECT_STATUSES or not location:
+                return response
+            await response.aclose()
+            hops += 1
+            request = await self._next_hop(request, location, redirects, hops, origin_host)
+
+    async def _next_hop(
+        self,
+        request: httpx.Request,
+        location: str,
+        redirects: RedirectPolicy,
+        hops: int,
+        origin_host: str,
+    ) -> httpx.Request:
+        context = request.extensions[_CONTEXT_EXTENSION]
+        assert isinstance(context, EgressContext)  # noqa: S101 - set by _build
+        target: EgressUrl | None = None
+        try:
+            try:
+                joined = request.url.join(location)
+            except (httpx.InvalidURL, ValueError):
+                raise EgressDeniedError(EgressDenialReason.INVALID_URL, "redirect location") from None
+            target = parse_egress_url(str(joined))
+            if hops > redirects.max_hops:
+                raise EgressDeniedError(EgressDenialReason.TOO_MANY_REDIRECTS)
+            if target.scheme != "https" or not redirects.allows_host(target.host):
+                raise EgressDeniedError(EgressDenialReason.REDIRECT_NOT_ALLOWED)
+        except EgressDeniedError as exc:
+            await _report(
+                EgressDenial(
+                    purpose=context.purpose,
+                    provider_type=context.provider_type,
+                    scheme=target.scheme if target else "",
+                    host=target.host if target else "",
+                    port=target.port if target else 0,
+                    reason=exc.reason,
+                    rule=None,
+                ),
+                self._on_denied,
+            )
+            raise
+        headers = [
+            (name, value)
+            for name, value in request.headers.multi_items()
+            if name.lower() != "host"
+            and (joined.host == origin_host or name.lower() not in _CREDENTIAL_HEADERS)
+        ]
+        return httpx.Request(
+            request.method,
+            joined,
+            headers=headers,
+            extensions={"timeout": request.extensions.get("timeout", {}), _CONTEXT_EXTENSION: context},
+        )
 
     async def aclose(self) -> None:
         await self._client.aclose()

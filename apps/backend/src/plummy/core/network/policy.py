@@ -20,6 +20,34 @@ from plummy.core.network.urls import EgressUrl, parse_egress_url
 class EgressPurpose(StrEnum):
     LLM = "llm"
     EMBEDDING = "embedding"
+    CONNECTOR = "connector"  # document sources: OAuth, listing and downloads (ADR-020)
+
+
+@dataclass(frozen=True, slots=True)
+class RedirectPolicy:
+    """Redirects a connector may follow (ADR-007 §4 step 7): ``https`` only, at most ``max_hops``, and only to
+    the listed hosts. A host is an exact name or ``*.suffix`` (any subdomain of ``suffix``, not ``suffix``
+    itself). Every hop still passes the whole policy check, including DNS pinning."""
+
+    hosts: frozenset[str]
+    max_hops: int = 3
+
+    def __post_init__(self) -> None:
+        if not 1 <= self.max_hops <= 3:
+            raise ValueError("max_hops must be 1-3")
+        for host in self.hosts:
+            name = host.removeprefix("*.")
+            if not name or name != name.lower() or "*" in name or "." not in name:
+                raise ValueError(f"invalid redirect host pattern {host!r}")
+
+    def allows_host(self, host: str) -> bool:
+        for pattern in self.hosts:
+            if pattern.startswith("*."):
+                if host.endswith(pattern[1:]) and len(host) > len(pattern) - 1:
+                    return True
+            elif host == pattern:
+                return True
+        return False
 
 
 @dataclass(frozen=True, slots=True)

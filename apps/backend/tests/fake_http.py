@@ -143,8 +143,8 @@ def _name(common_name: str) -> x509.Name:
     return x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name)])
 
 
-def make_pki(directory: Path, server_name: str) -> LocalPki:
-    """A throw-away CA and a server certificate for ``server_name`` (only that DNS name)."""
+def make_pki(directory: Path, server_name: str, *other_names: str) -> LocalPki:
+    """A throw-away CA and a server certificate for ``server_name`` (and ``other_names``, nothing else)."""
     now = dt.datetime.now(dt.UTC)
     ca_key = ec.generate_private_key(ec.SECP256R1())
     ca_cert = (
@@ -182,7 +182,10 @@ def make_pki(directory: Path, server_name: str) -> LocalPki:
         .serial_number(x509.random_serial_number())
         .not_valid_before(now - dt.timedelta(minutes=5))
         .not_valid_after(now + dt.timedelta(hours=1))
-        .add_extension(x509.SubjectAlternativeName([x509.DNSName(server_name)]), critical=False)
+        .add_extension(
+            x509.SubjectAlternativeName([x509.DNSName(name) for name in (server_name, *other_names)]),
+            critical=False,
+        )
         .add_extension(x509.ExtendedKeyUsage([x509.oid.ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
         .add_extension(
             x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()), critical=False

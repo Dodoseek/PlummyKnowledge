@@ -27,6 +27,7 @@ from plummy.core.network.errors import EgressDeniedError
 from plummy.core.network.policy import AllowlistEntry, EgressPolicy, EgressPurpose
 from plummy.core.network.urls import parse_egress_url
 from plummy.domain.ai import ProviderType
+from plummy.domain.knowledge import DataSourceType
 
 MAX_CONFIG_FILE_BYTES: Final = 256 * 1024
 _NAME_RE: Final = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
@@ -82,7 +83,10 @@ def _parse_entry(raw: Any, index: int) -> AllowlistEntry:
     provider_types: frozenset[str] | None = None
     if "provider_types" in raw:
         types = _string_list(raw["provider_types"], f"{where}: provider_types")
-        known = {item.value for item in ProviderType}
+        # AI provider types for llm/embedding entries, external source types for connector entries.
+        known = {item.value for item in ProviderType} | {
+            item.value for item in DataSourceType if item is not DataSourceType.UPLOAD
+        }
         if not types or set(types) - known:
             raise _fail(f"{where}: provider_types must be a non-empty subset of {sorted(known)}")
         provider_types = frozenset(types)

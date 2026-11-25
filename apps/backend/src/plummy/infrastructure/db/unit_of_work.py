@@ -96,6 +96,7 @@ from plummy.domain.knowledge import (
     KbGrant,
     KnowledgeBase,
     PrincipalType,
+    SyncOutcome,
 )
 from plummy.domain.secrets import SecretKind
 from plummy.infrastructure.db.chat import (
@@ -1561,6 +1562,14 @@ def _data_source(row: DataSourceModel) -> DataSource:
         created_at=row.created_at,
         updated_at=row.updated_at,
         deleted_at=row.deleted_at,
+        config={str(key): str(value) for key, value in row.config.items()},
+        sync_cursor=row.sync_cursor,
+        sync_interval_minutes=row.sync_interval_minutes,
+        next_sync_at=row.next_sync_at,
+        last_sync_at=row.last_sync_at,
+        last_reconciled_at=row.last_reconciled_at,
+        last_sync_status=SyncOutcome(row.last_sync_status) if row.last_sync_status else None,
+        last_error=row.last_error,
     )
 
 
@@ -1576,6 +1585,8 @@ class SqlDataSourceRepository:
                 name=source.name,
                 status=str(source.status),
                 owner_knowledge_base_id=source.owner_knowledge_base_id,
+                config=dict(source.config),
+                sync_interval_minutes=source.sync_interval_minutes,
                 created_by=source.created_by,
                 created_at=source.created_at,
                 updated_at=source.updated_at,

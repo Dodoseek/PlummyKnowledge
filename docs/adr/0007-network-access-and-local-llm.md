@@ -123,6 +123,10 @@ allowed_cidrs  = ["172.30.10.0/24"]             # обязательно, есл
 ## Implementation notes
 
 - `SafeHttpClient` появляется в Фазе 4 вместе с первым адаптером провайдера — до поддержки Ollama.
+- Фаза 9: назначение `connector` и `RedirectPolicy` (§4 п.7): переходы только для `GET`/`HEAD`, только `https`, хост из
+  списка коннектора (точное имя или `*.suffix`), ≤ 3; каждый переход заново проходит разбор URL, allowlist, DNS и
+  pinning; `Authorization`/`Cookie` на другой хост не передаются; отказ — `redirect_not_allowed` /
+  `too_many_redirects` в audit ([ADR-020](0020-google-drive-connector.md) §5).
 - Набор специальных диапазонов берётся из реестров IANA special-purpose address и проверяется тестами на каждый класс.
 
 ## Related documents

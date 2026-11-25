@@ -375,7 +375,7 @@ SELECT NOT EXISTS (
 При удалении KB её строки в `assistant_knowledge_bases` удаляются (связующая таблица, `ON DELETE CASCADE` допустим);
 ассистент без KB становится недоступен обычным пользователям.
 
-### 5.4 `data_sources` (§7) — реализовано, `0009`
+### 5.4 `data_sources` (§7) — реализовано, `0009`; колонки синхронизации — `0015`
 
 | Колонка | Тип | Описание |
 |---|---|---|
@@ -384,11 +384,12 @@ SELECT NOT EXISTS (
 | `name` | `text` | |
 | `status` | `text` | `active` \| `paused` \| `error` \| `disconnected` |
 | `config` | `jsonb` | Выбранная папка / site / drive / library (без секретов) |
-| `sync_cursor` | `text` | Google page token / Graph delta link (§7). Обновляется только после успешного checkpoint |
-| `sync_schedule` | `text` | Интервал/cron; NULL — только ручной запуск |
+| `sync_cursor` | `text` | Google page token / Graph delta link (§7), ≤ 2048 символов. Обновляется только после успешного checkpoint |
+| `sync_interval_minutes` | `integer` | Интервал инкрементальной синхронизации, 5–1440; NULL — только ручной запуск ([ADR-020](adr/0020-google-drive-connector.md) §8) |
+| `next_sync_at` | `timestamptz` | Когда scheduler поставит следующую синхронизацию; частичный индекс по активным источникам |
 | `last_sync_at`, `last_reconciled_at` | `timestamptz` | |
-| `last_sync_status` | `text` | |
-| `last_error` | `text` | Redacted |
+| `last_sync_status` | `text` | `succeeded` \| `failed` \| `cancelled` |
+| `last_error` | `text` | Только типизированный код (`^[a-z_]{1,64}$`), не текст провайдера |
 | `created_by` | `uuid` | |
 | `deleted_at` | `timestamptz` | |
 
@@ -410,17 +411,19 @@ credentials удаляются немедленно; строки `knowledge_bas
 
 | Колонка | Тип | Описание |
 |---|---|---|
-| `data_source_id` | `uuid` | FK |
-| `secret_ref_id` | `uuid` | Зашифрованный refresh token (§13 Фаза 9) |
+| `data_source_id` | `uuid` | PK, FK `CASCADE` |
+| `secret_ref_id` | `uuid` | Зашифрованный refresh token (§13 Фаза 9); FK `RESTRICT`, `UNIQUE` |
 | `account_label` | `text` | Учётная запись/tenant у провайдера (персональные данные) |
 | `granted_scopes` | `text[]` | Фактически выданные scopes — для честного отображения (§7) |
 | `status` | `text` | `valid` \| `expired` \| `revoked` |
-| `expires_at`, `last_refreshed_at`, `revoked_at` | `timestamptz` | |
+| `last_refreshed_at`, `revoked_at` | `timestamptz` | `(status = 'revoked') = (revoked_at IS NOT NULL)`; срок access token не хранится — он живёт только в памяти задания |
+| `connected_by` | `uuid` | Кто подключил; FK `SET NULL` |
+| `created_at`, `updated_at` | `timestamptz` | |
 
 ### 5.6 `knowledge_base_sources` (§5) — реализовано, `0009`
 
 `knowledge_base_id`, `data_source_id`, `created_at`; PK `(knowledge_base_id, data_source_id)`;
-индекс `(data_source_id)`.
+`UNIQUE (data_source_id)` — источник принадлежит одной KB (`0015`, [ADR-020](adr/0020-google-drive-connector.md) §6).
 
 ### 5.7 `documents` (§5) — реализовано, `0009`
 
@@ -642,9 +645,10 @@ Snapshot metadata на момент ответа, чтобы история ос
 | `cursor_before`, `cursor_after` | `text` | Checkpoint |
 | `stats` | `jsonb` | added / updated / deleted / skipped / failed |
 | `attempt`, `max_attempts` | `integer` | |
-| `error_code`, `error_message` | `text` | Redacted |
+| `celery_task_id` | `text` | Опубликованная задача |
+| `error_code`, `error_message` | `text` | Код `^[a-z_]{1,64}$`, сообщение ≤ 500, без имён файлов и ответов провайдера |
 | `requested_by` | `uuid` | |
-| `queued_at`, `started_at`, `finished_at` | `timestamptz` | |
+| `queued_at`, `started_at`, `finished_at`, `updated_at` | `timestamptz` | |
 
 **Lock от параллельного sync (§7):**
 
