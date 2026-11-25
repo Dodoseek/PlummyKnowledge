@@ -19,6 +19,10 @@ export const PERMISSIONS = {
   providersRead: 'providers.read',
   providersManage: 'providers.manage',
   knowledgeBasesManage: 'knowledge_bases.manage',
+  dataSourcesRead: 'data_sources.read',
+  dataSourcesManage: 'data_sources.manage',
+  dataSourcesSync: 'data_sources.sync',
+  jobsRead: 'jobs.read',
   assistantsManage: 'assistants.manage',
   chatUse: 'chat.use',
 } as const;

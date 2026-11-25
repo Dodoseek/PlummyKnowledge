@@ -6,6 +6,7 @@ import { request, type APIRequestContext, type APIResponse } from '@playwright/t
 
 export const BASE_URL = process.env.E2E_BASE_URL ?? 'http://localhost:5173';
 export const FAKE_LLM_URL = process.env.E2E_FAKE_LLM_URL ?? 'http://fake-llm:8080';
+export const FAKE_GOOGLE_URL = process.env.E2E_FAKE_GOOGLE_URL ?? 'http://fake-google:8080';
 
 /**
  * Test accounts of the e2e instance only. The administrator is created by the first run on a fresh stack
@@ -26,6 +27,8 @@ export interface E2eState {
   financeAssistant: { id: string; name: string };
   hrKnowledgeBase: { id: string; name: string };
   financeKnowledgeBase: { id: string; name: string };
+  /** An empty knowledge base for the Google Drive source (connected in the browser by the test). */
+  driveKnowledgeBase: { id: string; name: string };
   financeChunk: { documentId: string; versionId: string; chunkId: string };
   /** Words that exist only in the Finance document: they must never reach the model for the member. */
   financeSecret: string;

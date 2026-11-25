@@ -7,6 +7,7 @@ import {
   ADMIN,
   ADMIN_SESSION_FILE,
   Api,
+  FAKE_GOOGLE_URL,
   FAKE_LLM_URL,
   MEMBER_PASSWORD,
   MEMBER_SESSION_FILE,
@@ -16,7 +17,8 @@ import {
 /**
  * Prepares the instance through the public API, as an administrator would in the UI:
  * provider (the fake OpenAI-compatible server) → models → embedding profile → two knowledge bases with one
- * Markdown document each → indexing → two assistants → a member with access to HR only.
+ * Markdown document each → indexing → two assistants → a member with access to HR only; an empty knowledge base
+ * for the Google Drive test.
  * Names carry a run ID, so the setup can run again on the same stack.
  */
 
@@ -79,6 +81,8 @@ async function waitIndexed(api: Api, documentId: string): Promise<void> {
 export default async function globalSetup(): Promise<void> {
   const fakeLlm = await fetch(`${FAKE_LLM_URL}/health`);
   if (!fakeLlm.ok) throw new Error('The fake LLM is not reachable from the test runner.');
+  const fakeGoogle = await fetch(`${FAKE_GOOGLE_URL}/health`);
+  if (!fakeGoogle.ok) throw new Error('The fake Google is not reachable from the test runner.');
 
   const runId = Date.now().toString(36);
   const api = await adminSession();
@@ -114,6 +118,11 @@ export default async function globalSetup(): Promise<void> {
     });
     const finance = await api.send<Id>('POST', '/knowledge-bases', {
       name: financeName,
+      embedding_profile_id: profile.id,
+    });
+    const driveName = `Drive ${runId}`;
+    const drive = await api.send<Id>('POST', '/knowledge-bases', {
+      name: driveName,
       embedding_profile_id: profile.id,
     });
     const handbook = await api.upload(hr.id, 'handbook.md', HANDBOOK);
@@ -168,6 +177,7 @@ export default async function globalSetup(): Promise<void> {
       financeAssistant: { id: financeAssistant.id, name: financeAssistantName },
       hrKnowledgeBase: { id: hr.id, name: hrName },
       financeKnowledgeBase: { id: finance.id, name: financeName },
+      driveKnowledgeBase: { id: drive.id, name: driveName },
       financeChunk: {
         documentId: chunk.document_id,
         versionId: chunk.document_version_id,

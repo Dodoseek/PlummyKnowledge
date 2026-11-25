@@ -11,9 +11,9 @@ PlummyKnowledge — open-source **self-hosted** платформа корпор�
 Лицензия — Apache License 2.0. Одна инсталляция принадлежит **одной** организации и работает на её серверах или в её
 облаке: multi-tenancy, сущности Organization и `organization_id` нет ([ADR-012](docs/adr/0012-single-organization-deployment.md)).
 
-**Текущее состояние:** Фазы 1–8 roadmap завершены (Foundation, Bootstrap & Authentication, Users & RBAC, AI providers
+**Текущее состояние:** Фазы 1–9 roadmap завершены (Foundation, Bootstrap & Authentication, Users & RBAC, AI providers
 & network policy, Local document ingestion, Retrieval & RAG evaluation, Knowledge Bases & Assistants, Chat UI &
-streaming); выпущен релиз 0.1.0 (тег `v0.1.0`). Backend:
+streaming, Google Drive); выпущен релиз 0.1.0 (тег `v0.1.0`). Backend:
 FastAPI, Pydantic Settings, SQLAlchemy async, Alembic (`vector`/`citext`, users, activation tokens, groups,
 RBAC-каталог и назначения ролей, sessions, audit_logs), Redis (rate limit, брокер Celery), health live/ready; Celery
 worker с диагностической задачей; первоначальная настройка по bootstrap token и CLI `python -m plummy.cli`;
@@ -40,7 +40,11 @@ hybrid retrieval (`application/retrieval`: vector + FTS, RRF, dedup, бюдже�
 Фаза 8: генерация в процессе API ([ADR-019](docs/adr/0019-answer-generation-in-api-process.md): Redis-семафор,
 stop-флаг, таймаут, heartbeat), миграция `0014`, `/conversations`, `POST /chat/stream` (SSE) и stop, viewer
 `…/chunks/{cid}/view`, страницы `/chat` и `/viewer` (Markdown без сырого HTML и внешних изображений), E2E на
-Playwright (`apps/e2e`, `compose.e2e.yaml`). Application Settings, Nginx/CSP и prod-compose ещё нет
+Playwright (`apps/e2e`, `compose.e2e.yaml`). Фаза 9 ([ADR-020](docs/adr/0020-google-drive-connector.md)): Google
+Drive — миграции `0015`/`0016`, OAuth (state + PKCE, refresh token в vault), API `data-sources` (browse, validate,
+sync, disconnect), адаптер Drive v3 за `DataSourceConnector`, sync engine (initial, incremental по Changes API,
+reconciliation) в очереди `connectors`, scheduler, sync jobs в `/jobs?type=sync`, карточка «External sources» на
+странице KB, E2E с фейковым Google (`deploy/e2e/fake_google.py`). Application Settings, Nginx/CSP и prod-compose ещё нет
 ([DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md)).
 Не начинать Google OAuth, Microsoft Graph и сложный RAG до стабильного запуска каркаса.
 
@@ -285,7 +289,7 @@ E2E (Playwright, `apps/e2e`): отдельный Compose-проект без о�
 
 ```bash
 export COMPOSE_PROJECT_NAME=plummy-e2e COMPOSE_FILE=compose.yaml:compose.e2e.yaml COMPOSE_PROFILES=e2e
-docker compose up --build --detach --wait backend worker worker-ingestion scheduler frontend fake-llm
+docker compose up --build --detach --wait backend worker worker-ingestion scheduler frontend fake-llm fake-google
 docker compose run --rm -T e2e                                  # tsc + playwright test (Chromium)
 docker compose down --volumes
 ```

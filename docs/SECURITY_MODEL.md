@@ -491,6 +491,11 @@ OpenAI/Anthropic). Полный алгоритм — в ADR-007; здесь — 
 - Фактически выданные scopes сохраняются и **честно отображаются** в UI (§7).
 - Revoke/disconnect: отзыв токена у провайдера, где это поддерживается; удаление credentials; остановка sync;
   инструкция по отзыву согласия у провайдера.
+- **Реализовано для Google Drive (Фаза 9):** UI показывает фактические `granted_scopes` и предупреждение о широте
+  токена; токены не попадают в браузер (E2E `drive.spec.ts` сверяет страницу и ответы API со всеми выданными
+  фейковым Google токенами); документы из Drive проходят тот же pipeline и ту же сборку контекста, что и загрузки:
+  враждебные имя файла и текст остаются экранированными данными внутри блока `<documents>` (SC-08,
+  `test_source_sync.py`); удалённый в Drive файл после sync не находится поиском (`test_source_sync.py`, E2E).
 
 ## 16. Retention, удаление и backup (§8)
 
@@ -551,7 +556,8 @@ OpenAI/Anthropic). Полный алгоритм — в ADR-007; здесь — 
 - [x] secrets не возвращаются (Фаза 4: API провайдеров, frontend store и storage);
 - [x] malicious filenames не выходят из storage (Фаза 5: `test_local_storage.py`, `test_file_inspection.py`);
 - [x] повторные jobs не дублируют chunks (Фаза 5: SC-09, `test_indexing.py`);
-- [x] deleted docs не находятся (Фаза 5–6: `test_retrieval.py`, viewer);
+- [x] deleted docs не находятся (Фаза 5–6: `test_retrieval.py`, viewer; Фаза 9 — удаление в Google Drive:
+  `test_source_sync.py`, E2E `drive.spec.ts`);
 - [x] выдуманные citation IDs отклоняются (Фазы 6, 8: потоковый фильтр, `test_chat_stream.py`, E2E).
 
 Security gate Фазы 8 — `test_chat_security_gate.py`: CSRF-токен и доверенный `Origin` на каждом изменяющем запросе
@@ -574,7 +580,7 @@ restart, interrupted sync.
 | SC-05 | Пользователь запрашивает документ KB, к которой у него нет доступа, напрямую по ID (карточка, viewer, chunk, reindex, delete) | `404 not_found` для всех методов; данные и факт существования не раскрываются | ADR-012, ADR-008 | 5 |
 | SC-06 | Локальный Ollama доступен по явно разрешённому адресу | Провайдер `ollama` с `base_url`, совпадающим с записью allowlist, проходит connection test и используется в чате/embeddings; тот же адрес для другого назначения или типа провайдера вне записи → отказ | ADR-007 | 4 |
 | SC-07 | Разрешённый hostname после DNS-разрешения указывает на запрещённый адрес (вне `allowed_cidrs`, metadata, loopback) | Соединение не устанавливается; `egress_denied`; `network.egress.denied` в audit; повторного DNS-разрешения нет | ADR-007 | 4 |
-| SC-08 | Внешний документ содержит prompt injection | Инструкции из документа не меняют правила; модель без tools; выдуманные citation IDs отклоняются; внешние изображения в ответе не загружаются; секреты в prompt отсутствуют | §10, ADR-008 | 6 |
+| SC-08 | Внешний документ содержит prompt injection | Инструкции из документа не меняют правила; модель без tools; выдуманные citation IDs отклоняются; внешние изображения в ответе не загружаются; секреты в prompt отсутствуют | §10, ADR-008 | 6, 9 |
 | SC-09 | Повторная задача ingestion для уже обработанной версии | Job завершается `succeeded` с `result = skipped_already_processed`; число chunks и embeddings не меняется; при гонке двух jobs дубликатов нет (unique + lock) | ADR-008 | 5 |
 
 ## 19. Процессы (§12, §13 Фаза 12, §20)

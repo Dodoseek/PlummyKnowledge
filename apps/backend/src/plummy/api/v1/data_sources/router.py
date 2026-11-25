@@ -47,17 +47,21 @@ Syncer = Annotated[SecurityContext, Depends(require_permission(Permission.DATA_S
 
 
 @router.get(
-    "", response_model=DataSourceListResponse, dependencies=[Depends(allow_query("sort", "limit", "cursor"))]
+    "",
+    response_model=DataSourceListResponse,
+    dependencies=[Depends(allow_query("knowledge_base_id", "sort", "limit", "cursor"))],
 )
 async def list_data_sources(
     context: Reader,
     resources: ResourcesDep,
+    knowledge_base_id: UUID | None = None,
     sort: str | None = None,
     limit: int | None = None,
     cursor: str | None = None,
 ) -> DataSourceListResponse:
     page = page_request(sort, limit, cursor, SORTS, SORTS[0])
-    return DataSourceListResponse.from_page(await resources.sources.list.execute(context, page))
+    result = await resources.sources.list.execute(context, page, knowledge_base_id=knowledge_base_id)
+    return DataSourceListResponse.from_page(result)
 
 
 @router.post("", response_model=DataSourceResponse, status_code=status.HTTP_201_CREATED)

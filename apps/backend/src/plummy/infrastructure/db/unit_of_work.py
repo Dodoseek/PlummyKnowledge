@@ -1679,8 +1679,12 @@ class SqlDataSourceRepository:
         )
         return {row[0]: row[1] for row in rows}
 
-    async def page(self, page: PageRequest, *, visible_to: UUID | None) -> Page[DataSource]:
+    async def page(
+        self, page: PageRequest, *, visible_to: UUID | None, knowledge_base_id: UUID | None = None
+    ) -> Page[DataSource]:
         live_kbs = select(KnowledgeBaseModel.id).where(KnowledgeBaseModel.deleted_at.is_(None))
+        if knowledge_base_id is not None:
+            live_kbs = live_kbs.where(KnowledgeBaseModel.id == knowledge_base_id)
         if visible_to is not None:
             granted = select(KnowledgeBaseAccessModel.knowledge_base_id).where(
                 or_(

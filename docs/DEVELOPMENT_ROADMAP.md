@@ -218,9 +218,16 @@ security gate (проверки безопасности **внутри** фаз
 - Решения — [ADR-020](adr/0020-google-drive-connector.md). Шаги: 9.0 ADR и спецификации; 9.1 схема (`0015`), домен,
   redirects в `SafeHttpClient`; 9.2 OAuth и API `data-sources`; 9.3 адаптер Google Drive; 9.4 синхронизация и
   расписание (`0016`, `POST /data-sources/{id}/sync`, очередь `connectors`); 9.5 UI, E2E и security gate. Выполнены
-  9.0–9.4.
+  9.0–9.5.
 - **Security gate:** OAuth state/PKCE; честное отображение scopes; redirects загрузки проверяются `SafeHttpClient`;
   SC-08 на внешних документах; удаление в источнике отражается в индексе.
+  *(Выполнено: state/PKCE, сверка сессии и одноразовость — `test_data_sources_api.py`, фейковый Google проверяет
+  client secret, redirect URI и PKCE; фактические scopes и предупреждение — UI и `sources.test.tsx`; redirects
+  загрузки — `test_safe_http_redirects.py`, `test_google_drive.py`; SC-08 на документе из Drive (враждебные имя и текст остаются
+  экранированными данными, невыданные citation IDs отклоняются) — `test_source_sync.py`; удаление в Drive убирает
+  документ из поиска — `test_source_sync.py` и E2E `drive.spec.ts` (OAuth в браузере → папка → sync → поиск →
+  удаление → sync), там же проверено, что ни один выданный токен не попадает в страницу и ответы API.
+  **Отложено:** отмена sync job через `/jobs/{type}/{id}/cancel`; dashboard jobs/sync — Фаза 11.)*
 - **Выход:** **релиз 0.3.0**.
 
 ### Фаза 10 — Microsoft 365 (§13)

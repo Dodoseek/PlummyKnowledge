@@ -28,6 +28,7 @@ export const KB_ACCESS_TAG = 'KnowledgeBaseAccess';
 export const ASSISTANTS_TAG = 'Assistants';
 export const CONVERSATIONS_TAG = 'Conversations';
 export const MESSAGES_TAG = 'Messages';
+export const DATA_SOURCES_TAG = 'DataSources';
 
 const rawBaseQuery = fetchBaseQuery({
   baseUrl: config.apiBaseUrl,
@@ -86,6 +87,7 @@ export const baseApi = createApi({
     ASSISTANTS_TAG,
     CONVERSATIONS_TAG,
     MESSAGES_TAG,
+    DATA_SOURCES_TAG,
   ],
   endpoints: () => ({}),
 });

@@ -476,7 +476,7 @@
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
-| GET | `/api/v1/data-sources` | Список, статусы sync | `data_sources.read` | auth | — | — | — |
+| GET | `/api/v1/data-sources` | Список, статусы sync (`?knowledge_base_id=` — источники одной KB) | `data_sources.read` | auth | — | — | — |
 | POST | `/api/v1/data-sources` | Создать внешний источник (`google_drive` \| `microsoft_365`); `upload` через API не создаётся | `data_sources.manage` | auth | — | `data_source.created` | — |
 | GET | `/api/v1/data-sources/{id}` | Карточка: статус, `granted_scopes`, последний sync | `data_sources.read` | auth | — | — | — |
 | PATCH | `/api/v1/data-sources/{id}` | Выбранная папка/site/library, расписание | `data_sources.manage` | auth | — | `data_source.updated` | — |
@@ -562,7 +562,10 @@ KB, иначе `404`; без OAuth client в Instance Settings — `409 connecto
   на `/knowledge-bases`; адрес строится сервером, параметры запроса в него не копируются.
 
 UI обязан показывать **фактические** `granted_scopes` и предупреждение, что выбор папки не ограничивает OAuth token
-(§7).
+(§7). Реализовано на странице KB (карточка «External sources», шаг 9.5): список источников KB
+(`?knowledge_base_id=`), подключение через `authorization_url`, разбор `?source=&oauth=&reason=` после callback
+(параметры убираются из адреса), folder picker на `browse`, sync, проверка подключения, расписание, disconnect,
+удаление; состояние последнего sync — `GET /jobs?type=sync&data_source_id=&limit=1` (при `jobs.read`).
 
 ### 2.10 `knowledge-bases` (§5) — реализованы list, create, get, patch, delete, access, reindex, search
 
@@ -862,7 +865,7 @@ assistant_unavailable`; `404 not_found` (чужой или несуществу�
 
 `POST /chat/runs/{id}/stop` → `202` без тела; чужой или несуществующий run → `404`; Redis недоступен → `503`.
 
-### 2.15 `jobs` (§11, §13 Фаза 11) — реализованы list, get, retry для `ingestion`
+### 2.15 `jobs` (§11, §13 Фаза 11) — реализованы list и get для `ingestion` и `sync`, retry для `ingestion`
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
@@ -871,10 +874,12 @@ assistant_unavailable`; `404 not_found` (чужой или несуществу�
 | POST | `/api/v1/jobs/{type}/{id}/retry` | Повтор `failed`/`dead` job | `jobs.manage` | auth | Idem | `job.retried` | expensive |
 | POST | `/api/v1/jobs/{type}/{id}/cancel` | Отмена `queued`/`running` | `jobs.manage` | auth | — | `job.cancelled` | — |
 
-`{type}`: `ingestion` \| `sync`. Sync jobs создаются с шага 9.4 (их состояние — в ответе `POST /data-sources/{id}/sync`
-и в `sync` карточки источника); в `/jobs` они появятся с шагом 9.5, до этого `type=sync` возвращает пустой список.
-`cancel` и `Idempotency-Key` для retry не реализованы (jobs отменяются удалением документа). Retry невозможен →
-`409 job_not_retryable`.
+`{type}`: `ingestion` \| `sync`. Список без `type` содержит ingestion jobs; `type=sync` — sync jobs (DTO как в ответе
+`POST /data-sources/{id}/sync`, §2.9), фильтры `status`, `knowledge_base_id`, `data_source_id` и сортировка те же: у
+каждого типа своя keyset-пагинация, смешанного списка нет. `GET /jobs/sync/{id}` — карточка sync job. Sync jobs не
+повторяются через `/retry` (`409 job_not_retryable`, неизвестный ID — `404`): синхронизация запускается снова
+расписанием или `POST /data-sources/{id}/sync`. `cancel` и `Idempotency-Key` для retry не реализованы (jobs
+отменяются удалением документа или источника). Retry невозможен → `409 job_not_retryable`.
 
 **Job DTO:**
 

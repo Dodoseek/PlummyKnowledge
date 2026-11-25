@@ -1,12 +1,17 @@
 # PlummyKnowledge — end-to-end tests (Playwright) against the dev stack and a fake OpenAI-compatible provider.
 #
 #   docker compose -p plummy-e2e -f compose.yaml -f compose.e2e.yaml --profile e2e up --build --detach --wait \
-#     backend worker worker-ingestion frontend fake-llm
+#     backend worker worker-ingestion scheduler frontend fake-llm fake-google
 #   docker compose -p plummy-e2e -f compose.yaml -f compose.e2e.yaml --profile e2e run --rm e2e
 #   docker compose -p plummy-e2e -f compose.yaml -f compose.e2e.yaml --profile e2e down --volumes
 #
 # Use its own project name (-p): the tests create the first administrator of a fresh instance. Nothing here is
-# for production: the fake provider, the allowlist entry for it and the test runner exist only in this file.
+# for production: the fake provider, the fake Google, their allowlist entries, the Google OAuth client of the fake
+# (a test value, not a real Google client) and the test runner exist only in this file.
+
+x-fake-google-client: &fake-google-client
+  GOOGLE_OAUTH_CLIENT_ID: e2e-client.apps.googleusercontent.com
+  GOOGLE_OAUTH_CLIENT_SECRET: e2e-fake-google-client-value
 
 services:
   # API and worker reach the fake provider through the network allowlist (ADR-007), like a local LLM.
@@ -14,6 +19,7 @@ services:
   backend:
     ports: !reset []
     environment:
+      <<: *fake-google-client
       CONFIG_FILE: /etc/plummy/plummy.toml
     volumes:
       - ./deploy/e2e/plummy.toml:/etc/plummy/plummy.toml:ro
@@ -22,6 +28,7 @@ services:
 
   worker:
     environment:
+      <<: *fake-google-client
       CONFIG_FILE: /etc/plummy/plummy.toml
     volumes:
       - ./deploy/e2e/plummy.toml:/etc/plummy/plummy.toml:ro
@@ -59,6 +66,30 @@ services:
       timeout: 3s
       retries: 10
 
+  # Google's OAuth and Drive endpoints for the connector (ADR-020). The browser opens its consent page by name
+  # (the runner shares the frontend's network namespace), the backend and the worker call it through the allowlist.
+  fake-google:
+    profiles: [e2e]
+    image: python:3.13-slim
+    command: ["python", "/fake/fake_google.py"]
+    environment:
+      FAKE_GOOGLE_CLIENT_ID: e2e-client.apps.googleusercontent.com
+      FAKE_GOOGLE_CLIENT_SECRET: e2e-fake-google-client-value
+      FAKE_GOOGLE_REDIRECT_URI: http://localhost:5173/api/v1/data-sources/oauth/callback
+    volumes:
+      - ./deploy/e2e/fake_google.py:/fake/fake_google.py:ro
+    networks:
+      llm: {}
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   # Playwright with its browsers. It runs in the frontend's network namespace: the browser opens
   # http://localhost:5173, the origin the backend trusts (PUBLIC_URL), exactly as on a developer machine.
   # The bootstrap volume is mounted read-only so that the global setup can create the first administrator.
@@ -71,6 +102,7 @@ services:
       CI: ${CI:-}
       E2E_BASE_URL: http://localhost:5173
       E2E_FAKE_LLM_URL: http://fake-llm:8080
+      E2E_FAKE_GOOGLE_URL: http://fake-google:8080
       E2E_SETUP_TOKEN_FILE: /bootstrap/setup-token
     volumes:
       - ./apps/e2e:/e2e
@@ -83,6 +115,8 @@ services:
       backend:
         condition: service_healthy
       fake-llm:
+        condition: service_healthy
+      fake-google:
         condition: service_healthy
 
 networks:

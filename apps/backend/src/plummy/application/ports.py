@@ -648,9 +648,12 @@ class DataSourceRepository(Protocol):
         """The knowledge base of each source (a source belongs to one, ADR-020 §6)."""
         ...
 
-    async def page(self, page: PageRequest, *, visible_to: UUID | None) -> Page[DataSource]:
+    async def page(
+        self, page: PageRequest, *, visible_to: UUID | None, knowledge_base_id: UUID | None = None
+    ) -> Page[DataSource]:
         """Non-deleted sources of non-deleted knowledge bases: all of them with ``visible_to=None``,
-        otherwise those of knowledge bases granted to the user directly or through a group."""
+        otherwise those of knowledge bases granted to the user directly or through a group; only those of
+        ``knowledge_base_id`` when given."""
         ...
 
     async def detach(self, source_id: UUID) -> None:
@@ -707,6 +710,10 @@ class SyncJobRepository(Protocol):
         """``running`` jobs without a checkpoint since ``idle_since``: their worker died or was stopped."""
         ...
 
+    async def page(self, query: JobQuery, page: PageRequest) -> Page[SyncJob]:
+        """``GET /jobs?type=sync``: ``source_ids`` limits jobs to these sources."""
+        ...
+
 
 @dataclass(frozen=True, slots=True)
 class DocumentQuery:
@@ -720,7 +727,8 @@ class DocumentQuery:
 
 @dataclass(frozen=True, slots=True)
 class JobQuery:
-    """``GET /jobs`` filters; ``source_ids`` limits jobs to documents of these sources."""
+    """``GET /jobs`` filters; ``source_ids`` limits jobs to these sources (for ingestion jobs, through
+    their documents)."""
 
     status: JobStatus | None = None
     source_ids: tuple[UUID, ...] | None = None

@@ -135,7 +135,7 @@ jobs:
       - name: Start the stack (no published ports, fake provider on an internal network)
         run: >-
           docker compose up --detach --build --wait --wait-timeout 400
-          backend worker worker-ingestion scheduler frontend fake-llm
+          backend worker worker-ingestion scheduler frontend fake-llm fake-google
       - name: Playwright (typecheck, then the tests in Chromium)
         run: docker compose run --rm -T e2e
       - name: Service logs

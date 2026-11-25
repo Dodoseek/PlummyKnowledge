@@ -35,6 +35,8 @@ import { messageFor } from '../../shared/api/messages';
 import { ApiErrorAlert } from '../../shared/components/ApiErrorAlert';
 import { PageSpinner } from '../../shared/components/PageSpinner';
 import { ConfirmButton, Pager } from '../admin/components';
+import { PERMISSIONS, useHasPermission } from '../auth/permissions';
+import { SourcesCard } from '../sources/SourcesCard';
 import { useCursorPager, type CursorPager } from '../admin/useCursorPager';
 import { AccessBadge, DocumentStatusBadge, IndexingSummary } from './components';
 import { formatBytes, ingestionErrorMessage } from './format';
@@ -282,6 +284,7 @@ function DocumentsCard({
 export function KnowledgeBasePage() {
   const { kbId = '' } = useParams();
   const pager = useCursorPager();
+  const canReadSources = useHasPermission(PERMISSIONS.dataSourcesRead);
   // The previous result decides whether to keep polling: stop once nothing is queued or processing.
   const [polling, setPolling] = useState(false);
   const pollingOptions = { pollingInterval: polling ? POLL_INTERVAL_MS : 0, skipPollingIfUnfocused: true };
@@ -325,6 +328,7 @@ export function KnowledgeBasePage() {
       <SearchCard kbId={kbId} />
       {canManage && <UploadCard kbId={kbId} />}
       <DocumentsCard kbId={kbId} canManage={canManage} pager={pager} documents={documents} />
+      {canReadSources && <SourcesCard kbId={kbId} canManageKb={canManage} />}
       {canManage && <KnowledgeBaseSettingsCard kb={kb.data} />}
       {canManage && <KnowledgeBaseAccessCard kbId={kbId} />}
     </Stack>

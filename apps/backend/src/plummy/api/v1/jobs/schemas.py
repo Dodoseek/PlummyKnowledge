@@ -8,8 +8,10 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
+from plummy.api.v1.data_sources.schemas import SyncJobResponse
 from plummy.application.pagination import Page
 from plummy.domain.documents import IngestionJob, JobKind, JobResult, JobStage, JobStatus
+from plummy.domain.sources import SyncJob
 
 
 class JobError(BaseModel):
@@ -63,6 +65,20 @@ class JobListResponse(BaseModel):
     def from_page(cls, page: Page[IngestionJob]) -> JobListResponse:
         return cls(
             items=[JobResponse.build(job) for job in page.items],
+            next_cursor=page.next_cursor,
+            has_more=page.has_more,
+        )
+
+
+class SyncJobListResponse(BaseModel):
+    items: list[SyncJobResponse]
+    next_cursor: str | None
+    has_more: bool
+
+    @classmethod
+    def from_page(cls, page: Page[SyncJob]) -> SyncJobListResponse:
+        return cls(
+            items=[SyncJobResponse.build(job) for job in page.items],
             next_cursor=page.next_cursor,
             has_more=page.has_more,
         )

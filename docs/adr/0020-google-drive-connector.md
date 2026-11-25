@@ -203,6 +203,12 @@ UI, E2E и security gate.
   (`superseded_by_sync`). Job переживает падение worker: scheduler возвращает в очередь `running` jobs без checkpoint
   2 часа и публикует `queued` jobs, не дошедшие до брокера. Лимит задачи — 100 минут; Celery повторяет job с backoff
   30 с – 1 ч или с `Retry-After`, попытки считает `sync_jobs.attempt` (до 5).
+- 9.5: UI — карточка «External sources» на странице KB (видна при `data_sources.read`; действия — при
+  `data_sources.manage`/`data_sources.sync` и `manage` к KB, backend проверяет сам). Перед переходом на
+  `authorization_url` frontend проверяет, что это `http(s)` URL. Sync jobs доступны в `/jobs?type=sync` и
+  `/jobs/sync/{id}` (`jobs.read`); `GET /data-sources` фильтруется по `knowledge_base_id` без расширения видимости.
+  E2E — `deploy/e2e/fake_google.py` (stdlib) за записью allowlist и `[connectors.google_drive]` тестового
+  `CONFIG_FILE`.
 
 ## Related documents
 

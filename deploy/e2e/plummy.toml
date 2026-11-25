@@ -1,5 +1,5 @@
-# Instance configuration of the end-to-end stack (compose.e2e.yaml): the fake OpenAI-compatible provider is the
-# only internal address the backend may reach (ADR-007). Test infrastructure only.
+# Instance configuration of the end-to-end stack (compose.e2e.yaml): the fake OpenAI-compatible provider and the
+# fake Google are the only internal addresses the backend may reach (ADR-007). Test infrastructure only.
 
 [[network.allowlist]]
 name           = "e2e-fake-llm"
@@ -7,3 +7,19 @@ url            = "http://fake-llm:8080"
 purposes       = ["llm", "embedding"]
 provider_types = ["openai_compatible"]
 allowed_cidrs  = ["10.213.17.0/24"]
+
+# The fake Google OAuth and Drive server (deploy/e2e/fake_google.py): Google's endpoints are replaced, which the
+# backend accepts only outside production (ADR-020 §2). Every request still passes this allowlist.
+[[network.allowlist]]
+name           = "e2e-fake-google"
+url            = "http://fake-google:8080"
+purposes       = ["connector"]
+provider_types = ["google_drive"]
+allowed_cidrs  = ["10.213.17.0/24"]
+
+[connectors.google_drive]
+auth_url       = "http://fake-google:8080/o/oauth2/v2/auth"
+token_url      = "http://fake-google:8080/token"
+revoke_url     = "http://fake-google:8080/revoke"
+api_url        = "http://fake-google:8080"
+download_hosts = []

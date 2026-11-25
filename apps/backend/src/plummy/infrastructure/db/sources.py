@@ -9,7 +9,8 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from plummy.application.ports import UniqueViolationError
+from plummy.application.pagination import Page, PageRequest
+from plummy.application.ports import JobQuery, UniqueViolationError
 from plummy.domain.documents import JobStatus
 from plummy.domain.sources import (
     CredentialStatus,
@@ -20,6 +21,7 @@ from plummy.domain.sources import (
     SyncTrigger,
 )
 from plummy.infrastructure.db.models import DataSourceCredentialModel, SyncJobModel
+from plummy.infrastructure.db.paging import paginate
 
 _ACTIVE = (str(JobStatus.QUEUED), str(JobStatus.RUNNING))
 ACTIVE_JOB_INDEX = "sync_jobs_one_active_per_source"
@@ -199,6 +201,14 @@ class SqlSyncJobRepository:
             .limit(limit)
         )
         return list(rows)
+
+    async def page(self, query: JobQuery, page: PageRequest) -> Page[SyncJob]:
+        statement = select(SyncJobModel)
+        if query.status is not None:
+            statement = statement.where(SyncJobModel.status == str(query.status))
+        if query.source_ids is not None:
+            statement = statement.where(SyncJobModel.data_source_id.in_(query.source_ids))
+        return await paginate(self._db, statement, SyncJobModel, page, _sync_job)
 
     async def cancel_active(self, source_id: UUID, *, error_code: str, at: datetime) -> int:
         result = await self._db.execute(

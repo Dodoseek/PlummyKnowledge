@@ -209,11 +209,15 @@ class ListDataSources:
     def __init__(self, uow: UnitOfWorkFactory) -> None:
         self._uow = uow
 
-    async def execute(self, context: SecurityContext, page: PageRequest) -> Page[DataSourceView]:
+    async def execute(
+        self, context: SecurityContext, page: PageRequest, *, knowledge_base_id: UUID | None = None
+    ) -> Page[DataSourceView]:
         context.require(Permission.DATA_SOURCES_READ)
         everything = context.has_permission(Permission.KNOWLEDGE_BASES_MANAGE)
         async with self._uow() as uow:
-            sources = await uow.data_sources.page(page, visible_to=None if everything else context.user_id)
+            sources = await uow.data_sources.page(
+                page, visible_to=None if everything else context.user_id, knowledge_base_id=knowledge_base_id
+            )
             ids = [source.id for source in sources.items]
             kbs = await uow.data_sources.knowledge_base_of(ids)
             views = [
