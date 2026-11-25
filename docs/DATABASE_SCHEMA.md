@@ -481,7 +481,7 @@ credentials удаляются немедленно; строки `knowledge_bas
 | `section_path` | `text[]` | Иерархия заголовков |
 | `sheet_name` | `text` | XLSX |
 | `row_start`, `row_end` | `integer` | XLSX/CSV |
-| `search_vector` | `tsvector` | `GENERATED ALWAYS AS (to_tsvector(<config>, content)) STORED`; конфигурация — открытый вопрос |
+| `search_vector` | `tsvector` | `GENERATED ALWAYS AS (to_tsvector('russian', content)) STORED` ([ADR-018](adr/0018-full-text-search-configuration.md)); миграции `0011`, `0012` |
 
 Индексы: `GIN (search_vector)`, `(document_version_id)`, `(data_source_id)`.
 
@@ -711,14 +711,13 @@ Blueprint требует **определить** lifecycle и сроки; ко�
 
 ## 10. Открытые вопросы
 
-1. Хранение векторов разной размерности (планируемый ADR).
-2. FTS-конфигурация для русского/английского контента.
-3. Idempotency keys: PostgreSQL или Redis (планируемый ADR).
-4. RLS как второй рубеж доступа на уровне KB (планируемый ADR).
-5. Конкретные сроки retention и политика для chat history.
-6. Состав полей `ApplicationSettingsV1` и соответствующих instance-границ.
+1. Idempotency keys: PostgreSQL или Redis (планируемый ADR).
+2. RLS как второй рубеж доступа на уровне KB (планируемый ADR).
+3. Конкретные сроки retention и политика для chat history.
+4. Состав полей `ApplicationSettingsV1` и соответствующих instance-границ.
 
 Решено: одна организация на инсталляцию ([ADR-012](adr/0012-single-organization-deployment.md)), сессии
 ([ADR-013](adr/0013-auth-session-strategy.md)), доступ к ассистентам ([ADR-005](adr/0005-assistant-access-model.md)), хранение настроек и состояние setup
 ([ADR-006](adr/0006-initial-setup-and-system-configuration.md)), Document Source и разделение
-источник/документ/версия/результат ([ADR-008](adr/0008-unified-document-ingestion.md)).
+источник/документ/версия/результат ([ADR-008](adr/0008-unified-document-ingestion.md)), хранение векторов
+([ADR-017](adr/0017-vector-storage.md)), конфигурация full-text search ([ADR-018](adr/0018-full-text-search-configuration.md)).
