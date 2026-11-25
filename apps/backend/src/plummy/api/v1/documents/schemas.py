@@ -11,7 +11,9 @@ from pydantic import BaseModel
 from plummy.api.v1.jobs.schemas import JobResponse
 from plummy.application.documents.upload import UploadResult
 from plummy.application.documents.use_cases import DocumentView
+from plummy.application.documents.viewer import SourceView
 from plummy.application.pagination import Page
+from plummy.application.ports import StoredChunk
 from plummy.domain.documents import DocumentStatus, DocumentVersion, JobKind, JobStatus, VersionStatus
 from plummy.domain.knowledge import DataSourceType
 
@@ -133,3 +135,70 @@ class ReindexResponse(BaseModel):
 
     job: JobResponse
     created: bool
+
+
+class ViewerDocument(BaseModel):
+    id: UUID
+    filename: str
+    mime_type: str | None
+
+
+class ViewerVersion(BaseModel):
+    id: UUID
+    version_number: int
+    is_current: bool
+
+
+class ViewerChunk(BaseModel):
+    id: UUID
+    content: str
+    page_start: int | None
+    page_end: int | None
+    section_path: list[str]
+    sheet_name: str | None
+    row_start: int | None
+    row_end: int | None
+
+    @classmethod
+    def build(cls, chunk: StoredChunk) -> ViewerChunk:
+        return cls(
+            id=chunk.id,
+            content=chunk.content,
+            page_start=chunk.page_start,
+            page_end=chunk.page_end,
+            section_path=list(chunk.section_path),
+            sheet_name=chunk.sheet_name,
+            row_start=chunk.row_start,
+            row_end=chunk.row_end,
+        )
+
+
+class ViewerContext(BaseModel):
+    before: list[str]
+    after: list[str]
+
+
+class SourceViewResponse(BaseModel):
+    """Text is data: the client renders it as plain text, never as HTML (API_CONTRACTS.md §2.11)."""
+
+    document: ViewerDocument
+    version: ViewerVersion
+    chunk: ViewerChunk
+    context: ViewerContext
+
+    @classmethod
+    def build(cls, view: SourceView) -> SourceViewResponse:
+        passage = view.passage
+        return cls(
+            document=ViewerDocument(
+                id=view.document.id, filename=view.document.filename, mime_type=view.document.mime_type
+            ),
+            version=ViewerVersion(
+                id=view.version.id, version_number=view.version.version_number, is_current=view.is_current
+            ),
+            chunk=ViewerChunk.build(passage.chunk),
+            context=ViewerContext(
+                before=[chunk.content for chunk in passage.before],
+                after=[chunk.content for chunk in passage.after],
+            ),
+        )

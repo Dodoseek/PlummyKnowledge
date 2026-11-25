@@ -601,7 +601,7 @@ Keyword-ветка ищет по **любому** слову запроса (с�
 Привязка источника к KB требует подтверждения, что все участники KB имеют право видеть все документы источника
 (§8 Document ACL); UI показывает предупреждение, API принимает флаг `acl_acknowledged: true` **[Proposed]**.
 
-### 2.11 `documents` (§5, §6) — реализовано, кроме source viewer и `Idempotency-Key`
+### 2.11 `documents` (§5, §6) — реализовано, кроме `Idempotency-Key`
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
@@ -611,7 +611,7 @@ Keyword-ветка ищет по **любому** слову запроса (с�
 | GET | `/api/v1/documents/{id}/versions` | Версии | KB `read` | auth | — | — | — |
 | DELETE | `/api/v1/documents/{id}` | Удаление: немедленное исключение из retrieval + purge job | KB `manage` | auth | Idem | `document.deleted` | — |
 | POST | `/api/v1/documents/{id}/reindex` | Переиндексация | KB `manage` | auth | Idem | `document.reindex.requested` | expensive |
-| GET | `/api/v1/documents/{id}/versions/{version_id}/chunks/{chunk_id}/view` | Защищённый in-app source viewer (§5) | KB `read` | auth | — | — **[Proposed: `document.viewed` опционально]** | general |
+| GET | `/api/v1/documents/{id}/versions/{version_id}/chunks/{chunk_id}/view` | Защищённый in-app source viewer (§5) | KB `read` | auth | — | — (`document.viewed` не пишется) | — |
 
 **Upload `202`:**
 
@@ -674,6 +674,11 @@ vectors и файлов выполняется сразу задачей `mainte
 
 Доступ проверяется при **каждом** запросе (наличие цитаты в истории не даёт права). Удалённый/purged документ или
 отозванный доступ → `404`. Текст отдаётся как данные; клиент отображает его без интерпретации HTML.
+Реализация — `application/documents/viewer.py` (`ViewSource`): chunk отдаётся, только если принадлежит именно
+этой версии этого документа; `context` — до 2 соседних chunks того же набора с каждой стороны (по `chunk_index`).
+Любое несовпадение (чужой chunk, версия другого документа, неизвестные ID) неотличимо от отсутствия доступа:
+`404 not_found` с одним и тем же `detail`. `is_current` — участвует ли версия в retrieval сейчас; старая версия,
+chunks которой ещё не удалены, открывается с `is_current: false`. `Cache-Control: no-store`.
 
 ### 2.12 `assistants` (§5) — реализовано
 

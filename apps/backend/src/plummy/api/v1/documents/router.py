@@ -16,6 +16,7 @@ from plummy.api.v1.documents.schemas import (
     DocumentListResponse,
     DocumentResponse,
     ReindexResponse,
+    SourceViewResponse,
     UploadResponse,
     VersionListResponse,
     VersionResponse,
@@ -128,6 +129,15 @@ async def list_document_versions(
 ) -> VersionListResponse:
     versions = await resources.documents.versions.execute(context, document_id)
     return VersionListResponse(items=[VersionResponse.build(version) for version in versions])
+
+
+@router.get("/{document_id}/versions/{version_id}/chunks/{chunk_id}/view", response_model=SourceViewResponse)
+async def view_source(
+    document_id: UUID, version_id: UUID, chunk_id: UUID, context: CurrentContext, resources: ResourcesDep
+) -> SourceViewResponse:
+    """The cited passage with its neighbours; access is checked again on every request."""
+    view = await resources.documents.view.execute(context, document_id, version_id, chunk_id)
+    return SourceViewResponse.build(view)
 
 
 @router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)

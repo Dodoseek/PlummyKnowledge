@@ -638,3 +638,18 @@ async def test_over_a_real_connection_heartbeats_flow_and_a_disconnect_stops_the
     finally:
         server.should_exit = True
         await asyncio.wait_for(serving, 10)
+
+
+async def test_a_citation_opens_in_the_viewer_only_while_access_lasts(chat: Chat) -> None:
+    [citation] = named(events(await send(chat)), "citation")
+    route = citation["viewer_route"]
+    api = (
+        f"/api/v1/documents/{citation['document_id']}/versions/{citation['document_version_id']}"
+        f"/chunks/{citation['chunk_id']}/view"
+    )
+    assert route.startswith(f"/viewer/documents/{citation['document_id']}/")
+    opened = await chat.member.get(api)
+    assert opened.status_code == 200, opened.text
+    assert opened.json()["chunk"]["id"] == citation["chunk_id"]
+    await grant_read(chat.env, chat.env.hr)  # access revoked: the citation in the history grants nothing
+    problem(await chat.member.get(api), 404, "not_found")

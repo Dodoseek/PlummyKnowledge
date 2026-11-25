@@ -747,6 +747,28 @@ class NewEmbedding:
     vector: tuple[float, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class StoredChunk:
+    """A chunk as the source viewer shows it (API_CONTRACTS.md §2.11)."""
+
+    id: UUID
+    chunk_index: int
+    content: str
+    page_start: int | None
+    page_end: int | None
+    section_path: tuple[str, ...]
+    sheet_name: str | None
+    row_start: int | None
+    row_end: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class ChunkNeighbourhood:
+    chunk: StoredChunk
+    before: tuple[StoredChunk, ...]
+    after: tuple[StoredChunk, ...]
+
+
 class ChunkRepository(Protocol):
     """Chunks (stage 8) and their vectors (stage 9). Inserts ignore rows that already exist: a retried or
     concurrent run of the same job never duplicates them (SC-09)."""
@@ -787,6 +809,13 @@ class ChunkRepository(Protocol):
 
     async def delete_for_document(self, document_id: UUID) -> int:
         """All chunks of the document; their vectors go with them (``ON DELETE CASCADE``)."""
+        ...
+
+    async def around(
+        self, document_id: UUID, version_id: UUID, chunk_id: UUID, *, neighbours: int
+    ) -> ChunkNeighbourhood | None:
+        """The chunk if it belongs to that version of that document, with up to ``neighbours`` chunks of the
+        same chunk set on each side (by ``chunk_index``)."""
         ...
 
 

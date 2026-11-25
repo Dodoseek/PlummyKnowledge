@@ -20,6 +20,7 @@ from plummy.application.ports import (
     ActivationTokenRepository,
     AssistantRepository,
     AuditLog,
+    ChunkNeighbourhood,
     ChunkRepository,
     ChunkSearch,
     ChunkToEmbed,
@@ -48,6 +49,7 @@ from plummy.application.ports import (
     SessionRepository,
     SessionWithUser,
     SetChange,
+    StoredChunk,
     UniqueViolationError,
     UserQuery,
     UserRepository,
@@ -2048,6 +2050,50 @@ class SqlChunkRepository:
             delete(DocumentChunkModel).where(DocumentChunkModel.document_id == document_id)
         )
         return int(getattr(result, "rowcount", 0) or 0)
+
+    async def around(
+        self, document_id: UUID, version_id: UUID, chunk_id: UUID, *, neighbours: int
+    ) -> ChunkNeighbourhood | None:
+        row = await self._db.scalar(
+            select(DocumentChunkModel).where(
+                DocumentChunkModel.id == chunk_id,
+                DocumentChunkModel.document_id == document_id,
+                DocumentChunkModel.document_version_id == version_id,
+            )
+        )
+        if row is None:
+            return None
+        first, last = row.chunk_index - neighbours, row.chunk_index + neighbours
+        rows = await self._db.scalars(
+            select(DocumentChunkModel)
+            .where(
+                DocumentChunkModel.document_version_id == version_id,
+                DocumentChunkModel.chunk_set == row.chunk_set,
+                DocumentChunkModel.chunk_index.between(first, last),
+                DocumentChunkModel.id != row.id,
+            )
+            .order_by(DocumentChunkModel.chunk_index)
+        )
+        others = [_stored_chunk(other) for other in rows.all()]
+        return ChunkNeighbourhood(
+            chunk=_stored_chunk(row),
+            before=tuple(c for c in others if c.chunk_index < row.chunk_index),
+            after=tuple(c for c in others if c.chunk_index > row.chunk_index),
+        )
+
+
+def _stored_chunk(row: DocumentChunkModel) -> StoredChunk:
+    return StoredChunk(
+        id=row.id,
+        chunk_index=row.chunk_index,
+        content=row.content,
+        page_start=row.page_start,
+        page_end=row.page_end,
+        section_path=tuple(row.section_path or ()),
+        sheet_name=row.sheet_name,
+        row_start=row.row_start,
+        row_end=row.row_end,
+    )
 
 
 def _job(row: IngestionJobModel) -> IngestionJob:

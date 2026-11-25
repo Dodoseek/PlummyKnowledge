@@ -49,6 +49,7 @@ from plummy.application.documents.use_cases import (
     ReindexDocument,
     ReindexKnowledgeBase,
 )
+from plummy.application.documents.viewer import ViewSource
 from plummy.application.evaluation.runner import RunRetrievalEvaluation
 from plummy.application.groups.use_cases import (
     CreateGroup,
@@ -276,6 +277,7 @@ class DocumentServices:
     delete: DeleteDocument
     reindex: ReindexDocument
     reindex_knowledge_base: ReindexKnowledgeBase
+    view: ViewSource
 
 
 @dataclass(frozen=True, slots=True)
@@ -675,6 +677,7 @@ def build_resources(
             delete=DeleteDocument(uow, jobs, clock),
             reindex=ReindexDocument(uow, jobs, limiter, clock),
             reindex_knowledge_base=ReindexKnowledgeBase(uow, jobs, limiter, clock),
+            view=ViewSource(uow),
         ),
         job_admin=JobServices(list=ListJobs(uow), get=GetJob(uow), retry=RetryJob(uow, jobs, limiter, clock)),
         secrets=vault,
