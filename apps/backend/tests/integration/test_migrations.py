@@ -290,9 +290,9 @@ async def test_chat_tables_keep_history_apart_from_documents(migrator: Migrator,
     await migrator.upgrade()
     actions = await _query(
         database_url,
-        "SELECT conname::text || ':' || confdeltype::text FROM pg_constraint WHERE contype = 'f' AND conrelid IN "
-        "('conversations'::regclass, 'messages'::regclass, 'message_citations'::regclass, "
-        "'generation_runs'::regclass) ORDER BY conname",
+        "SELECT conname::text || ':' || confdeltype::text FROM pg_constraint "
+        "WHERE contype = 'f' AND conrelid IN ('conversations'::regclass, 'messages'::regclass, "
+        "'message_citations'::regclass, 'generation_runs'::regclass) ORDER BY conname",
     )
     assert actions == [
         "fk_conversations_assistant_id_assistants:r",

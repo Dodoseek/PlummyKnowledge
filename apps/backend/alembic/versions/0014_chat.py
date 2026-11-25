@@ -1,10 +1,10 @@
 """Conversations, messages, citations and generation runs (DATABASE_SCHEMA.md §6, ADR-019).
 
 A conversation belongs to one user and one assistant. Assistants are only soft-deleted, so the link is
-``RESTRICT``; deleting a user (purge) takes the conversations with it. Citations are a snapshot: they keep the
-document, version and chunk IDs without foreign keys, so purging a document does not touch history, and opening
-a citation checks access again. A generation run keeps the model and profile it used; deleting either does not
-block on history (``SET NULL``). Prompts and retrieved text are never stored.
+``RESTRICT``; deleting a user (purge) takes the conversations with it. Citations are a snapshot: they keep
+the document, version and chunk IDs without foreign keys, so purging a document does not touch history, and
+opening a citation checks access again. A generation run keeps the model and profile it used; deleting either
+does not block on history (``SET NULL``). Prompts and retrieved text are never stored.
 
 Revision ID: 0014
 Revises: 0013

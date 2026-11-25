@@ -831,7 +831,7 @@ class IngestionJobModel(Base):
 
 
 class ConversationModel(Base):
-    """A user's conversation with an assistant (DATABASE_SCHEMA.md §6.1). Private to its owner; soft-deleted."""
+    """A user's conversation with an assistant (DATABASE_SCHEMA.md §6.1); private to its owner."""
 
     __tablename__ = "conversations"
     __table_args__ = (
@@ -862,7 +862,7 @@ class ConversationModel(Base):
 
 
 class MessageModel(Base):
-    """A message of a conversation (DATABASE_SCHEMA.md §6.2); ``client_message_id`` makes sending idempotent."""
+    """A message of a conversation (DATABASE_SCHEMA.md §6.2); ``client_message_id`` dedupes sending."""
 
     __tablename__ = "messages"
     __table_args__ = (
