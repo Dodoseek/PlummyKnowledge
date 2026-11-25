@@ -1,0 +1,1145 @@
+{
+  "name": "synthetic-v1",
+  "description": "Synthetic policies of a fictional logistics company (ru/en; md, txt, csv) with similar and conflicting documents. All names, addresses and contacts are invented.",
+  "documents": [
+    "eng-code-review.md",
+    "eng-oncall.md",
+    "eng-release-process.txt",
+    "equipment-catalog.csv",
+    "fin-avansovye-otchety.txt",
+    "fin-expense-policy-eu.md",
+    "fin-expense-policy-us.md",
+    "fin-komandirovki-2023.md",
+    "fin-komandirovki-2025.md",
+    "fin-zakupki.md",
+    "holidays-2025.csv",
+    "hr-bolnichniy.md",
+    "hr-dms.md",
+    "hr-onboarding.md",
+    "hr-otpusk-germaniya.md",
+    "hr-otpusk-rossiya.md",
+    "hr-parental-leave.md",
+    "hr-performance-review.md",
+    "hr-udalennaya-rabota.md",
+    "it-acceptable-use.md",
+    "it-backup-policy.md",
+    "it-incidenty.md",
+    "it-noutbuki.md",
+    "it-paroli.md",
+    "it-vpn.txt",
+    "legal-nda.md",
+    "legal-podarki.md",
+    "office-contacts.csv",
+    "office-kazan.md",
+    "office-moskva.md",
+    "product-roadmap-2025.md",
+    "product-roadmap-2026.md",
+    "sales-skidki.md",
+    "security-data-classification.md",
+    "support-sla.md",
+    "training-courses.csv"
+  ],
+  "questions": [
+    {
+      "id": "q001",
+      "question": "Сколько дней отпуска в году у сотрудника московского офиса?",
+      "language": "ru",
+      "tags": [
+        "similar"
+      ],
+      "relevant": [
+        {
+          "document": "hr-otpusk-rossiya.md",
+          "evidence": "28 календарных дней"
+        }
+      ]
+    },
+    {
+      "id": "q002",
+      "question": "Сколько отпускных дней положено в Гамбурге?",
+      "language": "ru",
+      "tags": [
+        "similar"
+      ],
+      "relevant": [
+        {
+          "document": "hr-otpusk-germaniya.md",
+          "evidence": "30 рабочих дней"
+        }
+      ]
+    },
+    {
+      "id": "q003",
+      "question": "Сколько неиспользованных дней отпуска можно перенести на следующий год в российских офисах?",
+      "language": "ru",
+      "tags": [
+        "similar"
+      ],
+      "relevant": [
+        {
+          "document": "hr-otpusk-rossiya.md",
+          "evidence": "не более пяти дней"
+        }
+      ]
+    },
+    {
+      "id": "q004",
+      "question": "До какой даты нужно использовать перенесённый отпуск в немецком офисе?",
+      "language": "ru",
+      "tags": [
+        "similar"
+      ],
+      "relevant": [
+        {
+          "document": "hr-otpusk-germaniya.md",
+          "evidence": "до 31 марта"
+        }
+      ]
+    },
+    {
+      "id": "q005",
+      "question": "За сколько дней подавать заявление на отпуск в России?",
+      "language": "ru",
+      "tags": [
+        "similar"
+      ],
+      "relevant": [
+        {
+          "document": "hr-otpusk-rossiya.md",
+          "evidence": "не позднее чем за 14 дней"
+        }
+      ]
+    },
+    {
+      "id": "q006",
+      "question": "Когда добавляется дополнительный день отпуска за стаж?",
+      "language": "ru",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "hr-otpusk-rossiya.md",
+          "evidence": "После пяти лет непрерывной"
+        }
+      ]
+    },
+    {
+      "id": "q007",
+      "question": "До скольки нужно сообщить руководителю, что я заболел?",
+      "language": "ru",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "hr-bolnichniy.md",
+          "evidence": "до 10:00"
+        }
+      ]
+    },
+    {
+      "id": "q008",
+      "question": "Сколько процентов зарплаты платят в первые дни больничного?",
+      "language": "ru",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "hr-bolnichniy.md",
+          "evidence": "до 100% среднего заработка"
+        }
+      ]
+    },
+    {
+      "id": "q009",
+      "question": "В какой срок передать номер больничного листа в кадры?",
+      "language": "ru",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "hr-bolnichniy.md",
+          "evidence": "в течение двух рабочих дней"
+        }
+      ]
+    },
+    {
+      "id": "q010",
+      "question": "Сколько дней в неделю можно работать из дома?",
+      "language": "ru",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "hr-udalennaya-rabota.md",
+          "evidence": "до трёх дней в неделю"
+        }
+      ]
+    },
+    {
+      "id": "q011",
+      "question": "В какие часы обязательно быть на связи при удалёнке?",
+      "language": "ru",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "hr-udalennaya-rabota.md",
+          "evidence": "С 11:00 до 16:00"
+        }
+      ]
+    },
+    {
+      "id": "q012",
+      "question": "Какую сумму компенсируют за домашний интернет?",
+      "language": "ru",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "hr-udalennaya-rabota.md",
+          "evidence": "1500 рублей в месяц"
+        }
+      ]
+    },
+    {
+      "id": "q013",
+      "question": "Какой испытательный срок у руководителей?",
+      "language": "ru",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "hr-onboarding.md",
+          "evidence": "для руководителей — шесть месяцев"
+        }
+      ]
+    },
+    {
+      "id": "q014",
+      "question": "Что нужно сделать новичку в первую неделю работы?",
+      "language": "ru",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "hr-onboarding.md",
+          "evidence": "вводный курс по информационной безопасности"
+        }
+      ]
+    },
+    {
+      "id": "q015",
+      "question": "Входит ли стоматология в ДМС?",
+      "language": "ru",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "hr-dms.md",
+          "evidence": "стоматологию"
+        }
+      ]
+    },
+    {
+      "id": "q016",
+      "question": "Можно ли прикрепить детей к медицинской страховке и сколько это стоит?",
+      "language": "ru",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "hr-dms.md",
+          "evidence": "за 50% стоимости полиса"
+        }
+      ]
+    },
+    {
+      "id": "q017",
+      "question": "Какая страховая компания обслуживает полис ДМС?",
+      "language": "ru",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "hr-dms.md",
+          "evidence": "Полис-Плюс"
+        }
+      ]
+    },
+    {
+      "id": "q018",
+      "question": "Какие сейчас суточные в командировке по России?",
+      "language": "ru",
+      "tags": [
+        "conflict"
+      ],
+      "relevant": [
+        {
+          "document": "fin-komandirovki-2025.md",
+          "evidence": "1000 рублей в день"
+        }
+      ]
+    },
+    {
+      "id": "q019",
+      "question": "Какой лимит на гостиницу в командировке?",
+      "language": "ru",
+      "tags": [
+        "conflict"
+      ],
+      "relevant": [
+        {
+          "document": "fin-komandirovki-2025.md",
+          "evidence": "7500 рублей за ночь"
+        }
+      ]
+    },
+    {
+      "id": "q020",
+      "question": "Сколько можно потратить на отель в Санкт-Петербурге?",
+      "language": "ru",
+      "tags": [
+        "conflict"
+      ],
+      "relevant": [
+        {
+          "document": "fin-komandirovki-2025.md",
+          "evidence": "до 9000 рублей за ночь"
+        }
+      ]
+    },
+    {
+      "id": "q021",
+      "question": "В течение скольких дней сдавать отчёт о командировке?",
+      "language": "ru",
+      "tags": [
+        "conflict"
+      ],
+      "relevant": [
+        {
+          "document": "fin-komandirovki-2025.md",
+          "evidence": "в течение трёх рабочих дней"
+        }
+      ]
+    },
+    {
+      "id": "q022",
+      "question": "Какие были суточные по положению 2023 года?",
+      "language": "ru",
+      "tags": [
+        "conflict"
+      ],
+      "relevant": [
+        {
+          "document": "fin-komandirovki-2023.md",
+          "evidence": "700 рублей в день"
+        }
+      ]
+    },
+    {
+      "id": "q023",
+      "question": "Кто покупает билеты для командировки?",
+      "language": "ru",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "fin-komandirovki-2025.md",
+          "evidence": "Билеты бронирует travel-координатор"
+        }
+      ]
+    },
+    {
+      "id": "q024",
+      "question": "В какой системе заполняется авансовый отчёт?",
+      "language": "ru",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "fin-avansovye-otchety.txt",
+          "evidence": "«Финтрек»"
+        }
+      ]
+    },
+    {
+      "id": "q025",
+      "question": "Что делать, если потерял чек из поездки?",
+      "language": "ru",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "fin-avansovye-otchety.txt",
+          "evidence": "пишет объяснительную записку"
+        }
+      ]
+    },
+    {
+      "id": "q026",
+      "question": "Сколько хранить бумажные чеки?",
+      "language": "ru",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "fin-avansovye-otchety.txt",
+          "evidence": "шесть месяцев"
+        }
+      ]
+    },
+    {
+      "id": "q027",
+      "question": "С какой суммы закупки нужны три коммерческих предложения?",
+      "language": "ru",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "fin-zakupki.md",
+          "evidence": "свыше 100 000 рублей"
+        }
+      ]
+    },
+    {
+      "id": "q028",
+      "question": "Кто согласует закупку на 700 тысяч рублей?",
+      "language": "ru",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "fin-zakupki.md",
+          "evidence": "финансовый директор"
+        }
+      ]
+    },
+    {
+      "id": "q029",
+      "question": "Сколько длится проверка нового поставщика?",
+      "language": "ru",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "fin-zakupki.md",
+          "evidence": "до пяти рабочих дней"
+        }
+      ]
+    },
+    {
+      "id": "q030",
+      "question": "Какая минимальная длина пароля?",
+      "language": "ru",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "it-paroli.md",
+          "evidence": "не менее 14 символов"
+        }
+      ]
+    },
+    {
+      "id": "q031",
+      "question": "Нужно ли регулярно менять пароль?",
+      "language": "ru",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "it-paroli.md",
+          "evidence": "не меняется по расписанию"
+        }
+      ]
+    },
+    {
+      "id": "q032",
+      "question": "Где хранить рабочие пароли?",
+      "language": "ru",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "it-paroli.md",
+          "evidence": "«Ключница»"
+        }
+      ]
+    },
+    {
+      "id": "q033",
+      "question": "Для каких сервисов обязательна двухфакторная аутентификация?",
+      "language": "ru",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "it-paroli.md",
+          "evidence": "для почты, VPN и всех облачных сервисов"
+        }
+      ]
+    },
+    {
+      "id": "q034",
+      "question": "Как часто меняют ноутбуки?",
+      "language": "ru",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "it-noutbuki.md",
+          "evidence": "раз в четыре года"
+        }
+      ]
+    },
+    {
+      "id": "q035",
+      "question": "Можно ли отключить шифрование диска на ноутбуке?",
+      "language": "ru",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "it-noutbuki.md",
+          "evidence": "отключать шифрование запрещено"
+        }
+      ]
+    },
+    {
+      "id": "q036",
+      "question": "Какой адрес VPN-сервера?",
+      "language": "ru",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "it-vpn.txt",
+          "evidence": "vpn.nordwind.example"
+        }
+      ]
+    },
+    {
+      "id": "q037",
+      "question": "Через сколько часов отключается VPN?",
+      "language": "ru",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "it-vpn.txt",
+          "evidence": "через 12 часов"
+        }
+      ]
+    },
+    {
+      "id": "q038",
+      "question": "Можно ли подключаться к VPN с личного телефона?",
+      "language": "ru",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "it-vpn.txt",
+          "evidence": "с личных устройств нельзя"
+        }
+      ]
+    },
+    {
+      "id": "q039",
+      "question": "Куда сообщить о фишинговом письме?",
+      "language": "ru",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "it-incidenty.md",
+          "evidence": "security@nordwind.example"
+        }
+      ]
+    },
+    {
+      "id": "q040",
+      "question": "Нужно ли выключать компьютер, если он заражён вирусом?",
+      "language": "ru",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "it-incidenty.md",
+          "evidence": "Не выключайте заражённый компьютер"
+        }
+      ]
+    },
+    {
+      "id": "q041",
+      "question": "Сколько парковочных мест у московского офиса?",
+      "language": "ru",
+      "tags": [
+        "similar"
+      ],
+      "relevant": [
+        {
+          "document": "office-moskva.md",
+          "evidence": "20 парковочных мест"
+        }
+      ]
+    },
+    {
+      "id": "q042",
+      "question": "Есть ли парковка у офиса в Казани?",
+      "language": "ru",
+      "tags": [
+        "similar"
+      ],
+      "relevant": [
+        {
+          "document": "office-kazan.md",
+          "evidence": "8 парковочных мест"
+        }
+      ]
+    },
+    {
+      "id": "q043",
+      "question": "До какого времени заказать гостевой пропуск в Москве?",
+      "language": "ru",
+      "tags": [
+        "similar"
+      ],
+      "relevant": [
+        {
+          "document": "office-moskva.md",
+          "evidence": "накануне до 18:00"
+        }
+      ]
+    },
+    {
+      "id": "q044",
+      "question": "Где получить пропуск в казанском офисе?",
+      "language": "ru",
+      "tags": [
+        "similar"
+      ],
+      "relevant": [
+        {
+          "document": "office-kazan.md",
+          "evidence": "у охраны на первом этаже"
+        }
+      ]
+    },
+    {
+      "id": "q045",
+      "question": "Сколько действует NDA после увольнения?",
+      "language": "ru",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "legal-nda.md",
+          "evidence": "три года после увольнения"
+        }
+      ]
+    },
+    {
+      "id": "q046",
+      "question": "Можно ли принять подарочный сертификат от поставщика?",
+      "language": "ru",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "legal-podarki.md",
+          "evidence": "подарочные сертификаты принимать запрещено"
+        }
+      ]
+    },
+    {
+      "id": "q047",
+      "question": "Подарок какой стоимости можно принять без декларирования?",
+      "language": "ru",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "legal-podarki.md",
+          "evidence": "до 3000 рублей"
+        }
+      ]
+    },
+    {
+      "id": "q048",
+      "question": "Какую скидку менеджер может дать сам?",
+      "language": "ru",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "sales-skidki.md",
+          "evidence": "до 5% самостоятельно"
+        }
+      ]
+    },
+    {
+      "id": "q049",
+      "question": "Кто согласует скидку 20%?",
+      "language": "ru",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "sales-skidki.md",
+          "evidence": "коммерческий директор"
+        }
+      ]
+    },
+    {
+      "id": "q050",
+      "question": "За сколько поддержка отвечает на критичный инцидент P1?",
+      "language": "ru",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "support-sla.md",
+          "evidence": "в течение 30 минут"
+        }
+      ]
+    },
+    {
+      "id": "q051",
+      "question": "Какой срок первого ответа для приоритета P3?",
+      "language": "ru",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "support-sla.md",
+          "evidence": "в течение одного рабочего дня"
+        }
+      ]
+    },
+    {
+      "id": "q052",
+      "question": "How long is paid parental leave for the primary caregiver?",
+      "language": "en",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "hr-parental-leave.md",
+          "evidence": "16 weeks"
+        }
+      ]
+    },
+    {
+      "id": "q053",
+      "question": "When do employees become eligible for parental leave?",
+      "language": "en",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "hr-parental-leave.md",
+          "evidence": "after six months of employment"
+        }
+      ]
+    },
+    {
+      "id": "q054",
+      "question": "In which months are performance reviews held?",
+      "language": "en",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "hr-performance-review.md",
+          "evidence": "in April and October"
+        }
+      ]
+    },
+    {
+      "id": "q055",
+      "question": "When are salary changes decided?",
+      "language": "en",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "hr-performance-review.md",
+          "evidence": "only in the April cycle"
+        }
+      ]
+    },
+    {
+      "id": "q056",
+      "question": "Is crypto mining allowed on a work laptop?",
+      "language": "en",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "it-acceptable-use.md",
+          "evidence": "Cryptocurrency mining"
+        }
+      ]
+    },
+    {
+      "id": "q057",
+      "question": "How long are database backups kept?",
+      "language": "en",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "it-backup-policy.md",
+          "evidence": "retained for 90 days"
+        }
+      ]
+    },
+    {
+      "id": "q058",
+      "question": "How often is a backup restore tested?",
+      "language": "en",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "it-backup-policy.md",
+          "evidence": "every quarter"
+        }
+      ]
+    },
+    {
+      "id": "q059",
+      "question": "What is required to access restricted data?",
+      "language": "en",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "security-data-classification.md",
+          "evidence": "approval of the data owner"
+        }
+      ]
+    },
+    {
+      "id": "q060",
+      "question": "What is the hotel limit for business trips in the EU?",
+      "language": "en",
+      "tags": [
+        "similar"
+      ],
+      "relevant": [
+        {
+          "document": "fin-expense-policy-eu.md",
+          "evidence": "160 EUR per night"
+        }
+      ]
+    },
+    {
+      "id": "q061",
+      "question": "What is the daily meal allowance in the United States?",
+      "language": "en",
+      "tags": [
+        "similar"
+      ],
+      "relevant": [
+        {
+          "document": "fin-expense-policy-us.md",
+          "evidence": "60 USD"
+        }
+      ]
+    },
+    {
+      "id": "q062",
+      "question": "How many approvals does a change to main need?",
+      "language": "en",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "eng-code-review.md",
+          "evidence": "two approvals"
+        }
+      ]
+    },
+    {
+      "id": "q063",
+      "question": "What is the recommended maximum size of a pull request?",
+      "language": "en",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "eng-code-review.md",
+          "evidence": "400 changed lines"
+        }
+      ]
+    },
+    {
+      "id": "q064",
+      "question": "When does the code freeze start before a release?",
+      "language": "en",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "eng-release-process.txt",
+          "evidence": "48 hours before the release"
+        }
+      ]
+    },
+    {
+      "id": "q065",
+      "question": "How quickly must the on-call engineer acknowledge a page?",
+      "language": "en",
+      "tags": [],
+      "relevant": [
+        {
+          "document": "eng-oncall.md",
+          "evidence": "within 15 minutes"
+        }
+      ]
+    },
+    {
+      "id": "q066",
+      "question": "When is SSO planned for enterprise customers?",
+      "language": "en",
+      "tags": [
+        "conflict"
+      ],
+      "relevant": [
+        {
+          "document": "product-roadmap-2026.md",
+          "evidence": "postponed from Q2 2025"
+        }
+      ]
+    },
+    {
+      "id": "q067",
+      "question": "What is planned for the second quarter of 2026?",
+      "language": "en",
+      "tags": [
+        "conflict"
+      ],
+      "relevant": [
+        {
+          "document": "product-roadmap-2026.md",
+          "evidence": "Route optimisation"
+        }
+      ]
+    },
+    {
+      "id": "q068",
+      "question": "What is the per diem for trips abroad?",
+      "language": "en",
+      "tags": [
+        "cross_language",
+        "conflict"
+      ],
+      "relevant": [
+        {
+          "document": "fin-komandirovki-2025.md",
+          "evidence": "50 евро в день"
+        }
+      ]
+    },
+    {
+      "id": "q069",
+      "question": "How many vacation days do employees in Russia get?",
+      "language": "en",
+      "tags": [
+        "cross_language",
+        "similar"
+      ],
+      "relevant": [
+        {
+          "document": "hr-otpusk-rossiya.md",
+          "evidence": "28 календарных дней"
+        }
+      ]
+    },
+    {
+      "id": "q070",
+      "question": "Какой email у юридического отдела?",
+      "language": "ru",
+      "tags": [
+        "table"
+      ],
+      "relevant": [
+        {
+          "document": "office-contacts.csv",
+          "evidence": "legal@nordwind.example"
+        }
+      ]
+    },
+    {
+      "id": "q071",
+      "question": "Кто контактное лицо по хозяйственным вопросам в Гамбурге?",
+      "language": "ru",
+      "tags": [
+        "table",
+        "cross_language"
+      ],
+      "relevant": [
+        {
+          "document": "office-contacts.csv",
+          "evidence": "Jonas Weber"
+        }
+      ]
+    },
+    {
+      "id": "q072",
+      "question": "Когда День России в 2025 году?",
+      "language": "ru",
+      "tags": [
+        "table"
+      ],
+      "relevant": [
+        {
+          "document": "holidays-2025.csv",
+          "evidence": "2025-06-12"
+        }
+      ]
+    },
+    {
+      "id": "q073",
+      "question": "Which German holiday is on October 3?",
+      "language": "en",
+      "tags": [
+        "table"
+      ],
+      "relevant": [
+        {
+          "document": "holidays-2025.csv",
+          "evidence": "Tag der Deutschen Einheit"
+        }
+      ]
+    },
+    {
+      "id": "q074",
+      "question": "Сколько стоит ноутбук разработчика?",
+      "language": "ru",
+      "tags": [
+        "table"
+      ],
+      "relevant": [
+        {
+          "document": "equipment-catalog.csv",
+          "evidence": "185000"
+        }
+      ]
+    },
+    {
+      "id": "q075",
+      "question": "Как часто меняют гарнитуры?",
+      "language": "ru",
+      "tags": [
+        "table"
+      ],
+      "relevant": [
+        {
+          "document": "equipment-catalog.csv",
+          "evidence": "Sonic Office H2"
+        }
+      ]
+    },
+    {
+      "id": "q076",
+      "question": "Какие курсы обязательны для сотрудников?",
+      "language": "ru",
+      "tags": [
+        "table",
+        "multi"
+      ],
+      "relevant": [
+        {
+          "document": "training-courses.csv",
+          "evidence": "Основы информационной безопасности"
+        },
+        {
+          "document": "training-courses.csv",
+          "evidence": "Защита персональных данных"
+        },
+        {
+          "document": "training-courses.csv",
+          "evidence": "Anti-bribery and Corruption"
+        }
+      ]
+    },
+    {
+      "id": "q077",
+      "question": "Сколько часов длится курс по переговорам?",
+      "language": "ru",
+      "tags": [
+        "table"
+      ],
+      "relevant": [
+        {
+          "document": "training-courses.csv",
+          "evidence": "Переговоры с клиентами"
+        }
+      ]
+    },
+    {
+      "id": "q078",
+      "question": "Какие требования безопасности к ноутбуку и VPN при работе из дома?",
+      "language": "ru",
+      "tags": [
+        "multi"
+      ],
+      "relevant": [
+        {
+          "document": "it-noutbuki.md",
+          "evidence": "Диск каждого ноутбука шифруется"
+        },
+        {
+          "document": "it-vpn.txt",
+          "evidence": "с личных устройств нельзя"
+        }
+      ]
+    },
+    {
+      "id": "q079",
+      "question": "Compare hotel limits for business trips in the EU and in the US.",
+      "language": "en",
+      "tags": [
+        "multi",
+        "similar"
+      ],
+      "relevant": [
+        {
+          "document": "fin-expense-policy-eu.md",
+          "evidence": "160 EUR per night"
+        },
+        {
+          "document": "fin-expense-policy-us.md",
+          "evidence": "220 USD per night"
+        }
+      ]
+    },
+    {
+      "id": "q080",
+      "question": "Какой размер годовой премии у менеджеров по продажам?",
+      "language": "ru",
+      "tags": [
+        "unanswerable"
+      ],
+      "relevant": []
+    },
+    {
+      "id": "q081",
+      "question": "Сколько стоит обед в столовой московского офиса?",
+      "language": "ru",
+      "tags": [
+        "unanswerable"
+      ],
+      "relevant": []
+    },
+    {
+      "id": "q082",
+      "question": "Можно ли взять в отпуск собаку в офис?",
+      "language": "ru",
+      "tags": [
+        "unanswerable"
+      ],
+      "relevant": []
+    },
+    {
+      "id": "q083",
+      "question": "Какой пароль от Wi-Fi в казанском офисе?",
+      "language": "ru",
+      "tags": [
+        "unanswerable"
+      ],
+      "relevant": []
+    },
+    {
+      "id": "q084",
+      "question": "Who is the CEO of the company?",
+      "language": "en",
+      "tags": [
+        "unanswerable"
+      ],
+      "relevant": []
+    },
+    {
+      "id": "q085",
+      "question": "What is the stock price of Nordwind?",
+      "language": "en",
+      "tags": [
+        "unanswerable"
+      ],
+      "relevant": []
+    },
+    {
+      "id": "q086",
+      "question": "How much is the relocation bonus for moving to Hamburg?",
+      "language": "en",
+      "tags": [
+        "unanswerable"
+      ],
+      "relevant": []
+    },
+    {
+      "id": "q087",
+      "question": "Есть ли в компании корпоративный спортзал?",
+      "language": "ru",
+      "tags": [
+        "unanswerable"
+      ],
+      "relevant": []
+    }
+  ]
+}

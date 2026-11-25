@@ -9,6 +9,7 @@
     secrets generate-key          print a new key ring entry (the only command that prints a key)
     secrets status                show the key ring and how many secrets use each key
     secrets rotate                re-encrypt all secrets with the primary key (safe to repeat)
+    eval run                      retrieval evaluation of a dataset through upload, workers and search
 
 Secrets are never accepted as arguments (they would end up in shell history and ``ps``) and never printed:
 passwords are read with a hidden prompt or from stdin (``--password-stdin``), and the bootstrap token is only
@@ -26,11 +27,20 @@ import time
 from collections.abc import Callable, Coroutine, Sequence
 from pathlib import Path
 from typing import Any, TextIO
+from uuid import UUID
 
 from plummy.application.errors import ApplicationError, InvalidInputError
+from plummy.application.evaluation.dataset import DatasetError, parse_dataset
+from plummy.application.evaluation.runner import DEFAULT_KS, EvalOptions, operator_context
+from plummy.application.retrieval.model import MAX_TOP_K, SearchMode
 from plummy.application.setup.use_cases import TokenIssueOutcome
 from plummy.application.setup.validation import AdministratorInput
-from plummy.composition import CliServices, build_cli_services
+from plummy.composition import (
+    CliServices,
+    EvaluationServices,
+    build_cli_services,
+    build_evaluation_services,
+)
 from plummy.core.config import ConfigurationError, Settings, get_settings
 from plummy.domain.secrets import is_valid_key_id
 from plummy.infrastructure.db.errors import DATABASE_UNAVAILABLE_ERRORS
@@ -45,6 +55,7 @@ from plummy.workers.app import close_celery_app, create_celery_app
 from plummy.workers.tasks.system import MAX_SIMULATED_FAILURES, PING_TASK
 
 ServicesFactory = Callable[[Settings], CliServices]
+EvaluationFactory = Callable[[Settings], EvaluationServices]
 CeleryAppFactory = Callable[[Settings], Any]
 
 
@@ -94,7 +105,73 @@ def _parser() -> argparse.ArgumentParser:
     generate.add_argument("--key-id", type=_key_id, help="id of the new key (default: today's date)")
     secrets_commands.add_parser("status", help="key ring and number of secrets per key")
     secrets_commands.add_parser("rotate", help="re-encrypt secrets that are not on the primary key")
+    evaluation = groups.add_parser("eval", help="retrieval evaluation (docs/evaluation/)")
+    eval_commands = evaluation.add_subparsers(dest="command", required=True)
+    run = eval_commands.add_parser(
+        "run", help="index a dataset in its own knowledge base and measure retrieval (JSON report)"
+    )
+    run.add_argument("--dataset", type=Path, required=True, help="manifest.json and documents/ inside")
+    run.add_argument("--email", required=True, help="active user with knowledge_bases.manage to act as")
+    run.add_argument("--embedding-profile", type=UUID, required=True, help="active embedding profile id")
+    run.add_argument(
+        "--mode",
+        action="append",
+        choices=[mode.value for mode in SearchMode],
+        help="search mode to measure (repeatable; default: all three)",
+    )
+    run.add_argument("--k", type=_ks, default=DEFAULT_KS, help="cut-offs, e.g. 1,3,5,10 (default)")
+    run.add_argument("--output", type=Path, help="write the report here instead of stdout")
+    run.add_argument(
+        "--timeout", type=_positive_seconds, default=1800.0, help="indexing wait, seconds (default 1800)"
+    )
     return parser
+
+
+def _ks(value: str) -> tuple[int, ...]:
+    try:
+        ks = tuple(sorted({int(part) for part in value.split(",") if part.strip()}))
+    except ValueError:
+        raise argparse.ArgumentTypeError("expected comma-separated integers") from None
+    if not ks or ks[0] < 1 or ks[-1] > MAX_TOP_K:
+        raise argparse.ArgumentTypeError(f"cut-offs must be between 1 and {MAX_TOP_K}")
+    return ks
+
+
+def _read_dataset(directory: Path) -> tuple[bytes, dict[str, bytes]]:
+    documents = directory / "documents"
+    files = {path.name: path.read_bytes() for path in sorted(documents.iterdir()) if path.is_file()}
+    return (directory / "manifest.json").read_bytes(), files
+
+
+async def _eval_run(
+    args: argparse.Namespace, settings: Settings, out: TextIO, err: TextIO, factory: EvaluationFactory
+) -> None:
+    manifest, files = await asyncio.to_thread(_read_dataset, args.dataset)
+    try:
+        dataset = parse_dataset(manifest, files)
+    except DatasetError as exc:
+        raise CliError(f"dataset: {exc}") from None
+    modes = tuple(SearchMode(mode) for mode in dict.fromkeys(args.mode or [m.value for m in SearchMode]))
+    options = EvalOptions(
+        embedding_profile_id=args.embedding_profile,
+        modes=modes,
+        ks=args.k,
+        indexing_timeout_seconds=args.timeout,
+    )
+    services = factory(settings)
+    try:
+        context = await operator_context(services.uow, services.clock, args.email)
+        report = await services.run.execute(
+            context, dataset, options, progress=lambda line: print(line, file=err, flush=True)
+        )
+    finally:
+        await services.aclose()
+    text = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
+    if args.output is None:
+        out.write(text)
+    else:
+        await asyncio.to_thread(args.output.write_text, text, encoding="utf-8")
+        print(f"report written to {args.output}", file=err)
 
 
 def _key_id(value: str) -> str:
@@ -261,6 +338,7 @@ def main(
     argv: Sequence[str] | None = None,
     *,
     services_factory: ServicesFactory = build_cli_services,
+    evaluation_factory: EvaluationFactory = build_evaluation_services,
     celery_app_factory: CeleryAppFactory = create_celery_app,
     settings: Settings | None = None,
     stdout: TextIO | None = None,
@@ -279,6 +357,9 @@ def main(
             return 0
         if args.group == "worker":
             _worker_check(args, resolved, out, celery_app_factory)
+            return 0
+        if args.group == "eval":
+            asyncio.run(_eval_run(args, resolved, out, err, evaluation_factory))
             return 0
         coroutine: Coroutine[Any, Any, None] = _main_async(args, services_factory, resolved, out, inp)
         asyncio.run(coroutine)

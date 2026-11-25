@@ -31,6 +31,7 @@ from plummy.application.documents.use_cases import (
     ListDocumentVersions,
     ReindexDocument,
 )
+from plummy.application.evaluation.runner import RunRetrievalEvaluation
 from plummy.application.groups.use_cases import (
     CreateGroup,
     DeleteGroup,
@@ -200,6 +201,7 @@ class KnowledgeServices:
     list: ListKnowledgeBases
     get: GetKnowledgeBase
     create: CreateKnowledgeBase
+    retrieve: RetrieveChunks
     search: SearchKnowledgeBase
 
 
@@ -490,6 +492,7 @@ def build_resources(
     vault = SecretVault(cipher, clock)
     http = SafeHttpClient(egress_policy, on_denied=EgressDenialAuditor(uow))
     gateway = HttpProviderGateway(http)
+    retrieve = RetrieveChunks(uow, gateway, vault)
     policy = session_policy(settings)
     issuer = SessionIssuer(policy)
     web_setup_enabled = settings.setup_mode is SetupMode.WEB
@@ -561,7 +564,8 @@ def build_resources(
             list=ListKnowledgeBases(uow),
             get=GetKnowledgeBase(uow),
             create=CreateKnowledgeBase(uow, clock, jobs),
-            search=SearchKnowledgeBase(uow, RetrieveChunks(uow, gateway, vault), limiter),
+            retrieve=retrieve,
+            search=SearchKnowledgeBase(uow, retrieve, limiter),
         ),
         documents=DocumentServices(
             upload=UploadDocument(uow, storage, jobs, limiter, clock, max_bytes=settings.upload_max_bytes),
@@ -577,6 +581,30 @@ def build_resources(
         storage=storage,
         jobs=jobs,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluationServices:
+    """``python -m plummy.cli eval``: the full application resources (database, Redis, job queue, providers),
+    because the run goes through upload, the workers and retrieval exactly like the web application."""
+
+    resources: Resources
+    uow: SqlAlchemyUnitOfWorkFactory
+    clock: Clock
+    run: RunRetrievalEvaluation
+
+    async def aclose(self) -> None:
+        await self.resources.aclose()
+
+
+def build_evaluation_services(settings: Settings) -> EvaluationServices:
+    resources = build_resources(settings)
+    uow = SqlAlchemyUnitOfWorkFactory(resources.session_factory)
+    clock = SystemClock()
+    run = RunRetrievalEvaluation(
+        uow, resources.knowledge.create, resources.documents.upload, resources.knowledge.retrieve, clock
+    )
+    return EvaluationServices(resources=resources, uow=uow, clock=clock, run=run)
 
 
 @dataclass(frozen=True, slots=True)

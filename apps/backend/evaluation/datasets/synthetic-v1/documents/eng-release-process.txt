@@ -1,0 +1,8 @@
+Release Process
+
+Regular releases ship every second Tuesday. A code freeze starts 48 hours before the release; after the
+freeze only release blockers are merged.
+
+Hotfixes can be released at any time with the approval of the on-call engineering lead.
+
+Every release has a rollback plan that is tested in staging before production.

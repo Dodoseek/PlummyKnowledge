@@ -121,6 +121,7 @@ services:
       - ./apps/backend/src:/app/src:ro
       - ./apps/backend/alembic:/app/alembic:ro
       - ./apps/backend/tests:/app/tests:ro
+      - ./apps/backend/evaluation:/app/evaluation:ro
       - ./apps/backend/pyproject.toml:/app/pyproject.toml:ro
       - ./VERSION:/VERSION:ro
       - secrets-data:/var/lib/plummy/secrets:ro

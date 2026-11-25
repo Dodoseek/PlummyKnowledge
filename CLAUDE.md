@@ -245,6 +245,14 @@ python3 scripts/check_secrets.py                               # secret scan в�
 python3 -m unittest discover -s scripts/tests                  # тесты scripts/
 ```
 
+Оценка retrieval ([docs/evaluation/](docs/evaluation/README.md); индексация набора расходует токены
+embedding-провайдера):
+
+```bash
+docker compose exec backend python -m plummy.cli eval run --dataset /app/evaluation/datasets/synthetic-v1 \
+  --email admin@example.com --embedding-profile <profile-id> --output /tmp/report.json
+```
+
 Секреты ([ADR-016](docs/adr/0016-secret-encryption.md), dev — в контейнере `migrate`):
 
 ```bash
