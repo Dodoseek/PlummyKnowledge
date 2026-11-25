@@ -483,7 +483,7 @@ credentials удаляются немедленно; строки `knowledge_bas
 | `row_start`, `row_end` | `integer` | XLSX/CSV |
 | `search_vector` | `tsvector` | `GENERATED ALWAYS AS (to_tsvector('russian', content)) STORED` ([ADR-018](adr/0018-full-text-search-configuration.md)); миграции `0011`, `0012` |
 
-Индексы: `GIN (search_vector)`, `(document_version_id)`, `(data_source_id)`.
+Индексы: `GIN (search_vector)` (`ix_document_chunks_search_vector`, `0012`), `(document_id)`, `(data_source_id)`.
 
 ### 5.10 `embeddings` (§6, §9, [ADR-017](adr/0017-vector-storage.md)) — реализовано, `0009`
 
@@ -707,7 +707,8 @@ Blueprint требует **определить** lifecycle и сроки; ко�
   `role_permissions`, `user_roles` + сид каталога и системных ролей), `0004` (`sessions`), `0005` (`audit_logs`),
   `0006` (`groups`, ссылки активации), `0007` (`secret_references`), `0008` (AI-провайдеры, модели, embedding
   profiles), `0009` (knowledge bases, источники, документы, версии, chunks, embeddings, `ingestion_jobs`), `0010`
-  (`ingestion_jobs.updated_at` и индекс неопубликованных jobs).
+  (`ingestion_jobs.updated_at` и индекс неопубликованных jobs), `0011` (`document_chunks.search_vector`, ADR-018),
+  `0012` (GIN-индекс `search_vector`, `CONCURRENTLY`).
 
 ## 10. Открытые вопросы
 

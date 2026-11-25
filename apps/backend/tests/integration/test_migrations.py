@@ -211,3 +211,33 @@ async def test_upgrade_from_foundation_revision(migrator: Migrator, database_url
     await migrator.downgrade("0001")
     tables = await _query(database_url, "SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
     assert tables == ["alembic_version"]
+
+
+async def test_chunk_search_vector_is_generated_and_indexed(migrator: Migrator, database_url: str) -> None:
+    # ADR-018: PostgreSQL computes the column with the russian configuration; the GIN index is valid.
+    await migrator.upgrade()
+    assert await _query(
+        database_url,
+        "SELECT attgenerated::text || ':' || pg_get_expr(d.adbin, d.adrelid) FROM pg_attribute a "
+        "JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum "
+        "WHERE a.attrelid = 'document_chunks'::regclass AND a.attname = 'search_vector'",
+    ) == ["s:to_tsvector('russian'::regconfig, content)"]
+    assert await _query(
+        database_url,
+        "SELECT i.indisvalid AND am.amname = 'gin' FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid "
+        "JOIN pg_am am ON am.oid = c.relam WHERE c.relname = 'ix_document_chunks_search_vector'",
+    ) == [True]
+
+
+async def test_chunk_search_vector_downgrade_and_upgrade_again(migrator: Migrator, database_url: str) -> None:
+    await migrator.upgrade()
+    await migrator.downgrade("0010")
+    assert await _query(
+        database_url,
+        "SELECT count(*) FROM pg_attribute WHERE attrelid = 'document_chunks'::regclass "
+        "AND attname = 'search_vector' AND NOT attisdropped",
+    ) == [0]
+    index_exists = "SELECT to_regclass('ix_document_chunks_search_vector') IS NOT NULL"
+    assert await _query(database_url, index_exists) == [False]
+    await migrator.upgrade()
+    assert await _query(database_url, index_exists) == [True]

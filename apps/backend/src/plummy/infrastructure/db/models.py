@@ -14,6 +14,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
+    Computed,
     DateTime,
     ForeignKey,
     Index,
@@ -24,7 +25,7 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, CITEXT, INET, JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, CITEXT, INET, JSONB, TSVECTOR
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -396,6 +397,9 @@ class EmbeddingProfileModel(Base):
 
 _KEY_CHECK = "~ '^[0-9a-f]{32}$'"  # server-generated storage keys (application/storage.py)
 _ERROR_CODE_CHECK = "~ '^[a-z_]{1,64}$'"  # typed codes only, never document content or provider output
+# Full-text search configuration of chunks (ADR-018); retrieval parses queries with the same configuration.
+FTS_CONFIG = "russian"
+SEARCH_VECTOR_EXPRESSION = f"to_tsvector('{FTS_CONFIG}'::regconfig, content)"
 
 
 class KnowledgeBaseModel(Base):
@@ -627,7 +631,7 @@ class DocumentVersionModel(Base):
 
 
 class DocumentChunkModel(Base):
-    """Chunks of a version (DATABASE_SCHEMA.md §5.9). Full-text search columns arrive in Phase 6."""
+    """Chunks of a version (DATABASE_SCHEMA.md §5.9); PostgreSQL computes ``search_vector`` (ADR-018)."""
 
     __tablename__ = "document_chunks"
     __table_args__ = (
@@ -642,6 +646,7 @@ class DocumentChunkModel(Base):
         UniqueConstraint("document_version_id", "chunk_set", "chunk_index"),
         Index("ix_document_chunks_data_source_id", "data_source_id"),
         Index("ix_document_chunks_document_id", "document_id"),
+        Index("ix_document_chunks_search_vector", "search_vector", postgresql_using="gin"),
     )
 
     id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
@@ -663,6 +668,10 @@ class DocumentChunkModel(Base):
     sheet_name: Mapped[str | None] = mapped_column(Text(), nullable=True)
     row_start: Mapped[int | None] = mapped_column(Integer(), nullable=True)
     row_end: Mapped[int | None] = mapped_column(Integer(), nullable=True)
+    # Never written by the application: the database derives it from ``content`` (ADR-018).
+    search_vector: Mapped[str] = mapped_column(
+        TSVECTOR(), Computed(SEARCH_VECTOR_EXPRESSION, persisted=True), nullable=False
+    )
     created_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
 
 
