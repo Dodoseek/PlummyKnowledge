@@ -97,10 +97,10 @@ Workers выполняют parsing, chunking, embeddings, source synchronization
 API и worker запускаются независимо (§11). Healthcheck и readiness есть у каждого сервиса (§5, §11).
 
 **Очереди Celery:** `ingestion` (стадии 2–7, parsing — CPU/память), `embeddings` (стадии 8–12: chunking, I/O к
-провайдеру, сохранение), `maintenance` (purge, cleanup, requeue, vector index), `default` (диагностика); `sync`
-(коннекторы) — [Proposed], появится с коннекторами. Разделение позволяет ограничивать ресурсы parser-workers
+провайдеру, сохранение), `maintenance` (purge, cleanup, requeue, vector index), `default` (диагностика), `connectors` (синхронизация
+внешних источников — [ADR-020](adr/0020-google-drive-connector.md)). Разделение позволяет ограничивать ресурсы parser-workers
 отдельно (§8 п.6). Очереди обслуживают два сервиса: `worker-ingestion` (`ingestion`, без исходящего интернета) и
-`worker` (`default`, `embeddings`, `maintenance`) — [DEPLOYMENT.md §2](DEPLOYMENT.md). Одноразовый сервис
+`worker` (`default`, `embeddings`, `maintenance`, `connectors`) — [DEPLOYMENT.md §2](DEPLOYMENT.md). Одноразовый сервис
 `migrate` выполняет миграции и генерацию bootstrap token (ADR-006).
 
 ## 5. Слои и правило зависимостей (§3)
@@ -365,7 +365,7 @@ class DataSourceConnector(Protocol):
 
 Реальный контракт включает (§7): pagination, cancellation, retries, rate limits, typed errors, ETag/version,
 capabilities. Для источника типа `upload` коннектор не нужен: стадия «получение документа» берёт поток из HTTP-запроса,
-дальше pipeline общий ([ADR-008](adr/0008-unified-document-ingestion.md)). Typed errors **[Proposed]**: `ConnectorAuthRevoked`, `ConnectorRateLimited`,
+дальше pipeline общий ([ADR-008](adr/0008-unified-document-ingestion.md)). Typed errors ([ADR-020](adr/0020-google-drive-connector.md) §9): `ConnectorAuthRevoked`, `ConnectorRateLimited`,
 `ConnectorQuotaExceeded`, `ConnectorNotFound`, `ConnectorPermissionDenied`, `ConnectorTransientError`,
 `ConnectorCursorInvalid` (требует full resync).
 
@@ -533,6 +533,8 @@ I/O-bound, не «долгая операция» в смысле §11. Жёст
 - Каждое изменение из источника входит в стадию 1 общего ingestion pipeline ([ADR-008](adr/0008-unified-document-ingestion.md)).
 - Сетевые вызовы коннекторов — через `SafeHttpClient`; redirects загрузки проверяются заново ([ADR-007](adr/0007-network-access-and-local-llm.md)).
 - Важно: выбранная в UI папка — это **application-level filtering**, а не OAuth-level isolation (§7).
+- Google Drive: начальная синхронизация, Changes API, правила области папки, форматы экспорта, расписание и
+  backoff — [ADR-020](adr/0020-google-drive-connector.md) §8.
 
 ## 10. Конфигурация, первоначальная настройка и сеть (§5, [ADR-006](adr/0006-initial-setup-and-system-configuration.md), [ADR-007](adr/0007-network-access-and-local-llm.md))
 

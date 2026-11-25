@@ -403,7 +403,10 @@ KB-level доступ (ADR-012), обеспечивает один ingestion pip
 credentials удаляются немедленно; строки `knowledge_base_sources` удаляются; физическое удаление строки источника —
 после purge его документов.
 
-### 5.5 `data_source_credentials` (§7, §8)
+### 5.5 `data_source_credentials` (§7, §8) — Фаза 9, `0015`
+
+Одна строка на источник (`UNIQUE (data_source_id)`), удаляется при disconnect вместе с секретом
+([ADR-020](adr/0020-google-drive-connector.md) §7).
 
 | Колонка | Тип | Описание |
 |---|---|---|
@@ -628,7 +631,7 @@ Snapshot metadata на момент ответа, чтобы история ос
 
 Индексы: `(status)`, `(document_id)`, `(queued_at)`; частичный `ix_ingestion_jobs_unpublished (updated_at) WHERE status = 'queued' AND celery_task_id IS NULL` (`0010`).
 
-### 7.2 `sync_jobs` (§7)
+### 7.2 `sync_jobs` (§7) — Фаза 9, `0015`
 
 | Колонка | Тип | Описание |
 |---|---|---|

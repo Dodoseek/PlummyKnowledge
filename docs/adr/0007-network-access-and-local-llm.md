@@ -35,7 +35,7 @@ Blueprint требует SSRF controls и запрет доступа к metadat
 [[network.allowlist]]
 name           = "local-ollama"
 url            = "http://ollama:11434"          # точное совпадение scheme/host/port
-purposes       = ["llm", "embedding"]           # llm | embedding | (позже: connector, webhook)
+purposes       = ["llm", "embedding"]           # llm | embedding | connector (ADR-020) | (позже: webhook)
 provider_types = ["ollama"]                     # необязательно
 allowed_cidrs  = ["172.30.10.0/24"]             # обязательно, если адрес не публичный
 ```

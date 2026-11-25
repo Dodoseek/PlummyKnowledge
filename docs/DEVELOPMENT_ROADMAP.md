@@ -215,6 +215,9 @@ security gate (проверки безопасности **внутри** фаз
 - Recursive listing, download/export, initial sync; Changes API cursor, incremental sync, rename/move/delete.
 - Throttle/backoff, revoke, reconciliation, tests и docs.
 - Коннектор только реализует `DataSourceConnector`; документы идут в общий pipeline (ADR-008).
+- Решения — [ADR-020](adr/0020-google-drive-connector.md). Шаги: 9.0 ADR и спецификации; 9.1 схема (`0015`), домен,
+  redirects в `SafeHttpClient`; 9.2 OAuth и API `data-sources`; 9.3 адаптер Google Drive; 9.4 синхронизация и
+  расписание; 9.5 UI, E2E и security gate.
 - **Security gate:** OAuth state/PKCE; честное отображение scopes; redirects загрузки проверяются `SafeHttpClient`;
   SC-08 на внешних документах; удаление в источнике отражается в индексе.
 - **Выход:** **релиз 0.3.0**.

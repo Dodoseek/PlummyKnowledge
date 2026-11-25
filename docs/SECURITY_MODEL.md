@@ -477,9 +477,12 @@ OpenAI/Anthropic). Полный алгоритм — в ADR-007; здесь — 
 ## 15. OAuth-коннекторы (§7, §13 Фазы 9, 10)
 
 - `state`: случайный, одноразовый, привязан к сессии и пользователю, TTL ≈ 10 мин; проверяется в callback.
-- PKCE (S256) — обязательно для Microsoft Entra ID (§7), **[Proposed]** и для Google.
+- PKCE (S256) — обязательно для Microsoft Entra ID (§7) и для Google ([ADR-020](adr/0020-google-drive-connector.md)).
+- Google Drive: `state` хранится в Redis под SHA-256 ключом и забирается атомарно (`GETDEL`); callback сверяет
+  текущую cookie-сессию, пользователя и его права; возврат в UI — только на путь, построенный сервером (нет open
+  redirect). Scope — `drive.readonly` ([ADR-020](adr/0020-google-drive-connector.md) §1, §3).
 - Redirect URI — точное совпадение, только HTTPS (кроме localhost в dev).
-- Refresh tokens шифруются (§13 Фаза 9); access tokens провайдеров не сохраняются или сохраняются только зашифрованными с коротким сроком.
+- Refresh tokens шифруются (§13 Фаза 9, [ADR-016](adr/0016-secret-encryption.md)); access tokens провайдеров не сохраняются (только в памяти задания).
 - **Выбор папки в UI не ограничивает OAuth token** (§7). Application-level filtering ≠ OAuth-level isolation.
   Утечка токена = доступ ко всему, что разрешают выданные scopes.
 - `Files.Read.All` и подобные широкие разрешения Microsoft не ограничиваются выбранной папкой; исследовать

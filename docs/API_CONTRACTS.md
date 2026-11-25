@@ -495,6 +495,11 @@ Document Source типа `upload` создаётся и удаляется вм�
 `POST` с `type = upload` → `422`; `DELETE`/`disconnect`/`sync`/`oauth` для него → `409 conflict`. В списке он
 виден с `owner_knowledge_base_id`.
 
+Уточнения [ADR-020](adr/0020-google-drive-connector.md): `POST` принимает `{type, name, knowledge_base_id}` и требует
+ещё доступ `manage` к KB (источник принадлежит одной KB); видимость источника — `data_sources.read` + доступ `read` к его
+KB, иначе `404`; без OAuth client в Instance Settings — `409 connector_not_configured`; второй sync при активном —
+`409 sync_in_progress`; callback всегда отвечает `303` на `/knowledge-bases/{kb_id}?source={id}&oauth=connected|failed`.
+
 UI обязан показывать **фактические** `granted_scopes` и предупреждение, что выбор папки не ограничивает OAuth token
 (§7).
 

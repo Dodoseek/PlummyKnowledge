@@ -161,7 +161,7 @@ docker compose down --volumes
 | Лимиты | `UPLOAD_MAX_BYTES`, `CHAT_GENERATION_TIMEOUT_SECONDS` (реализовано, §0); лимиты страниц/распаковки/времени парсинга — пока константы `ParseLimits`; одновременные генерации (2 на пользователя) — константа ([ADR-019](adr/0019-answer-generation-in-api-process.md)) | — |
 | Jobs | `WORKER_CONCURRENCY` (реализовано в dev compose, §0); retry/backoff — в определении каждой задачи | — |
 | SMTP | `PLUMMY_SMTP_HOST`, `PLUMMY_SMTP_USER`, `PLUMMY_SMTP_PASSWORD_FILE` | да |
-| Коннекторы | `PLUMMY_GOOGLE_CLIENT_ID`, `PLUMMY_GOOGLE_CLIENT_SECRET_FILE`, `PLUMMY_MS_CLIENT_ID`, `PLUMMY_MS_CLIENT_SECRET_FILE` | да |
+| Коннекторы | `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` / `GOOGLE_OAUTH_CLIENT_SECRET_FILE` (Фаза 9, §7.4, [ADR-020](adr/0020-google-drive-connector.md)); `PLUMMY_MS_CLIENT_ID`, `PLUMMY_MS_CLIENT_SECRET_FILE` — Фаза 10 | да (secret) |
 | Сеть | `[[network.allowlist]]` в `CONFIG_FILE` (ADR-007, реализовано; заменяет черновое `PLUMMY_CONFIG_FILE`) | — |
 
 Изменение Instance Settings → перезапуск `api` и worker-сервисов. Через web-интерфейс Instance Settings не меняются.
@@ -300,6 +300,26 @@ docker compose down --volumes
 4. В приложении (Administrator) создать провайдера с тем же `base_url` и выполнить connection test.
 
 Allowlist по умолчанию пуст; примеры выше не являются значениями по умолчанию.
+
+### 7.4 Google Drive ([ADR-020](adr/0020-google-drive-connector.md))
+
+1. В Google Cloud Console создать проект, включить **Google Drive API** и настроить OAuth consent screen:
+   - тип **Internal** (Google Workspace) — верификация Google не нужна;
+   - тип **External** — scope `drive.readonly` относится к restricted: до верификации (включая оценку безопасности
+     CASA) приложение работает только для тестовых пользователей, а refresh token тестового приложения истекает
+     через 7 дней.
+2. Создать OAuth client типа **Web application** с Authorized redirect URI ровно
+   `<PUBLIC_URL>/api/v1/data-sources/oauth/callback` (в production — `https`).
+3. Передать `GOOGLE_OAUTH_CLIENT_ID` и `GOOGLE_OAUTH_CLIENT_SECRET_FILE` сервисам `backend` и `worker`, задать
+   `PUBLIC_URL`, перезапустить их. `GET /api/v1/system/settings` покажет `google_drive_configured = true`.
+4. Подключать **отдельную служебную учётную запись Google**, которой расшарены только нужные папки: выбор папки в
+   приложении не ограничивает токен — он читает весь Drive учётной записи.
+5. Отзыв: «Disconnect» в приложении отзывает токен у Google; дополнительно доступ можно отозвать на
+   <https://myaccount.google.com/permissions>.
+
+Записи allowlist для Google не нужны: адреса публичные, а хосты API и загрузки зафиксированы в коде. Секция
+`[connectors.google_drive]` в `CONFIG_FILE` (подмена адресов Google) допустима только вне production — для E2E с
+фейковым сервером.
 
 ## 8. TLS и Nginx
 
