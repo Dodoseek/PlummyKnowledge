@@ -293,6 +293,12 @@ SAML/SCIM — позднее. Автоматической регистраци�
 - Отзыв доступа к KB (прямой, через группу, удаление KB) сразу делает недоступными связанных ассистентов.
 - Не раскрывать существование: недоступный ассистент → `404`; в собственном диалоге → `403 assistant_unavailable`.
 
+**Реализовано в фазе 7:** политика — `application/assistants/access.py` (`availability_of`, `require_assistant`), список
+для чата фильтруется тем же правилом в SQL (`SqlAssistantRepository.page`). `assistants.manage` видит все ассистенты с
+`availability` и причиной (`disabled`, `missing_kb_access`); остальные — только доступные и только с `chat.use`.
+Инструкции ассистента возвращаются только `assistants.manage`. Матрица и отзыв доступа —
+`tests/integration/test_assistant_access.py`; `403 assistant_unavailable` и проверка в чате — Фаза 8.
+
 ### 6.4 Защита RAG (сводка)
 
 1. Доступность ассистента (§6.3) → 2. разрешённые источники вычисляет backend → 3. фильтры источник / текущая

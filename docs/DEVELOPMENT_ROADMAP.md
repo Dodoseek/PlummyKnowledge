@@ -167,6 +167,17 @@ security gate (проверки безопасности **внутри** фаз
 - Проверки доступа и тесты комбинаций permissions.
 - **Security gate:** SC-01; отзыв доступа к KB (прямого и через группу) немедленно скрывает ассистента.
 - **Выход:** матрица комбинаций «пользователь × KB × ассистент» покрыта тестами.
+- *(Текущее состояние: **фаза реализована** (7.1–7.5). Управление KB: `PATCH` (имя, описание; смена embedding
+  profile → `422 embedding_profile_change_not_supported`), `DELETE` с purge (только `knowledge_bases.manage`),
+  `GET`/`PUT /access` с audit и защитой от потери собственного `manage`, `POST /reindex`. Миграция `0013`
+  (`assistants`, `assistant_knowledge_bases`); ассистенты: домен, политика доступа ADR-005 (`application/assistants/
+  access.py`; список для чата фильтруется в SQL, карточка — через политику), CRUD `/assistants` с `availability`;
+  все KB ассистента используют его embedding profile. Frontend: настройки и доступ на странице KB,
+  `/admin/assistants`, `/assistants` (без чата). Security gate: `tests/integration/test_assistant_access.py` —
+  матрица (прямой доступ, группа, оба пути, `knowledge_bases.manage`, без доступа, без `chat.use`, ассистент без KB,
+  `disabled`), SC-01, немедленный отзыв (прямой grant, grant группы, выход из группы, удаление группы, снятие роли,
+  удаление KB, отключение ассистента); каждый тест сверяет список с карточками. **Отложено:** предупреждение о
+  пользователях, теряющих доступ при добавлении KB, `acl_acknowledged`, смена profile у KB, `Idempotency-Key`.)*
 
 ### Фаза 8 — Chat UI и streaming (§13)
 
