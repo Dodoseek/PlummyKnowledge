@@ -23,7 +23,7 @@ from plummy.domain.documents import (
     JobStatus,
 )
 from plummy.domain.identity import Group, InstanceState, SessionRevokeReason, User, UserSession, UserStatus
-from plummy.domain.knowledge import DataSource, KbAccessLevel, KnowledgeBase
+from plummy.domain.knowledge import DataSource, KbAccessLevel, KbGrant, KnowledgeBase
 from plummy.domain.secrets import SecretKind, SecretValue
 
 
@@ -430,7 +430,29 @@ class KnowledgeBaseRepository(Protocol):
 
     async def get(self, kb_id: UUID) -> KnowledgeBase | None: ...
 
+    async def get_for_update(self, kb_id: UUID) -> KnowledgeBase | None:
+        """Lock the knowledge base row until the end of the transaction."""
+        ...
+
     async def get_by_name(self, name: str) -> KnowledgeBase | None: ...
+
+    async def update(self, kb: KnowledgeBase, *, at: datetime) -> None:
+        """Persist ``name`` and ``description``; raises :class:`UniqueViolationError` for a taken name."""
+        ...
+
+    async def mark_deleted(self, kb_id: UUID, *, at: datetime) -> None:
+        """Soft delete; its grants and source links are removed in the same transaction."""
+        ...
+
+    async def grants(self, kb_id: UUID) -> list[KbGrant]:
+        """The access list, users first, then groups, each by id."""
+        ...
+
+    async def replace_grants(
+        self, kb_id: UUID, grants: Sequence[KbGrant], *, granted_by: UUID, at: datetime
+    ) -> None:
+        """Make the access list exactly ``grants``; unchanged entries keep ``granted_by`` and their time."""
+        ...
 
     async def page(self, page: PageRequest, *, visible_to: UUID | None) -> Page[KnowledgeBase]:
         """All knowledge bases with ``visible_to=None``; otherwise those granted to the user directly or
@@ -454,6 +476,10 @@ class DataSourceRepository(Protocol):
     async def attach(self, kb_id: UUID, source_id: UUID, *, at: datetime) -> None: ...
 
     async def upload_source_of(self, kb_id: UUID) -> DataSource | None: ...
+
+    async def rename(self, source_id: UUID, name: str, *, at: datetime) -> None: ...
+
+    async def mark_deleted(self, source_id: UUID, *, at: datetime) -> None: ...
 
     async def get(self, source_id: UUID) -> DataSource | None:
         """Including deleted sources (callers check ``deleted_at``)."""
@@ -501,6 +527,16 @@ class DocumentRepository(Protocol):
 
     async def latest_versions(self, document_ids: Sequence[UUID]) -> dict[UUID, DocumentVersion]:
         """The highest-numbered version of each document."""
+        ...
+
+    async def live_in_sources_for_update(self, source_ids: Sequence[UUID]) -> list[Document]:
+        """Non-deleted documents of the sources, locked, by id."""
+        ...
+
+    async def mark_deleted_in_source(
+        self, source_id: UUID, reason: DeletionReason, *, at: datetime
+    ) -> list[UUID]:
+        """Soft delete every live document of the source; their ids."""
         ...
 
     async def mark_deleted(self, document_id: UUID, reason: DeletionReason, *, at: datetime) -> None:
@@ -653,6 +689,14 @@ class IngestionJobRepository(Protocol):
 
     async def set_task_id(self, job_id: UUID, task_id: str | None) -> None:
         """``None`` while the job waits to be published: the maintenance sweep sends it again."""
+        ...
+
+    async def cancel_unfinished(self, document_ids: Sequence[UUID], code: str, *, at: datetime) -> int:
+        """Cancel the queued and running jobs of the documents; how many."""
+        ...
+
+    async def unfinished_for_documents(self, document_ids: Sequence[UUID]) -> set[UUID]:
+        """The documents among ``document_ids`` that have a queued or running job."""
         ...
 
     async def unfinished_for_document(self, document_id: UUID) -> list[IngestionJob]:

@@ -1,6 +1,7 @@
 """``/api/v1/knowledge-bases`` on real PostgreSQL and Redis (API_CONTRACTS.md §2.10, SECURITY_MODEL.md §3.5).
 
-Grants are written directly to ``knowledge_base_access`` here: the access management API is phase 7.
+Grants are written directly to ``knowledge_base_access`` here; the access API is tested in
+``test_knowledge_bases_manage_api``.
 """
 
 from __future__ import annotations

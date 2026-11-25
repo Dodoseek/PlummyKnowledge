@@ -69,6 +69,24 @@ class KnowledgeBase:
     deleted_at: datetime | None = None
 
 
+MAX_KB_GRANTS: Final = 500
+
+
+@dataclass(frozen=True, slots=True)
+class KbGrant:
+    """One entry of a knowledge base's access list (DATABASE_SCHEMA.md §5.2)."""
+
+    principal_type: PrincipalType
+    principal_id: UUID
+    access_level: KbAccessLevel
+    granted_by: UUID | None = None
+    created_at: datetime | None = None
+
+    @property
+    def key(self) -> tuple[PrincipalType, UUID]:
+        return (self.principal_type, self.principal_id)
+
+
 @dataclass(slots=True)
 class DataSource:
     id: UUID

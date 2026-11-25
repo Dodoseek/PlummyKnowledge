@@ -496,14 +496,14 @@ Document Source типа `upload` создаётся и удаляется вм�
 UI обязан показывать **фактические** `granted_scopes` и предупреждение, что выбор папки не ограничивает OAuth token
 (§7).
 
-### 2.10 `knowledge-bases` (§5) — реализованы list, create, get, search
+### 2.10 `knowledge-bases` (§5) — реализованы list, create, get, patch, delete, access, reindex, search
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
 | GET | `/api/v1/knowledge-bases` | KB, доступные пользователю; `sort`: `name` (по умолчанию), `-name`, `created_at`, `-created_at` | KB `read` | auth | — | — | — |
 | POST | `/api/v1/knowledge-bases` | Создать (embedding profile обязателен) | `knowledge_bases.manage` | auth | — | `kb.created` | — |
 | GET | `/api/v1/knowledge-bases/{id}` | Карточка + статусы индексации | KB `read` | auth | — | — | — |
-| PATCH | `/api/v1/knowledge-bases/{id}` | Изменить; смена embedding profile → reindex | KB `manage` | auth | — | `kb.updated` | — |
+| PATCH | `/api/v1/knowledge-bases/{id}` | Изменить имя и описание (смена embedding profile пока не поддерживается) | KB `manage` | auth | — | `kb.updated` | — |
 | DELETE | `/api/v1/knowledge-bases/{id}` | Удалить | `knowledge_bases.manage` | auth | Idem | `kb.deleted` | — |
 | GET | `/api/v1/knowledge-bases/{id}/access` | Список доступа | KB `manage` | auth | — | — | — |
 | PUT | `/api/v1/knowledge-bases/{id}/access` | Заменить список `{principal_type, principal_id, access_level}` | KB `manage` | auth | — | `kb.access.granted`, `kb.access.revoked` | — |
@@ -513,7 +513,7 @@ UI обязан показывать **фактические** `granted_scopes`
 | POST | `/api/v1/knowledge-bases/{id}/reindex` | Переиндексация KB | KB `manage` | auth | Idem | `kb.reindex.requested` | expensive |
 | POST | `/api/v1/knowledge-bases/{id}/search` | Hybrid-поиск фрагментов без генерации ответа | KB `read` | auth | — | — | search |
 
-Остальные строки таблицы (PATCH, DELETE, access, sources, reindex KB) ещё не реализованы.
+Строки `sources` ещё не реализованы (кроме `upload`, других источников пока нет); `Idempotency-Key` не поддерживается.
 
 **KB DTO (`200`/`201`):**
 
@@ -528,13 +528,44 @@ UI обязан показывать **фактические** `granted_scopes`
 
 `my_access_level` (`read` \| `manage`) — итоговый доступ текущего пользователя; frontend использует его только для
 отображения элементов управления. Пользователь с `knowledge_bases.manage` имеет `manage` во всех KB; остальные —
-по выданному доступу (назначение доступа через API ещё не реализовано). KB без доступа → `404`, `read` там, где
+по выданному доступу (прямому или через группу). KB без доступа → `404`, `read` там, где
 нужен `manage` → `403`. Создание: тело `{name, description?, embedding_profile_id}`; вместе с KB создаётся её
 источник `upload`. Ошибки поля
 `body.embedding_profile_id` (`422 validation_error`, `errors[].code`): `unknown_embedding_profile`,
 `embedding_profile_not_active`, `dimensions_not_indexable`, `provider_unavailable`; занятое имя —
 `409 knowledge_base_name_taken`. Настройки chunking через API не задаются (**[Proposed]**, всегда значения по
 умолчанию — [ARCHITECTURE.md §8.4](ARCHITECTURE.md)).
+
+**Изменение (`PATCH`)** — тело `{name?, description?, embedding_profile_id?}`: меняются только переданные поля,
+`description: null` очищает описание; имя нормализуется как при создании, занятое — `409 knowledge_base_name_taken`.
+Вместе с именем переименовывается источник `upload`. `embedding_profile_id`, отличный от текущего, —
+`422` с `errors[].code = embedding_profile_change_not_supported` (нужна переиндексация всех документов; отдельная
+задача). Запрос без изменений не пишет audit.
+
+**Удаление (`DELETE`, только `knowledge_bases.manage`)** — одна транзакция: KB, её список доступа и связи с
+источниками, источник `upload` и все его документы (`deletion_reason = kb_deleted`) удаляются, незавершённые jobs
+отменяются (`error_code = kb_deleted`); документы сразу исключаются из поиска, файлы, chunks и векторы удаляет purge
+(при недоступном брокере — периодический sweep). Имя KB освобождается. `204`; повторно — `404`.
+
+**Доступ (`GET`/`PUT …/access`, KB `manage`)** — `PUT` заменяет список целиком:
+
+```json
+{ "grants": [ { "principal_type": "user", "principal_id": "…", "access_level": "read" },
+              { "principal_type": "group", "principal_id": "…", "access_level": "manage" } ] }
+```
+
+Ответ обоих методов — `{items: [{principal_type, principal_id, name, email, access_level, granted_by, granted_at}]}`
+(`name` — display name пользователя или имя группы, `email` — только у пользователей; удалённые пользователи и группы
+не показываются). Не более 500 записей. Ошибки `422 validation_error` (`errors[].field` —
+`body.grants.N.principal_id`): `duplicate_principal`, `unknown_principal` (нет живого пользователя или группы);
+`body.grants` — `would_lose_manage`: пользователь без `knowledge_bases.manage` не может убрать собственный `manage`
+(проверяется по новому списку с учётом групп). Неизменённые записи сохраняют `granted_by`/`granted_at`; audit —
+`kb.access.granted` на каждую новую запись или смену уровня, `kb.access.revoked` на каждую удалённую. Изменение
+действует со следующего запроса пользователя.
+
+**Переиндексация (`POST …/reindex`, KB `manage`, профиль `expensive`)** — `202
+{jobs_created, job_ids, already_queued, without_version}`: для каждого документа KB без queued/running job
+создаётся job `reindex` (как `POST /documents/{id}/reindex`); документы с активным job остаются как есть.
 
 **Поиск (`POST /knowledge-bases/{id}/search`)** — retrieval без LLM ([ARCHITECTURE.md §9.4](ARCHITECTURE.md),
 [ADR-017](adr/0017-vector-storage.md), [ADR-018](adr/0018-full-text-search-configuration.md)). Тело

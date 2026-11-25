@@ -30,6 +30,7 @@ from plummy.application.documents.use_cases import (
     ListDocuments,
     ListDocumentVersions,
     ReindexDocument,
+    ReindexKnowledgeBase,
 )
 from plummy.application.evaluation.runner import RunRetrievalEvaluation
 from plummy.application.groups.use_cases import (
@@ -52,7 +53,15 @@ from plummy.application.ingestion.maintenance import (
 from plummy.application.ingestion.parsing import ParserRegistry
 from plummy.application.ingestion.pipeline import RunIngestionJob
 from plummy.application.jobs.use_cases import GetJob, ListJobs, RetryJob
-from plummy.application.knowledge.use_cases import CreateKnowledgeBase, GetKnowledgeBase, ListKnowledgeBases
+from plummy.application.knowledge.use_cases import (
+    CreateKnowledgeBase,
+    DeleteKnowledgeBase,
+    GetKnowledgeBase,
+    GetKnowledgeBaseAccess,
+    ListKnowledgeBases,
+    ReplaceKnowledgeBaseAccess,
+    UpdateKnowledgeBase,
+)
 from plummy.application.knowledge.vector_index import EnsureVectorIndex
 from plummy.application.ports import Clock, PasswordHasher, SecretCipher
 from plummy.application.providers.embedding_profiles import (
@@ -201,6 +210,10 @@ class KnowledgeServices:
     list: ListKnowledgeBases
     get: GetKnowledgeBase
     create: CreateKnowledgeBase
+    update: UpdateKnowledgeBase
+    delete: DeleteKnowledgeBase
+    access: GetKnowledgeBaseAccess
+    replace_access: ReplaceKnowledgeBaseAccess
     retrieve: RetrieveChunks
     search: SearchKnowledgeBase
 
@@ -215,6 +228,7 @@ class DocumentServices:
     versions: ListDocumentVersions
     delete: DeleteDocument
     reindex: ReindexDocument
+    reindex_knowledge_base: ReindexKnowledgeBase
 
 
 @dataclass(frozen=True, slots=True)
@@ -564,6 +578,10 @@ def build_resources(
             list=ListKnowledgeBases(uow),
             get=GetKnowledgeBase(uow),
             create=CreateKnowledgeBase(uow, clock, jobs),
+            update=UpdateKnowledgeBase(uow, clock),
+            delete=DeleteKnowledgeBase(uow, jobs, clock),
+            access=GetKnowledgeBaseAccess(uow),
+            replace_access=ReplaceKnowledgeBaseAccess(uow, clock),
             retrieve=retrieve,
             search=SearchKnowledgeBase(uow, retrieve, limiter),
         ),
@@ -574,6 +592,7 @@ def build_resources(
             versions=ListDocumentVersions(uow),
             delete=DeleteDocument(uow, jobs, clock),
             reindex=ReindexDocument(uow, jobs, limiter, clock),
+            reindex_knowledge_base=ReindexKnowledgeBase(uow, jobs, limiter, clock),
         ),
         job_admin=JobServices(list=ListJobs(uow), get=GetJob(uow), retry=RetryJob(uow, jobs, limiter, clock)),
         secrets=vault,

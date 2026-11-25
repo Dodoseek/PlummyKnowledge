@@ -86,7 +86,9 @@ from plummy.domain.knowledge import (
     DataSourceStatus,
     DataSourceType,
     KbAccessLevel,
+    KbGrant,
     KnowledgeBase,
+    PrincipalType,
 )
 from plummy.domain.secrets import SecretKind
 from plummy.infrastructure.db.base import Base
@@ -1100,6 +1102,20 @@ def _knowledge_base(row: KnowledgeBaseModel) -> KnowledgeBase:
     )
 
 
+def _grant(row: KnowledgeBaseAccessModel) -> KbGrant:
+    principal_type = PrincipalType(row.principal_type)
+    principal_id = row.user_id if principal_type is PrincipalType.USER else row.group_id
+    if principal_id is None:  # excluded by the "principal" CHECK constraint
+        raise ValueError("knowledge base grant without a principal")
+    return KbGrant(
+        principal_type=principal_type,
+        principal_id=principal_id,
+        access_level=KbAccessLevel(row.access_level),
+        granted_by=row.granted_by,
+        created_at=row.created_at,
+    )
+
+
 def _groups_of(user_id: UUID) -> Select[UUID]:
     """Non-deleted groups the user belongs to: deleting a group takes its grants away at once."""
     return (
@@ -1135,6 +1151,15 @@ class SqlKnowledgeBaseRepository:
         )
         return _knowledge_base(row) if row is not None else None
 
+    async def get_for_update(self, kb_id: UUID) -> KnowledgeBase | None:
+        row = await self._db.scalar(
+            select(KnowledgeBaseModel)
+            .where(KnowledgeBaseModel.id == kb_id, KnowledgeBaseModel.deleted_at.is_(None))
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return _knowledge_base(row) if row is not None else None
+
     async def get_by_name(self, name: str) -> KnowledgeBase | None:
         row = await self._db.scalar(
             select(KnowledgeBaseModel).where(
@@ -1142,6 +1167,86 @@ class SqlKnowledgeBaseRepository:
             )
         )
         return _knowledge_base(row) if row is not None else None
+
+    async def update(self, kb: KnowledgeBase, *, at: datetime) -> None:
+        try:
+            await self._db.execute(
+                update(KnowledgeBaseModel)
+                .where(KnowledgeBaseModel.id == kb.id)
+                .values(name=kb.name, description=kb.description, updated_at=at)
+            )
+        except IntegrityError as exc:
+            if "uq_knowledge_bases_name_active" in str(exc.orig):
+                raise UniqueViolationError("uq_knowledge_bases_name_active") from None
+            raise
+
+    async def mark_deleted(self, kb_id: UUID, *, at: datetime) -> None:
+        await self._db.execute(
+            delete(KnowledgeBaseAccessModel).where(KnowledgeBaseAccessModel.knowledge_base_id == kb_id)
+        )
+        await self._db.execute(
+            delete(KnowledgeBaseSourceModel).where(KnowledgeBaseSourceModel.knowledge_base_id == kb_id)
+        )
+        await self._db.execute(
+            update(KnowledgeBaseModel)
+            .where(KnowledgeBaseModel.id == kb_id, KnowledgeBaseModel.deleted_at.is_(None))
+            .values(deleted_at=at, updated_at=at)
+        )
+
+    async def grants(self, kb_id: UUID) -> list[KbGrant]:
+        rows = await self._db.scalars(
+            select(KnowledgeBaseAccessModel)
+            .where(KnowledgeBaseAccessModel.knowledge_base_id == kb_id)
+            .order_by(
+                KnowledgeBaseAccessModel.principal_type.desc(),  # 'user' before 'group'
+                func.coalesce(KnowledgeBaseAccessModel.user_id, KnowledgeBaseAccessModel.group_id),
+            )
+        )
+        return [_grant(row) for row in rows]
+
+    async def replace_grants(
+        self, kb_id: UUID, grants: Sequence[KbGrant], *, granted_by: UUID, at: datetime
+    ) -> None:
+        current = {grant.key: grant for grant in await self.grants(kb_id)}
+        wanted = {grant.key: grant for grant in grants}
+        for key in current.keys() - wanted.keys():
+            principal_type, principal_id = key
+            column = (
+                KnowledgeBaseAccessModel.user_id
+                if principal_type is PrincipalType.USER
+                else KnowledgeBaseAccessModel.group_id
+            )
+            await self._db.execute(
+                delete(KnowledgeBaseAccessModel).where(
+                    KnowledgeBaseAccessModel.knowledge_base_id == kb_id, column == principal_id
+                )
+            )
+        for key, grant in wanted.items():
+            existing = current.get(key)
+            if existing is not None and existing.access_level is grant.access_level:
+                continue
+            is_user = grant.principal_type is PrincipalType.USER
+            if existing is not None:
+                column = KnowledgeBaseAccessModel.user_id if is_user else KnowledgeBaseAccessModel.group_id
+                await self._db.execute(
+                    update(KnowledgeBaseAccessModel)
+                    .where(KnowledgeBaseAccessModel.knowledge_base_id == kb_id, column == grant.principal_id)
+                    .values(access_level=str(grant.access_level), granted_by=granted_by, created_at=at)
+                )
+                continue
+            self._db.add(
+                KnowledgeBaseAccessModel(
+                    id=new_id(),
+                    knowledge_base_id=kb_id,
+                    principal_type=str(grant.principal_type),
+                    user_id=grant.principal_id if is_user else None,
+                    group_id=None if is_user else grant.principal_id,
+                    access_level=str(grant.access_level),
+                    granted_by=granted_by,
+                    created_at=at,
+                )
+            )
+        await self._db.flush()
 
     async def page(self, page: PageRequest, *, visible_to: UUID | None) -> Page[KnowledgeBase]:
         statement = select(KnowledgeBaseModel).where(KnowledgeBaseModel.deleted_at.is_(None))
@@ -1264,6 +1369,18 @@ class SqlDataSourceRepository:
         )
         return _data_source(row) if row is not None else None
 
+    async def rename(self, source_id: UUID, name: str, *, at: datetime) -> None:
+        await self._db.execute(
+            update(DataSourceModel).where(DataSourceModel.id == source_id).values(name=name, updated_at=at)
+        )
+
+    async def mark_deleted(self, source_id: UUID, *, at: datetime) -> None:
+        await self._db.execute(
+            update(DataSourceModel)
+            .where(DataSourceModel.id == source_id, DataSourceModel.deleted_at.is_(None))
+            .values(deleted_at=at, updated_at=at)
+        )
+
     async def get(self, source_id: UUID) -> DataSource | None:
         row = await self._db.get(DataSourceModel, source_id)
         return _data_source(row) if row is not None else None
@@ -1382,6 +1499,29 @@ class SqlDocumentRepository:
             )
         )
         return {row.document_id: _version(row) for row in rows}
+
+    async def live_in_sources_for_update(self, source_ids: Sequence[UUID]) -> list[Document]:
+        if not source_ids:
+            return []
+        rows = await self._db.scalars(
+            select(DocumentModel)
+            .where(DocumentModel.data_source_id.in_(source_ids), DocumentModel.deleted_at.is_(None))
+            .order_by(DocumentModel.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return [_document(row) for row in rows]
+
+    async def mark_deleted_in_source(
+        self, source_id: UUID, reason: DeletionReason, *, at: datetime
+    ) -> list[UUID]:
+        rows = await self._db.scalars(
+            update(DocumentModel)
+            .where(DocumentModel.data_source_id == source_id, DocumentModel.deleted_at.is_(None))
+            .values(deleted_at=at, deletion_reason=str(reason), updated_at=at)
+            .returning(DocumentModel.id)
+        )
+        return sorted(rows)
 
     async def mark_deleted(self, document_id: UUID, reason: DeletionReason, *, at: datetime) -> None:
         await self._db.execute(
@@ -1760,6 +1900,37 @@ class SqlIngestionJobRepository:
             .where(IngestionJobModel.id == job_id)
             .values(celery_task_id=task_id, updated_at=func.now())
         )
+
+    async def cancel_unfinished(self, document_ids: Sequence[UUID], code: str, *, at: datetime) -> int:
+        if not document_ids:
+            return 0
+        rows = await self._db.scalars(
+            update(IngestionJobModel)
+            .where(
+                IngestionJobModel.document_id.in_(document_ids),
+                IngestionJobModel.status.in_((str(JobStatus.QUEUED), str(JobStatus.RUNNING))),
+            )
+            .values(
+                status=str(JobStatus.CANCELLED),
+                error_code=code,
+                error_message=None,
+                finished_at=at,
+                updated_at=at,
+            )
+            .returning(IngestionJobModel.id)
+        )
+        return len(list(rows))
+
+    async def unfinished_for_documents(self, document_ids: Sequence[UUID]) -> set[UUID]:
+        if not document_ids:
+            return set()
+        rows = await self._db.scalars(
+            select(IngestionJobModel.document_id).where(
+                IngestionJobModel.document_id.in_(document_ids),
+                IngestionJobModel.status.in_((str(JobStatus.QUEUED), str(JobStatus.RUNNING))),
+            )
+        )
+        return set(rows)
 
     async def unfinished_for_document(self, document_id: UUID) -> list[IngestionJob]:
         rows = await self._db.scalars(

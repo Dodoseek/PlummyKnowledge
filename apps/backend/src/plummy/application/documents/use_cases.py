@@ -206,6 +206,38 @@ class DeleteDocument:
             logger.warning("purge not published, broker unavailable", extra={"document_id": str(document_id)})
 
 
+async def _target_version(uow: UnitOfWork, document: Document) -> DocumentVersion:
+    version = None
+    if document.current_version_id is not None:
+        version = await uow.documents.get_version(document.current_version_id)
+    if version is None:
+        versions = await uow.documents.versions(document.id)
+        version = versions[0] if versions else None
+    if version is None or version.status is VersionStatus.DELETED:
+        raise NoVersionError("The document has no version to index.")
+    return version
+
+
+def _new_reindex_job(
+    context: SecurityContext, document: Document, version: DocumentVersion, now: datetime
+) -> IngestionJob:
+    job_id = new_id()
+    return IngestionJob(
+        id=job_id,
+        document_id=document.id,
+        document_version_id=version.id,
+        kind=JobKind.REINDEX,
+        status=JobStatus.QUEUED,
+        # The stored text is reused: the index phase only (no parsing in the network-free worker again).
+        stage=JobStage.CHUNK if version.extracted_storage_key is not None else JobStage.FETCH,
+        idempotency_key=f"reindex:{version.id.hex}:{job_id.hex}",
+        attempt=0,
+        max_attempts=MAX_ATTEMPTS,
+        requested_by=context.user_id,
+        queued_at=now,
+    )
+
+
 class ReindexDocument:
     """Runs the pipeline again for the document's version. An indexed version with the same settings ends as
     ``skipped_already_processed`` (ADR-008 §4); a failed one is processed again from the stored text when
@@ -229,8 +261,8 @@ class ReindexDocument:
             if pending:
                 job, created = pending[0], False
             else:
-                version = await self._target_version(uow, document)
-                job, created = self._new_job(context, document, version, now), True
+                version = await _target_version(uow, document)
+                job, created = _new_reindex_job(context, document, version, now), True
                 await uow.ingestion_jobs.add(job)
                 if version.status is not VersionStatus.READY:
                     await uow.documents.reset_version(version.id, at=now)
@@ -250,34 +282,64 @@ class ReindexDocument:
             await publish(self._uow, self._queue, job)
         return ReindexResult(document, job, created)
 
-    @staticmethod
-    async def _target_version(uow: UnitOfWork, document: Document) -> DocumentVersion:
-        version = None
-        if document.current_version_id is not None:
-            version = await uow.documents.get_version(document.current_version_id)
-        if version is None:
-            versions = await uow.documents.versions(document.id)
-            version = versions[0] if versions else None
-        if version is None or version.status is VersionStatus.DELETED:
-            raise NoVersionError("The document has no version to index.")
-        return version
 
-    @staticmethod
-    def _new_job(
-        context: SecurityContext, document: Document, version: DocumentVersion, now: datetime
-    ) -> IngestionJob:
-        job_id = new_id()
-        return IngestionJob(
-            id=job_id,
-            document_id=document.id,
-            document_version_id=version.id,
-            kind=JobKind.REINDEX,
-            status=JobStatus.QUEUED,
-            # The stored text is reused: the index phase only (no parsing in the network-free worker again).
-            stage=JobStage.CHUNK if version.extracted_storage_key is not None else JobStage.FETCH,
-            idempotency_key=f"reindex:{version.id.hex}:{job_id.hex}",
-            attempt=0,
-            max_attempts=MAX_ATTEMPTS,
-            requested_by=context.user_id,
-            queued_at=now,
-        )
+@dataclass(frozen=True, slots=True)
+class KnowledgeBaseReindexResult:
+    jobs: list[IngestionJob]
+    already_queued: int  # documents with a queued or running job, left as they are
+    without_version: int  # documents with nothing to index
+
+
+class ReindexKnowledgeBase:
+    """``POST /knowledge-bases/{id}/reindex``: :class:`ReindexDocument` for every live document of the
+    knowledge base's sources, in one transaction and under one ``expensive`` limit."""
+
+    def __init__(self, uow: UnitOfWorkFactory, queue: JobQueue, limiter: RateLimiter, clock: Clock) -> None:
+        self._uow, self._queue, self._limiter, self._clock = uow, queue, limiter, clock
+
+    async def execute(
+        self, context: SecurityContext, client: ClientInfo, kb_id: UUID
+    ) -> KnowledgeBaseReindexResult:
+        async with self._uow() as uow:
+            await require_kb_access(uow, context, kb_id, KbAccessLevel.MANAGE)
+        await enforce_expensive_limit(self._limiter)
+        now = self._clock.now()
+        async with self._uow() as uow:
+            kb, _ = await require_kb_access(uow, context, kb_id, KbAccessLevel.MANAGE)
+            sources = [source.id for source in await uow.data_sources.linked_to(kb.id)]
+            documents = await uow.documents.live_in_sources_for_update(sources)
+            busy = await uow.ingestion_jobs.unfinished_for_documents([d.id for d in documents])
+            jobs: list[IngestionJob] = []
+            without_version = 0
+            for document in documents:
+                if document.id in busy:
+                    continue
+                try:
+                    version = await _target_version(uow, document)
+                except NoVersionError:
+                    without_version += 1
+                    continue
+                job = _new_reindex_job(context, document, version, now)
+                await uow.ingestion_jobs.add(job)
+                if version.status is not VersionStatus.READY:
+                    await uow.documents.reset_version(version.id, at=now)
+                    await uow.documents.set_status(document.id, DocumentStatus.PENDING, at=now)
+                jobs.append(job)
+            await uow.audit.record(
+                by_user(
+                    context,
+                    client,
+                    AuditAction.KB_REINDEX_REQUESTED,
+                    target_type="knowledge_base",
+                    target_id=kb.id,
+                    details={
+                        "jobs_created": len(jobs),
+                        "already_queued": len(busy),
+                        "without_version": without_version,
+                    },
+                )
+            )
+            await uow.commit()
+        for job in jobs:
+            await publish(self._uow, self._queue, job)
+        return KnowledgeBaseReindexResult(jobs, len(busy), without_version)
