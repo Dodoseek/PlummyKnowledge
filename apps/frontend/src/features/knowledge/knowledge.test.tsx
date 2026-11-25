@@ -226,23 +226,30 @@ describe('knowledge base page', () => {
               },
               202,
             )
-          : problem(413, 'payload_too_large');
+          : uploads === 2
+            ? problem(413, 'payload_too_large')
+            : problem(422, 'validation_error', {
+                errors: [{ field: 'body.file', code: 'empty_file', message: 'The file is empty.' }],
+              });
       },
     });
     const input = await screen.findByLabelText('Files');
     await user.upload(input, [
       new File(['# A'], 'a.md', { type: 'text/markdown' }),
       new File(['x'.repeat(10)], 'big.pdf', { type: 'application/pdf' }),
+      new File([''], 'empty.txt', { type: 'text/plain' }),
     ]);
     await user.click(screen.getByRole('button', { name: 'Upload' }));
 
     const failures = await screen.findByTestId('upload-failures');
     expect(within(failures).getByText('big.pdf')).toBeInTheDocument();
     expect(within(failures).getByText(/larger than the server allows/)).toBeInTheDocument();
+    // A rejected field shows the server's reason, not the generic validation text.
+    expect(within(failures).getByText(/The file is empty\./)).toBeInTheDocument();
     expect(screen.getByText(/1 file queued/)).toBeInTheDocument();
 
     const sent = requests(fetchMock, 'POST', '/documents');
-    expect(sent).toHaveLength(2);
+    expect(sent).toHaveLength(3);
     const form = await sent[0]!.clone().formData();
     expect([...form.keys()]).toEqual(['knowledge_base_id', 'file']);
     expect(form.get('knowledge_base_id')).toBe(KB_ID);

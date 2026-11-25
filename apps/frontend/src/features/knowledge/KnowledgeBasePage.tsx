@@ -78,7 +78,9 @@ function UploadCard({ kbId }: { kbId: string }) {
         setUploaded((count) => count + 1);
       } catch (error) {
         const apiError = toApiError(error as FetchBaseQueryError | SerializedError);
-        setFailures((list) => [...list, { filename: file.name, message: messageFor(apiError) }]);
+        // A field error (empty file) carries the precise reason; other errors map by code.
+        const message = apiError.fieldErrors?.[0]?.message ?? messageFor(apiError);
+        setFailures((list) => [...list, { filename: file.name, message }]);
       }
     }
     setBusy(false);
