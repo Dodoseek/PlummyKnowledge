@@ -172,6 +172,8 @@ class Settings(BaseSettings):
     quarantine_ttl: timedelta = timedelta(hours=24)
     # Largest accepted upload, checked while the file streams in (SECURITY_MODEL.md §9).
     upload_max_bytes: int = Field(default=50 * 1024 * 1024, ge=1024, le=2 * 1024 * 1024 * 1024)
+    # Hard limit of one answer, retrieval included (ADR-019 §2); a slower answer ends with provider_timeout.
+    chat_generation_timeout_seconds: int = Field(default=120, ge=10, le=600)
 
     _secret_key_generated: bool = PrivateAttr(default=False)
 

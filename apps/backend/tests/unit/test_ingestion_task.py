@@ -18,6 +18,7 @@ from plummy.workers.app import (
     MAINTENANCE_QUEUE,
     PURGE_TASK,
     REQUEUE_JOBS_TASK,
+    SWEEP_CHAT_TASK,
     SWEEP_DELETED_TASK,
     VECTOR_INDEX_TASK,
     celery_config,
@@ -98,13 +99,14 @@ def test_tasks_are_routed_to_their_queues() -> None:
         CLEANUP_QUARANTINE_TASK: {"queue": MAINTENANCE_QUEUE},
         REQUEUE_JOBS_TASK: {"queue": MAINTENANCE_QUEUE},
         SWEEP_DELETED_TASK: {"queue": MAINTENANCE_QUEUE},
+        SWEEP_CHAT_TASK: {"queue": MAINTENANCE_QUEUE},
     }
     assert config["accept_content"] == ["json"]
 
 
 def test_beat_sends_only_maintenance_tasks_that_expire() -> None:
     schedule: dict[str, Any] = celery_config(make_settings())["beat_schedule"]
-    assert set(schedule) == {CLEANUP_QUARANTINE_TASK, REQUEUE_JOBS_TASK, SWEEP_DELETED_TASK}
+    assert set(schedule) == {CLEANUP_QUARANTINE_TASK, REQUEUE_JOBS_TASK, SWEEP_DELETED_TASK, SWEEP_CHAT_TASK}
     for name, entry in schedule.items():
         assert entry["task"] == name
         assert 60 <= entry["schedule"] <= 3600

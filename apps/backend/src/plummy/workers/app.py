@@ -33,18 +33,21 @@ PURGE_TASK = "plummy.maintenance.purge_document"
 CLEANUP_QUARANTINE_TASK = "plummy.maintenance.cleanup_quarantine"
 REQUEUE_JOBS_TASK = "plummy.maintenance.requeue_jobs"
 SWEEP_DELETED_TASK = "plummy.maintenance.sweep_deleted_documents"
+SWEEP_CHAT_TASK = "plummy.maintenance.sweep_chat"
 MAINTENANCE_TASKS = (
     VECTOR_INDEX_TASK,
     PURGE_TASK,
     CLEANUP_QUARANTINE_TASK,
     REQUEUE_JOBS_TASK,
     SWEEP_DELETED_TASK,
+    SWEEP_CHAT_TASK,
 )
 # (task, interval in seconds). A run that is still waiting when the next one is due is dropped (``expires``).
 BEAT_SCHEDULE = (
     (CLEANUP_QUARANTINE_TASK, 60 * 60),
     (REQUEUE_JOBS_TASK, 5 * 60),
     (SWEEP_DELETED_TASK, 10 * 60),
+    (SWEEP_CHAT_TASK, 5 * 60),
 )
 RESULT_TTL_SECONDS = 24 * 60 * 60
 # Hard ceiling for any task; long-running tasks set their own limits explicitly.

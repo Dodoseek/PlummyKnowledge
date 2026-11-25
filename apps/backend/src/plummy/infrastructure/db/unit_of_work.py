@@ -29,6 +29,7 @@ from plummy.application.ports import (
     DocumentRepository,
     EmbeddingProfileRepository,
     EncryptedSecret,
+    GenerationRunRepository,
     GroupRepository,
     IndexingStats,
     IngestionJobRepository,
@@ -95,7 +96,11 @@ from plummy.domain.knowledge import (
     PrincipalType,
 )
 from plummy.domain.secrets import SecretKind
-from plummy.infrastructure.db.chat import SqlConversationRepository, SqlMessageRepository
+from plummy.infrastructure.db.chat import (
+    SqlConversationRepository,
+    SqlGenerationRunRepository,
+    SqlMessageRepository,
+)
 from plummy.infrastructure.db.models import (
     ActivationTokenModel,
     AIProviderModel,
@@ -2210,6 +2215,7 @@ class SqlAlchemyUnitOfWork:
     assistants: AssistantRepository
     conversations: ConversationRepository
     messages: MessageRepository
+    generation_runs: GenerationRunRepository
     data_sources: DataSourceRepository
     documents: DocumentRepository
     ingestion_jobs: IngestionJobRepository
@@ -2239,6 +2245,7 @@ class SqlAlchemyUnitOfWork:
         self.assistants = SqlAssistantRepository(session)
         self.conversations = SqlConversationRepository(session)
         self.messages = SqlMessageRepository(session)
+        self.generation_runs = SqlGenerationRunRepository(session)
         self.data_sources = SqlDataSourceRepository(session)
         self.documents = SqlDocumentRepository(session)
         self.ingestion_jobs = SqlIngestionJobRepository(session)

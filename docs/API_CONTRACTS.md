@@ -113,6 +113,8 @@
 | 409 | `source_unavailable` | Upload: источник `upload` базы знаний отсутствует или не активен |
 | 409 | `no_version` | Reindex: у документа нет версии, которую можно обработать |
 | 409 | `job_not_retryable` | Retry: job не в `failed`/`dead`, документ удалён, у документа уже есть активный job или версия удалена |
+| 409 | `message_already_sent` | Chat: сообщение с этим `client_message_id` уже отправлено; в теле — `user_message_id` и `assistant_message_id` ([ADR-019](adr/0019-answer-generation-in-api-process.md)) |
+| 409 | `model_unavailable` | Chat: чат-модель ассистента или её провайдер отключены или удалены |
 | 409 | `invalid_state` | Действие невозможно в текущем состоянии ресурса (например, вернуть `retired` profile в `active`) |
 | 413 | `payload_too_large` | Превышен лимит размера (§8 п.6; upload — `UPLOAD_MAX_BYTES`) |
 | 415 | `unsupported_media_type` | Формат вне списка MVP (§6); определяется по содержимому, не по имени и `Content-Type` |
@@ -755,21 +757,37 @@ instructions.
   "created_at": "…", "completed_at": "…" }
 ```
 
-### 2.14 `chat/stream` (§5, §6)
+### 2.14 `chat/stream` (§5, §6) — реализовано
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
 | POST | `/api/v1/chat/stream` | Отправить сообщение и получить SSE-поток ответа | `chat.use` + доступ к ассистенту и его KB | auth | `client_message_id` | — (метрики в `generation_runs`) | chat |
 | POST | `/api/v1/chat/runs/{generation_run_id}/stop` | Остановить генерацию (§5) | владелец диалога | auth | — | — | — |
 
-Подробно — в разделе 3.
+Подробно — в разделе 3. Реализация — `application/chat/send.py` (`SendMessage`, `Generation`),
+`application/chat/runs.py` (`StopGeneration`, `SweepChat`), `api/v1/chat/`.
 
 Авторизация чата ([ADR-005](adr/0005-assistant-access-model.md)): тело запроса **не содержит** идентификаторов KB или
 источников — их вычисляет backend. Недоступный ассистент: новый диалог → `404 not_found`; сообщение в собственный
 диалог → `403 assistant_unavailable`.
 Генерация — в процессе API ([ADR-019](adr/0019-answer-generation-in-api-process.md)): лимит `chat` и не более 2
 одновременных генераций на пользователя (`429 rate_limited` до начала потока); повтор `client_message_id` в диалоге
-→ `409 message_already_sent` с `user_message_id` и `assistant_message_id`, без новой генерации.
+→ `409 message_already_sent` с `user_message_id` и `assistant_message_id`, без новой генерации (повтор ищется по
+всем живым диалогам пользователя, так что повтор первого сообщения с `conversation_id = null` не создаёт второй
+диалог).
+
+Ошибки до начала потока (обычный problem+json): `401`; `403 permission_denied` (нет `chat.use`), `403
+assistant_unavailable`; `404 not_found` (чужой или несуществующий диалог, недоступный ассистент нового диалога);
+`409 message_already_sent`, `409 model_unavailable`, `409 embedding_unavailable` (профиль KB выведен из
+эксплуатации или его провайдер недоступен); `422 validation_error` (`body.content` — 1–4000 печатных символов после
+обрезки пробелов, переводы строк и табуляция допустимы; `body.assistant_id` обязателен без `conversation_id`;
+лишние поля, в том числе идентификаторы KB, отклоняются); `429 rate_limited` + `Retry-After` (лимит `chat` или обе
+одновременные генерации заняты); `503 service_unavailable` (Redis).
+
+Первое сообщение нового диалога (и первое сообщение диалога, созданного без заголовка) задаёт заголовок — начало
+вопроса, до 80 символов.
+
+`POST /chat/runs/{id}/stop` → `202` без тела; чужой или несуществующий run → `404`; Redis недоступен → `503`.
 
 ### 2.15 `jobs` (§11, §13 Фаза 11) — реализованы list, get, retry для `ingestion`
 
@@ -880,16 +898,16 @@ X-CSRF-Token: …
 
 ```http
 HTTP/1.1 200 OK
-Content-Type: text/event-stream
-Cache-Control: no-cache
+Content-Type: text/event-stream; charset=utf-8
+Cache-Control: no-cache, no-store
 X-Accel-Buffering: no
 X-Request-ID: …
 ```
 
-Формат кадра:
+Формат кадра (без `id:` — `Last-Event-ID` не поддерживается, [ADR-019](adr/0019-answer-generation-in-api-process.md)
+§5); `data` — одна строка JSON:
 
 ```text
-id: 7
 event: token
 data: {"delta":"Перенос возможен "}
 
@@ -899,12 +917,19 @@ data: {"delta":"Перенос возможен "}
 
 | Событие | Когда | `data` |
 |---|---|---|
-| `message_start` | Первым, после сохранения сообщения пользователя | `{ "conversation_id", "user_message_id", "assistant_message_id", "generation_run_id", "created_at" }` |
+| `message_start` | Первым, после сохранения сообщения пользователя и пустого ответа со статусом `streaming` | `{ "conversation_id", "user_message_id", "assistant_message_id", "generation_run_id", "created_at" }` |
 | `token` | Фрагмент ответа | `{ "delta": "…" }` |
 | `citation` | Когда в ответе впервые встречается **валидный** citation ID | см. ниже |
 | `message_complete` | Последним при успехе или остановке | `{ "assistant_message_id", "finish_reason": "stop" \| "length" \| "user_cancelled", "citation_ids": ["c1","c3"], "usage": { "prompt_tokens", "completion_tokens" } }` |
-| `error` | Ошибка после начала потока; поток закрывается | `{ "code", "message", "retryable": false, "correlation_id" }` |
-| `heartbeat` | Каждые 15 с **[Proposed]** при отсутствии других событий | `{ "ts": "…" }` |
+| `error` | Ошибка после начала потока; поток закрывается | `{ "code", "message", "retryable", "correlation_id" }` |
+| `heartbeat` | Каждые 15 с при отсутствии других событий | `{ "ts": "…" }` |
+
+Коды `error`: `provider_timeout` (жёсткий timeout ответа `CHAT_GENERATION_TIMEOUT_SECONDS` или timeout провайдера,
+`retryable: true`), `provider_rate_limited`, `provider_unavailable` (`retryable: true`), `provider_auth_failed`,
+`provider_bad_request`, `provider_model_not_found`, `provider_content_filtered`, `provider_invalid_response`,
+`egress_denied`, `provider_error`, `embedding_unavailable` (ошибка поиска по KB), `internal_error`. `message` —
+фиксированный текст без ответа провайдера. Частичный ответ сохраняется со статусом `failed` и `error_code` = коду
+события. `usage` в `message_complete` — `null`, если провайдер не сообщил токены.
 
 `citation`:
 
@@ -942,7 +967,8 @@ data: {"delta":"Перенос возможен "}
 ### 3.5 Остановка генерации (§5)
 
 `POST /api/v1/chat/runs/{generation_run_id}/stop` → `202`. Поток завершается событием `message_complete` с
-`finish_reason = "user_cancelled"`; частичный ответ сохраняется со статусом `stopped`. Повторный вызов для уже
+`finish_reason = "user_cancelled"` (не позднее ~0,5 с: флаг в Redis проверяется между фрагментами и пока поток
+ждёт провайдера); частичный ответ и уже выданные цитаты сохраняются, сообщение — `stopped`. Повторный вызов для уже
 завершённой генерации → `202` без эффекта (идемпотентно).
 
 Разрыв соединения клиентом отменяет генерацию; частичный ответ сохраняется как `stopped`. `Last-Event-ID` не
@@ -997,7 +1023,7 @@ data: {"delta":"Перенос возможен "}
 
 ## 5. Rate limits (§5, §8 п.5)
 
-`login`, `setup`, `activation`, `provider_test` и `search` реализованы ([ADR-013](adr/0013-auth-session-strategy.md),
+`login`, `setup`, `activation`, `provider_test`, `search` и `chat` реализованы ([ADR-013](adr/0013-auth-session-strategy.md),
 [ADR-015](adr/0015-user-activation-links.md)); остальные значения — **[Proposed]** (по умолчанию, настраиваются).
 Хранилище счётчиков — Redis; при его недоступности эти endpoints отвечают `503`.
 
@@ -1007,7 +1033,7 @@ data: {"delta":"Перенос возможен "}
 | `setup` | 5/мин | IP |
 | `activation` | 10/мин | IP |
 | `upload` | 30/мин, суммарный объём 500 МБ/час | пользователь |
-| `chat` | 20/мин, не более 2 одновременных генераций | пользователь |
+| `chat` | 20/мин, не более 2 одновременных генераций (утверждён в [ADR-019](adr/0019-answer-generation-in-api-process.md)) | пользователь |
 | `provider_test` | 10/мин | инсталляция |
 | `sync` | 6/час | источник |
 | `expensive` (reindex, retry) | 10/час | инсталляция |

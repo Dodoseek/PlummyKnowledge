@@ -12,6 +12,10 @@ class ApplicationError(Exception):
         super().__init__(message or self.__class__.__doc__ or self.code)
         self.message = message
 
+    def extensions(self) -> dict[str, str]:
+        """Extra problem-details members (RFC 9457); identifiers only, never secrets or content."""
+        return {}
+
 
 class AuthenticationRequiredError(ApplicationError):
     """No valid session: missing, unknown, expired, or the user can no longer sign in."""
@@ -188,6 +192,36 @@ class ModelInUseError(ConflictError):
     """A live assistant uses the chat model."""
 
     code = "model_in_use"
+
+
+class AssistantUnavailableError(PermissionDeniedError):
+    """The caller can no longer use the assistant of this conversation (ADR-005): the history stays
+    readable, new messages are refused."""
+
+    code = "assistant_unavailable"
+
+
+class MessageAlreadySentError(ConflictError):
+    """A message with this ``client_message_id`` was already sent (ADR-019 §6)."""
+
+    code = "message_already_sent"
+
+    def __init__(self, user_message_id: str, assistant_message_id: str | None) -> None:
+        super().__init__("This message was already sent.")
+        self.user_message_id = user_message_id
+        self.assistant_message_id = assistant_message_id
+
+    def extensions(self) -> dict[str, str]:
+        members = {"user_message_id": self.user_message_id}
+        if self.assistant_message_id is not None:
+            members["assistant_message_id"] = self.assistant_message_id
+        return members
+
+
+class ChatModelUnavailableError(ConflictError):
+    """The chat model of the assistant or its provider is disabled or deleted."""
+
+    code = "model_unavailable"
 
 
 class ReindexRequiredError(ConflictError):

@@ -6,6 +6,7 @@ assistant on every message (ADR-005); the history itself stays readable by its o
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -28,6 +29,20 @@ class MessageStatus(StrEnum):
     STREAMING = "streaming"
     STOPPED = "stopped"
     FAILED = "failed"
+
+
+class RunStatus(StrEnum):
+    RUNNING = "running"
+    COMPLETED = "completed"
+    STOPPED = "stopped"
+    FAILED = "failed"
+
+
+class RunFinishReason(StrEnum):
+    STOP = "stop"
+    LENGTH = "length"
+    USER_CANCELLED = "user_cancelled"
+    ERROR = "error"
 
 
 @dataclass(slots=True)
@@ -75,6 +90,31 @@ class Message:
     citations: tuple[MessageCitation, ...] = field(default=())
 
 
+@dataclass(slots=True)
+class GenerationRun:
+    """One answer being generated (DATABASE_SCHEMA.md §6.4). Only IDs, counters and timings: never the prompt,
+    the retrieved text or the answer."""
+
+    id: UUID
+    conversation_id: UUID
+    message_id: UUID
+    assistant_id: UUID
+    model_config_id: UUID | None
+    embedding_config_id: UUID | None
+    status: RunStatus
+    started_at: datetime
+    finish_reason: RunFinishReason | None = None
+    retrieved_chunk_ids: tuple[UUID, ...] = ()
+    rejected_citation_count: int = 0
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    retrieval_ms: int | None = None
+    time_to_first_token_ms: int | None = None
+    total_ms: int | None = None
+    error_code: str | None = None
+    finished_at: datetime | None = None
+
+
 class InvalidChatInputError(ValueError):
     def __init__(self, field: str, code: str, message: str) -> None:
         super().__init__(message)
@@ -115,3 +155,16 @@ def title_from_question(question: str) -> str:
     if len(text) <= TITLE_FROM_QUESTION_LENGTH:
         return text or DEFAULT_TITLE
     return text[: TITLE_FROM_QUESTION_LENGTH - 1].rstrip() + "…"
+
+
+_CITATION_MARKER = re.compile(r"[ \t]?\[c\d{1,4}\]")
+
+
+def strip_citation_markers(text: str) -> str:
+    """An earlier answer as history: its citation IDs belonged to that generation only (API_CONTRACTS.md
+    §3.4)."""
+    return _CITATION_MARKER.sub("", text).strip()
+
+
+def viewer_route(document_id: UUID, version_id: UUID, chunk_id: UUID) -> str:
+    return f"/viewer/documents/{document_id}/versions/{version_id}?chunk={chunk_id}"

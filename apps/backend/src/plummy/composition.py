@@ -38,6 +38,8 @@ from plummy.application.chat.conversations import (
     ListMessages,
     RenameConversation,
 )
+from plummy.application.chat.runs import StopGeneration, SweepChat
+from plummy.application.chat.send import SendMessage
 from plummy.application.documents.upload import UploadDocument
 from plummy.application.documents.use_cases import (
     DeleteDocument,
@@ -147,6 +149,7 @@ from plummy.infrastructure.parsing.text import PlainTextParser
 from plummy.infrastructure.queue.celery_queue import CeleryJobQueue
 from plummy.infrastructure.redis import create_redis_client
 from plummy.infrastructure.redis.checks import RedisCheck
+from plummy.infrastructure.redis.generation_control import RedisGenerationControl
 from plummy.infrastructure.redis.rate_limiter import RedisRateLimiter
 from plummy.infrastructure.security.bootstrap_store import FileBootstrapTokenStore
 from plummy.infrastructure.security.passwords import Argon2PasswordHasher
@@ -245,6 +248,12 @@ class AssistantServices:
 
 
 @dataclass(frozen=True, slots=True)
+class ChatServices:
+    send: SendMessage
+    stop: StopGeneration
+
+
+@dataclass(frozen=True, slots=True)
 class ConversationServices:
     """Conversations; each is private to its owner (API_CONTRACTS.md §2.13)."""
 
@@ -304,6 +313,7 @@ class Resources:
     knowledge: KnowledgeServices
     assistants: AssistantServices
     conversations: ConversationServices
+    chat: ChatServices
     documents: DocumentServices
     job_admin: JobServices
     secrets: SecretVault
@@ -408,6 +418,7 @@ class MaintenanceServices:
     sweep_deleted: SweepDeletedDocuments
     requeue: RequeueJobs
     cleanup_quarantine: CleanupQuarantine
+    sweep_chat: SweepChat
 
 
 @asynccontextmanager
@@ -424,6 +435,7 @@ async def maintenance_runner(settings: Settings) -> AsyncIterator[MaintenanceSer
             sweep_deleted=SweepDeletedDocuments(uow, jobs, clock),
             requeue=RequeueJobs(uow, jobs, clock),
             cleanup_quarantine=CleanupQuarantine(storage, clock, ttl=settings.quarantine_ttl),
+            sweep_chat=SweepChat(uow, clock, timeout_seconds=settings.chat_generation_timeout_seconds),
         )
     finally:
         jobs.close()
@@ -547,6 +559,8 @@ def build_resources(
     http = SafeHttpClient(egress_policy, on_denied=EgressDenialAuditor(uow))
     gateway = HttpProviderGateway(http)
     retrieve = RetrieveChunks(uow, gateway, vault)
+    generation_control = RedisGenerationControl(redis)
+    chat_timeout = settings.chat_generation_timeout_seconds
     policy = session_policy(settings)
     issuer = SessionIssuer(policy)
     web_setup_enabled = settings.setup_mode is SetupMode.WEB
@@ -639,6 +653,19 @@ def build_resources(
             rename=RenameConversation(uow, clock),
             delete=DeleteConversation(uow, clock),
             messages=ListMessages(uow),
+        ),
+        chat=ChatServices(
+            send=SendMessage(
+                uow,
+                retrieve,
+                gateway,
+                vault,
+                limiter,
+                generation_control,
+                clock,
+                timeout_seconds=chat_timeout,
+            ),
+            stop=StopGeneration(uow, generation_control, timeout_seconds=chat_timeout),
         ),
         documents=DocumentServices(
             upload=UploadDocument(uow, storage, jobs, limiter, clock, max_bytes=settings.upload_max_bytes),

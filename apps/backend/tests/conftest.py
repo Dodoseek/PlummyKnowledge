@@ -40,6 +40,7 @@ CONFIG_ENV_VARS = (
     "STORAGE_PATH",
     "QUARANTINE_TTL",
     "UPLOAD_MAX_BYTES",
+    "CHAT_GENERATION_TIMEOUT_SECONDS",
 )
 
 DB_PASSWORD = "db-password-should-never-leak"

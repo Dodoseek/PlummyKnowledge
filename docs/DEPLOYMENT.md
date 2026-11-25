@@ -22,7 +22,7 @@
 | `backend` | `apps/backend/Dockerfile` (`dev`) | FastAPI, `uvicorn --reload`; healthcheck = `/api/v1/health/ready` | `127.0.0.1:8000` | `data`, `edge` |
 | `worker` | `apps/backend/Dockerfile` (`dev`) | Celery worker, очереди `default`, `embeddings`, `maintenance` (стадии 8–12 ingestion, purge, cleanup); healthcheck = `celery inspect ping`. Вызывает embedding-провайдеров, поэтому в сети `edge` (каждое соединение — через `SafeHttpClient`, ADR-007). Изменения кода — `docker compose restart worker` (без auto-reload) | — | `data`, `edge` |
 | `worker-ingestion` | `apps/backend/Dockerfile` (`ingestion-dev`: образ с Docling и его моделями, ~4 ГБ) | Celery worker, только очередь `ingestion` (стадии 2–7: проверки, тип, безопасность файла, storage, parsing), concurrency 1; parser — в дочернем процессе с timeout и rlimits; `mem_limit` = `INGESTION_MEMORY_LIMIT` (по умолчанию `4g`). Без key ring, секретов провайдеров и setup token. `docker compose restart worker-ingestion` после изменения кода | — | `data` |
-| `scheduler` | `apps/backend/Dockerfile` (`dev`) | Celery beat, ровно один экземпляр: cleanup quarantine (1 ч), повторная публикация `queued` jobs, не дошедших до брокера (5 мин), sweep удалённых документов для purge (10 мин) — в очередь `maintenance`. Только Redis; файл состояния расписания временный (`/tmp`) | — | `data` |
+| `scheduler` | `apps/backend/Dockerfile` (`dev`) | Celery beat, ровно один экземпляр: cleanup quarantine (1 ч), повторная публикация `queued` jobs, не дошедших до брокера (5 мин), sweep удалённых документов для purge (10 мин), sweep чата — зависшие `streaming`-ответы и удалённые диалоги (5 мин) — в очередь `maintenance`. Только Redis; файл состояния расписания временный (`/tmp`) | — | `data` |
 | `frontend` | `apps/frontend/Dockerfile` (`dev`) | Vite dev server; `/api` проксируется на `backend` (same-origin, без CORS) | `127.0.0.1:5173` | `edge` |
 
 - Сеть `data` — `internal: true`; порты PostgreSQL и Redis не публикуются. Учётные данные БД в `compose.yaml` —
@@ -84,6 +84,7 @@
 | `STORAGE_PATH` | `/var/lib/plummy/storage` | Корень storage (области `quarantine` и `documents`); заменяет черновые `PLUMMY_STORAGE_PATH`, `PLUMMY_QUARANTINE_PATH` |
 | `QUARANTINE_TTL` | `86400` (24 ч) | Срок хранения файлов в quarantine до cleanup; от 10 мин до 7 дней |
 | `UPLOAD_MAX_BYTES` | `52428800` (50 МБ) | Наибольший принимаемый upload (проверяется при потоковой записи); от 1 КБ до 2 ГБ; заменяет черновое `PLUMMY_UPLOAD_MAX_BYTES` |
+| `CHAT_GENERATION_TIMEOUT_SECONDS` | `120` | Жёсткий предел одного ответа чата вместе с retrieval ([ADR-019](adr/0019-answer-generation-in-api-process.md)); от 10 до 600 с. Прокси перед API должен держать SSE-соединение не меньше этого |
 
 `NAME` и `NAME_FILE` одновременно — ошибка конфигурации. Невалидная конфигурация → сообщение без значений секретов
 и exit code 1. Frontend: `VITE_API_BASE_URL` (по умолчанию `/api/v1`) — публичное значение, попадает в bundle.
@@ -140,7 +141,7 @@ docker compose run --rm migrate cat /var/lib/plummy/bootstrap/setup-token
 | Storage | `STORAGE_BACKEND`, `STORAGE_PATH`, `QUARANTINE_TTL` (реализовано, §0); `PLUMMY_S3_ENDPOINT`, `PLUMMY_S3_BUCKET`, `PLUMMY_S3_ACCESS_KEY_FILE`, `PLUMMY_S3_SECRET_KEY_FILE` — Фаза 11 | частично |
 | Setup | `SETUP_MODE` (`web` \| `cli_only`), `BOOTSTRAP_DIR`, `BOOTSTRAP_TOKEN_TTL` (реализовано, §0) | — |
 | Безопасность | `CORS_ORIGINS`, `SESSION_IDLE_TTL`, `SESSION_ABSOLUTE_TTL`, `SESSION_COOKIE_SECURE` (реализовано, §0); лимиты rate limit (пока константы, ADR-013 §4) | — |
-| Лимиты | `UPLOAD_MAX_BYTES` (реализовано, §0); лимиты страниц/распаковки/времени парсинга — пока константы `ParseLimits`; `PLUMMY_MAX_CONCURRENT_GENERATIONS_PER_USER` | — |
+| Лимиты | `UPLOAD_MAX_BYTES`, `CHAT_GENERATION_TIMEOUT_SECONDS` (реализовано, §0); лимиты страниц/распаковки/времени парсинга — пока константы `ParseLimits`; одновременные генерации (2 на пользователя) — константа ([ADR-019](adr/0019-answer-generation-in-api-process.md)) | — |
 | Jobs | `WORKER_CONCURRENCY` (реализовано в dev compose, §0); retry/backoff — в определении каждой задачи | — |
 | SMTP | `PLUMMY_SMTP_HOST`, `PLUMMY_SMTP_USER`, `PLUMMY_SMTP_PASSWORD_FILE` | да |
 | Коннекторы | `PLUMMY_GOOGLE_CLIENT_ID`, `PLUMMY_GOOGLE_CLIENT_SECRET_FILE`, `PLUMMY_MS_CLIENT_ID`, `PLUMMY_MS_CLIENT_SECRET_FILE` | да |

@@ -15,7 +15,7 @@ from plummy.application.retrieval.model import ChunkHit, RetrievalScope
 from plummy.domain.ai import AIProvider, EmbeddingProfile, ModelConfig, TestStatus
 from plummy.domain.assistants import Assistant
 from plummy.domain.audit import AuditEntry
-from plummy.domain.chat import Conversation, Message
+from plummy.domain.chat import Conversation, GenerationRun, Message, MessageCitation, MessageStatus
 from plummy.domain.documents import (
     DeletionReason,
     Document,
@@ -57,6 +57,24 @@ class UniqueViolationError(Exception):
 
 class RateLimiterUnavailableError(Exception):
     """The counter store is unreachable; callers fail closed."""
+
+
+class GenerationControlUnavailableError(Exception):
+    """The coordination store is unreachable; no generation starts without its limits (ADR-019 §2)."""
+
+
+class GenerationControl(Protocol):
+    """Concurrent generations per user and stop requests, shared by all API processes (ADR-019 §2-3)."""
+
+    async def acquire(self, user_id: UUID, run_id: UUID, *, limit: int, ttl_seconds: int) -> bool:
+        """Takes one of ``limit`` slots of the user; a slot not released expires after ``ttl_seconds``."""
+        ...
+
+    async def release(self, user_id: UUID, run_id: UUID) -> None: ...
+
+    async def request_stop(self, run_id: UUID, *, ttl_seconds: int) -> None: ...
+
+    async def stop_requested(self, run_id: UUID) -> bool: ...
 
 
 class RateLimiter(Protocol):
@@ -535,11 +553,67 @@ class ConversationRepository(Protocol):
 
     async def mark_deleted(self, conversation_id: UUID, *, at: datetime) -> None: ...
 
+    async def touch(self, conversation_id: UUID, *, at: datetime, title: str | None = None) -> None:
+        """A new message: ``last_message_at`` (and the title, when given) move on."""
+        ...
+
+    async def purge_deleted(self, *, limit: int) -> int:
+        """Removes deleted conversations with their messages and runs; returns how many."""
+        ...
+
 
 class MessageRepository(Protocol):
     """Messages with their citations (DATABASE_SCHEMA.md §6.2-6.3)."""
 
     async def page(self, conversation_id: UUID, page: PageRequest) -> Page[Message]: ...
+
+    async def find_sent(self, user_id: UUID, client_message_id: UUID) -> tuple[Message, UUID | None] | None:
+        """A user message with this client ID in any live conversation of the user, with the ID of the
+        assistant message that answers it."""
+        ...
+
+    async def next_sequence(self, conversation_id: UUID) -> int:
+        """Call with the conversation locked (``get_owned_for_update``)."""
+        ...
+
+    async def add(self, message: Message) -> None:
+        """Raises :class:`UniqueViolationError` for a client message ID already in the conversation."""
+        ...
+
+    async def recent(self, conversation_id: UUID, *, before_sequence: int, limit: int) -> list[Message]:
+        """The latest ``limit`` messages before ``before_sequence``, oldest first."""
+        ...
+
+    async def finish(
+        self,
+        message_id: UUID,
+        *,
+        content: str,
+        status: MessageStatus,
+        error_code: str | None,
+        at: datetime,
+        citations: Sequence[MessageCitation],
+    ) -> None: ...
+
+    async def fail_streaming(self, *, started_before: datetime, error_code: str, at: datetime) -> list[UUID]:
+        """Messages left ``streaming`` by a process that died; returns their IDs."""
+        ...
+
+
+class GenerationRunRepository(Protocol):
+    async def add(self, run: GenerationRun) -> None: ...
+
+    async def get_owned(self, run_id: UUID, user_id: UUID) -> GenerationRun | None:
+        """Only a run of a live conversation of ``user_id``."""
+        ...
+
+    async def finish(self, run: GenerationRun) -> None:
+        """Writes the outcome, counters and timings of ``run``."""
+        ...
+
+    async def fail_for_messages(
+        self, message_ids: Sequence[UUID], *, error_code: str, at: datetime
+    ) -> int: ...
 
 
 class DataSourceRepository(Protocol):
@@ -826,6 +900,7 @@ class UnitOfWork(Protocol):
     assistants: AssistantRepository
     conversations: ConversationRepository
     messages: MessageRepository
+    generation_runs: GenerationRunRepository
     data_sources: DataSourceRepository
     documents: DocumentRepository
     ingestion_jobs: IngestionJobRepository

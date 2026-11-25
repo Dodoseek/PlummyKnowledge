@@ -75,6 +75,7 @@ def problem_response(
     detail: str | None = None,
     errors: list[dict[str, str]] | None = None,
     headers: Mapping[str, str] | None = None,
+    extensions: Mapping[str, str] | None = None,
 ) -> JSONResponse:
     request_id = _request_id(request)
     body: dict[str, Any] = {
@@ -88,6 +89,8 @@ def problem_response(
         body["detail"] = detail
     if errors is not None:
         body["errors"] = errors
+    for name, value in (extensions or {}).items():
+        body.setdefault(name, value)
     response_headers = dict(headers or {})
     # Error responses are never cacheable (some carry authentication state).
     response_headers["Cache-Control"] = "no-store"
@@ -181,7 +184,14 @@ async def application_exception_handler(request: Request, exc: Exception) -> JSO
         )
     else:
         detail = app_exc.message if status < 500 else None
-        response = problem_response(request, status=status, code=app_exc.code, detail=detail, headers=headers)
+        response = problem_response(
+            request,
+            status=status,
+            code=app_exc.code,
+            detail=detail,
+            headers=headers,
+            extensions=app_exc.extensions(),
+        )
     if isinstance(app_exc, AuthenticationRequiredError):
         # An invalid session cookie is useless: tell the browser to drop it (ADR-013).
         clear_session_cookie(response, request.app.state.settings)
