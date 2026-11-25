@@ -1,0 +1,97 @@
+# PlummyKnowledge — end-to-end tests (Playwright) against the dev stack and a fake OpenAI-compatible provider.
+#
+#   docker compose -p plummy-e2e -f compose.yaml -f compose.e2e.yaml --profile e2e up --build --detach --wait \
+#     backend worker worker-ingestion frontend fake-llm
+#   docker compose -p plummy-e2e -f compose.yaml -f compose.e2e.yaml --profile e2e run --rm e2e
+#   docker compose -p plummy-e2e -f compose.yaml -f compose.e2e.yaml --profile e2e down --volumes
+#
+# Use its own project name (-p): the tests create the first administrator of a fresh instance. Nothing here is
+# for production: the fake provider, the allowlist entry for it and the test runner exist only in this file.
+
+services:
+  # API and worker reach the fake provider through the network allowlist (ADR-007), like a local LLM.
+  # No published ports: the e2e stack can run next to the dev stack; the runner reaches it from inside.
+  backend:
+    ports: !reset []
+    environment:
+      CONFIG_FILE: /etc/plummy/plummy.toml
+    volumes:
+      - ./deploy/e2e/plummy.toml:/etc/plummy/plummy.toml:ro
+    networks:
+      llm: {}
+
+  worker:
+    environment:
+      CONFIG_FILE: /etc/plummy/plummy.toml
+    volumes:
+      - ./deploy/e2e/plummy.toml:/etc/plummy/plummy.toml:ro
+    networks:
+      llm: {}
+
+  # The tests upload Markdown, parsed in-process by the plain-text parser: the slim image is enough (the Docling
+  # image and its parser are covered by the CI ingestion job).
+  worker-ingestion:
+    build:
+      target: dev
+
+  # The test runner shares this container's network namespace (see `e2e`), so it also needs the fake provider's
+  # network to read its request log. The application itself never calls it from the browser.
+  frontend:
+    ports: !reset []
+    networks:
+      llm: {}
+
+  fake-llm:
+    profiles: [e2e]
+    image: python:3.13-slim
+    command: ["python", "/fake/fake_llm.py"]
+    volumes:
+      - ./deploy/e2e/fake_llm.py:/fake/fake_llm.py:ro
+    networks:
+      llm: {}
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Playwright with its browsers. It runs in the frontend's network namespace: the browser opens
+  # http://localhost:5173, the origin the backend trusts (PUBLIC_URL), exactly as on a developer machine.
+  # The bootstrap volume is mounted read-only so that the global setup can create the first administrator.
+  e2e:
+    profiles: [e2e]
+    image: mcr.microsoft.com/playwright:v1.64.1-noble
+    working_dir: /e2e
+    command: ["sh", "-c", "npm ci --no-audit --no-fund && npx tsc --noEmit && npx playwright test"]
+    environment:
+      CI: ${CI:-}
+      E2E_BASE_URL: http://localhost:5173
+      E2E_FAKE_LLM_URL: http://fake-llm:8080
+      E2E_SETUP_TOKEN_FILE: /bootstrap/setup-token
+    volumes:
+      - ./apps/e2e:/e2e
+      - e2e-node-modules:/e2e/node_modules
+      - bootstrap-data:/bootstrap:ro
+    network_mode: service:frontend
+    depends_on:
+      frontend:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+      fake-llm:
+        condition: service_healthy
+
+networks:
+  # The fake provider's network: internal (no internet), with a fixed subnet for the allowlist entry.
+  llm:
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.213.17.0/24
+
+volumes:
+  e2e-node-modules:

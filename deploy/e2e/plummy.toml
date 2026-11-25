@@ -1,0 +1,9 @@
+# Instance configuration of the end-to-end stack (compose.e2e.yaml): the fake OpenAI-compatible provider is the
+# only internal address the backend may reach (ADR-007). Test infrastructure only.
+
+[[network.allowlist]]
+name           = "e2e-fake-llm"
+url            = "http://fake-llm:8080"
+purposes       = ["llm", "embedding"]
+provider_types = ["openai_compatible"]
+allowed_cidrs  = ["10.213.17.0/24"]

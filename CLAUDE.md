@@ -274,8 +274,18 @@ docker compose run --rm migrate python -m plummy.cli secrets generate-key   # н
 есть; `PLUMMY_SKIP_LINT=1` — пропустить lint один раз) → bump `VERSION`. CI — `.github/workflows/ci.yml`: те же
 проверки на Compose-стеке, `pip-audit`, `npm audit`, dependency review в PR.
 
-Ещё не существуют: E2E (Playwright). **Не выдумывать команды** —
-сверяться с фактическими конфигурациями в репозитории.
+E2E (Playwright, `apps/e2e`): отдельный Compose-проект без опубликованных портов, фейковый OpenAI-compatible
+провайдер (`deploy/e2e/fake_llm.py`) в allowlist тестового `CONFIG_FILE`; global setup создаёт первого
+администратора на свежем стеке и всё остальное — через API:
+
+```bash
+export COMPOSE_PROJECT_NAME=plummy-e2e COMPOSE_FILE=compose.yaml:compose.e2e.yaml COMPOSE_PROFILES=e2e
+docker compose up --build --detach --wait backend worker worker-ingestion scheduler frontend fake-llm
+docker compose run --rm -T e2e                                  # tsc + playwright test (Chromium)
+docker compose down --volumes
+```
+
+**Не выдумывать команды** — сверяться с фактическими конфигурациями в репозитории.
 
 ## Definition of Done (§12)
 
