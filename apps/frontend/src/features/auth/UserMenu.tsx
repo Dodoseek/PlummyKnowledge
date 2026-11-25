@@ -30,6 +30,11 @@ export function UserMenu() {
       <Link as={RouterLink} to="/knowledge-bases" fontSize="sm">
         Knowledge bases
       </Link>
+      {can(PERMISSIONS.chatUse) && (
+        <Link as={RouterLink} to="/chat" fontSize="sm">
+          Chat
+        </Link>
+      )}
       {(can(PERMISSIONS.chatUse) || can(PERMISSIONS.assistantsManage)) && (
         <Link as={RouterLink} to="/assistants" fontSize="sm">
           Assistants

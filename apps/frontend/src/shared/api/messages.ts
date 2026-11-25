@@ -54,6 +54,12 @@ const MESSAGES: Record<string, string> = {
   provider_error: 'The AI provider request failed. Try again later.',
   provider_timeout: 'The AI provider did not answer in time. Try again.',
   egress_denied: 'The server’s network policy blocked the request to the AI provider.',
+  assistant_unavailable:
+    'The assistant is not available to you: it was disabled or you lost access to one of its knowledge bases.',
+  message_already_sent: 'This message was already sent.',
+  model_unavailable:
+    'The assistant’s model is disabled or deleted. Ask an administrator to fix the assistant.',
+  internal_error: 'Something went wrong on the server. Try again later.',
   activation_token_invalid:
     'This activation link is invalid, expired or already used. Ask your administrator for a new one.',
 };

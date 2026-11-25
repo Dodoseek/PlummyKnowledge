@@ -1,4 +1,5 @@
-import { Card, CardBody, Heading, SimpleGrid, Stack, Text } from '@chakra-ui/react';
+import { Button, Card, CardBody, Heading, SimpleGrid, Stack, Text } from '@chakra-ui/react';
+import { Link as RouterLink } from 'react-router';
 
 import { toApiError } from '../../shared/api/errors';
 import { ApiErrorAlert } from '../../shared/components/ApiErrorAlert';
@@ -41,6 +42,16 @@ export function AssistantsPage() {
                         {assistant.description}
                       </Text>
                     )}
+                    <Button
+                      as={RouterLink}
+                      to={`/chat?assistant=${encodeURIComponent(assistant.id)}`}
+                      size="sm"
+                      colorScheme="brand"
+                      alignSelf="flex-start"
+                      mt={2}
+                    >
+                      Start chat
+                    </Button>
                   </Stack>
                 </CardBody>
               </Card>
@@ -56,7 +67,7 @@ export function AssistantsPage() {
     <Stack spacing={6}>
       <Stack spacing={2}>
         <Heading size="lg">Assistants</Heading>
-        <Text color="gray.500">Chat with assistants arrives in the next release.</Text>
+        <Text color="gray.500">Assistants answer from the knowledge bases you have access to.</Text>
       </Stack>
       {body}
     </Stack>

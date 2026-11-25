@@ -11,12 +11,14 @@ import { UsersPage } from '../features/admin/UsersPage';
 import { ActivatePage } from '../features/auth/ActivatePage';
 import { LoginPage } from '../features/auth/LoginPage';
 import { RequireAuth } from '../features/auth/RequireAuth';
+import { ChatPage } from '../features/chat/ChatPage';
 import { KnowledgeBasePage } from '../features/knowledge/KnowledgeBasePage';
 import { KnowledgeBasesPage } from '../features/knowledge/KnowledgeBasesPage';
 import { EmbeddingProfilesPage } from '../features/providers/EmbeddingProfilesPage';
 import { ProviderDetailPage } from '../features/providers/ProviderDetailPage';
 import { ProvidersPage } from '../features/providers/ProvidersPage';
 import { SetupPage } from '../features/setup/SetupPage';
+import { SourceViewerPage } from '../features/viewer/SourceViewerPage';
 import { AppLayout } from '../layouts/AppLayout';
 import { HomePage } from '../pages/HomePage';
 import { NotFoundPage } from '../pages/NotFoundPage';
@@ -43,6 +45,10 @@ export const routes: RouteObject[] = [
           { path: 'knowledge-bases/:kbId', element: <KnowledgeBasePage /> },
           // The backend lists only the assistants the session can use (ADR-005).
           { path: 'assistants', element: <AssistantsPage /> },
+          // One route with an optional ID: a new chat keeps its page when the conversation gets its ID.
+          { path: 'chat/:conversationId?', element: <ChatPage /> },
+          // The backend checks access to the document on every view (SC-05).
+          { path: 'viewer/documents/:documentId/versions/:versionId', element: <SourceViewerPage /> },
           // Admin pages hide themselves without the permission; the backend enforces it on every request.
           { path: 'admin/users', element: <UsersPage /> },
           { path: 'admin/users/:userId', element: <UserDetailPage /> },

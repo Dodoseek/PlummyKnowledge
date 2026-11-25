@@ -21,6 +21,9 @@ Object.defineProperty(window, 'matchMedia', {
   }),
 });
 
+// jsdom has no layout, so no scrolling; the chat scrolls to the newest message.
+Element.prototype.scrollIntoView = () => undefined;
+
 afterEach(() => {
   cleanup();
 });

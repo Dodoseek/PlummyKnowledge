@@ -56,7 +56,8 @@ function isFetchBaseQueryError(error: unknown): error is FetchBaseQueryError {
   return isRecord(error) && 'status' in error;
 }
 
-function fromHttpStatus(status: number, data: unknown): ApiError {
+/** An HTTP error response with a problem+json body (or none). */
+export function fromHttpStatus(status: number, data: unknown): ApiError {
   const problem: ProblemDetails = isRecord(data) ? data : {};
   const code = asString(problem.code);
   const correlationId = asString(problem.correlation_id);
