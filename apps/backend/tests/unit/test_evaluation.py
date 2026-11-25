@@ -8,6 +8,7 @@ import math
 from collections import Counter
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 import pytest
 
@@ -21,7 +22,7 @@ from plummy.application.evaluation.metrics import (
     recall_at,
     reciprocal_rank,
 )
-from plummy.application.evaluation.runner import score_question, summarize
+from plummy.application.evaluation.runner import EvalOptions, score_question, summarize
 from plummy.cli.app import main
 
 DATASET = Path(__file__).resolve().parents[2] / "evaluation" / "datasets" / "synthetic-v1"
@@ -252,3 +253,50 @@ def test_eval_run_rejects_bad_cut_offs(value: str, capsys: pytest.CaptureFixture
         )  # fmt: skip
     err = capsys.readouterr().err
     assert "cut-offs" in err or "integers" in err
+
+
+@pytest.mark.parametrize(
+    ("flag", "value", "message"),
+    [
+        ("--rrf-k", "0", "between 1 and 1000"),
+        ("--rrf-k", "x", "integer"),
+        ("--keyword-weight", "-1", "between 0 and 10"),
+        ("--vector-weight", "11", "between 0 and 10"),
+        ("--vector-weight", "nan", "between 0 and 10"),
+        ("--keyword-weight", "a", "number"),
+    ],
+)
+def test_eval_run_rejects_bad_fusion_settings(
+    flag: str, value: str, message: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit):
+        main(
+            ["eval", "run", "--dataset", ".", "--email", "a@example.com",
+             "--embedding-profile", "00000000-0000-0000-0000-000000000001", flag, value]
+        )  # fmt: skip
+    assert message in capsys.readouterr().err
+
+
+def test_eval_run_rejects_two_zero_weights_before_connecting() -> None:
+    err = io.StringIO()
+
+    def no_services(_: object) -> Any:
+        raise AssertionError("must not connect")
+
+    code = main(
+        ["eval", "run", "--dataset", str(DATASET), "--email", "a@example.com",
+         "--embedding-profile", "00000000-0000-0000-0000-000000000001",
+         "--vector-weight", "0", "--keyword-weight", "0"],
+        evaluation_factory=no_services,
+        settings=object(),  # type: ignore[arg-type]
+        stdout=io.StringIO(),
+        stderr=err,
+    )  # fmt: skip
+    assert code == 1
+    assert "settings: branch weights must be 0-10 and not both 0" in err.getvalue()
+
+
+def test_fusion_options_reach_the_retrieval_settings() -> None:
+    options = EvalOptions(UUID(int=1), rrf_k=20, vector_weight=1.0, keyword_weight=0.5)
+    settings = options.settings()
+    assert (settings.rrf_k, settings.vector_weight, settings.keyword_weight) == (20, 1.0, 0.5)

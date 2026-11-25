@@ -25,6 +25,11 @@ class SearchMode(StrEnum):
 
 DEFAULT_TOP_K: Final = 8
 MAX_TOP_K: Final = 50
+# Weighted RRF (ARCHITECTURE.md §9.4): chosen on the synthetic-v1 baseline, docs/evaluation/.
+DEFAULT_RRF_K: Final = 60
+DEFAULT_VECTOR_WEIGHT: Final = 1.0
+DEFAULT_KEYWORD_WEIGHT: Final = 1.0
+MAX_BRANCH_WEIGHT: Final = 10.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,7 +39,9 @@ class RetrievalSettings:
     top_k: int = DEFAULT_TOP_K
     vector_top_k: int = 40
     keyword_top_k: int = 40
-    rrf_k: int = 60
+    rrf_k: int = DEFAULT_RRF_K
+    vector_weight: float = DEFAULT_VECTOR_WEIGHT
+    keyword_weight: float = DEFAULT_KEYWORD_WEIGHT
     max_context_tokens: int = 8000
 
     def __post_init__(self) -> None:
@@ -44,6 +51,9 @@ class RetrievalSettings:
             raise ValueError("branch limits must be top_k-200")
         if not 1 <= self.rrf_k <= 1000:
             raise ValueError("rrf_k must be 1-1000")
+        weights = (self.vector_weight, self.keyword_weight)
+        if not all(0 <= weight <= MAX_BRANCH_WEIGHT for weight in weights) or not any(weights):
+            raise ValueError("branch weights must be 0-10 and not both 0")
         if not 256 <= self.max_context_tokens <= 128_000:
             raise ValueError("max_context_tokens must be 256-128000")
 

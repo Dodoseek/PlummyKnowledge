@@ -1,7 +1,8 @@
 """Hybrid fusion, deduplication and the context budget (ARCHITECTURE.md §9.4 п.3-4). Pure functions.
 
 Reciprocal Rank Fusion combines ranks, not scores: cosine distances and ``ts_rank_cd`` values are not
-comparable, ranks are. A chunk found by both branches sums both contributions.
+comparable, ranks are. A chunk found by both branches sums both contributions; each branch's contribution is
+multiplied by its weight, so a weight of 0 keeps the branch's ranks for reporting but not for ordering.
 """
 
 from __future__ import annotations
@@ -14,9 +15,14 @@ from plummy.application.retrieval.model import ChunkHit, RankedChunk
 
 
 def reciprocal_rank_fusion(
-    vector_hits: Sequence[ChunkHit], keyword_hits: Sequence[ChunkHit], *, k: int
+    vector_hits: Sequence[ChunkHit],
+    keyword_hits: Sequence[ChunkHit],
+    *,
+    k: int,
+    vector_weight: float = 1.0,
+    keyword_weight: float = 1.0,
 ) -> list[RankedChunk]:
-    """``score = Σ 1 / (k + rank)`` over the branches that found the chunk; ties keep a stable order
+    """``score = Σ weight / (k + rank)`` over the branches that found the chunk; ties keep a stable order
     (better best rank first, then chunk id) so the same input always gives the same ranking."""
     hits: dict[UUID, ChunkHit] = {}
     vector_ranks: dict[UUID, int] = {}
@@ -33,7 +39,11 @@ def reciprocal_rank_fusion(
     ranked = []
     for chunk_id, hit in hits.items():
         vector_rank, keyword_rank = vector_ranks.get(chunk_id), keyword_ranks.get(chunk_id)
-        score = sum(1.0 / (k + rank) for rank in (vector_rank, keyword_rank) if rank is not None)
+        score = sum(
+            weight / (k + rank)
+            for rank, weight in ((vector_rank, vector_weight), (keyword_rank, keyword_weight))
+            if rank is not None
+        )
         ranked.append(RankedChunk(hit, score, vector_rank, keyword_rank))
     ranked.sort(key=_order)
     return ranked

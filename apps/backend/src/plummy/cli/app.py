@@ -32,7 +32,14 @@ from uuid import UUID
 from plummy.application.errors import ApplicationError, InvalidInputError
 from plummy.application.evaluation.dataset import DatasetError, parse_dataset
 from plummy.application.evaluation.runner import DEFAULT_KS, EvalOptions, operator_context
-from plummy.application.retrieval.model import MAX_TOP_K, SearchMode
+from plummy.application.retrieval.model import (
+    DEFAULT_KEYWORD_WEIGHT,
+    DEFAULT_RRF_K,
+    DEFAULT_VECTOR_WEIGHT,
+    MAX_BRANCH_WEIGHT,
+    MAX_TOP_K,
+    SearchMode,
+)
 from plummy.application.setup.use_cases import TokenIssueOutcome
 from plummy.application.setup.validation import AdministratorInput
 from plummy.composition import (
@@ -120,6 +127,19 @@ def _parser() -> argparse.ArgumentParser:
         help="search mode to measure (repeatable; default: all three)",
     )
     run.add_argument("--k", type=_ks, default=DEFAULT_KS, help="cut-offs, e.g. 1,3,5,10 (default)")
+    run.add_argument("--rrf-k", type=_rrf_k, default=DEFAULT_RRF_K, help=f"RRF k (default {DEFAULT_RRF_K})")
+    run.add_argument(
+        "--vector-weight",
+        type=_weight,
+        default=DEFAULT_VECTOR_WEIGHT,
+        help=f"weight of the vector branch in hybrid fusion (default {DEFAULT_VECTOR_WEIGHT})",
+    )
+    run.add_argument(
+        "--keyword-weight",
+        type=_weight,
+        default=DEFAULT_KEYWORD_WEIGHT,
+        help=f"weight of the keyword branch in hybrid fusion (default {DEFAULT_KEYWORD_WEIGHT})",
+    )
     run.add_argument("--output", type=Path, help="write the report here instead of stdout")
     run.add_argument(
         "--timeout", type=_positive_seconds, default=1800.0, help="indexing wait, seconds (default 1800)"
@@ -135,6 +155,26 @@ def _ks(value: str) -> tuple[int, ...]:
     if not ks or ks[0] < 1 or ks[-1] > MAX_TOP_K:
         raise argparse.ArgumentTypeError(f"cut-offs must be between 1 and {MAX_TOP_K}")
     return ks
+
+
+def _rrf_k(value: str) -> int:
+    try:
+        k = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("expected an integer") from None
+    if not 1 <= k <= 1000:
+        raise argparse.ArgumentTypeError("RRF k must be between 1 and 1000")
+    return k
+
+
+def _weight(value: str) -> float:
+    try:
+        weight = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("expected a number") from None
+    if not 0 <= weight <= MAX_BRANCH_WEIGHT:  # also rejects nan
+        raise argparse.ArgumentTypeError(f"weights must be between 0 and {MAX_BRANCH_WEIGHT:g}")
+    return weight
 
 
 def _read_dataset(directory: Path) -> tuple[bytes, dict[str, bytes]]:
@@ -157,7 +197,14 @@ async def _eval_run(
         modes=modes,
         ks=args.k,
         indexing_timeout_seconds=args.timeout,
+        rrf_k=args.rrf_k,
+        vector_weight=args.vector_weight,
+        keyword_weight=args.keyword_weight,
     )
+    try:
+        options.settings()
+    except ValueError as exc:
+        raise CliError(f"settings: {exc}") from None
     services = factory(settings)
     try:
         context = await operator_context(services.uow, services.clock, args.email)

@@ -8,7 +8,12 @@ import pytest
 
 from plummy.application.errors import InvalidInputError
 from plummy.application.retrieval.fusion import deduplicate, fit_budget, reciprocal_rank_fusion
-from plummy.application.retrieval.model import ChunkHit, RetrievalSettings
+from plummy.application.retrieval.model import (
+    DEFAULT_KEYWORD_WEIGHT,
+    DEFAULT_VECTOR_WEIGHT,
+    ChunkHit,
+    RetrievalSettings,
+)
 from plummy.application.retrieval.use_cases import normalize_query
 
 
@@ -75,6 +80,34 @@ def test_a_repeated_hit_in_one_branch_counts_once() -> None:
     assert ranked[0].fused_score == pytest.approx(1 / 61)
 
 
+def test_branch_weights_scale_each_contribution() -> None:
+    vector, keyword = [hit(1), hit(2)], [hit(3)]
+    assert ids(reciprocal_rank_fusion(vector, keyword, k=60)) == [1, 3, 2]  # 1 and 3 tie: id order
+    favour_vector = reciprocal_rank_fusion(vector, keyword, k=60, keyword_weight=0.5)
+    assert ids(favour_vector) == [1, 2, 3]
+    assert favour_vector[2].fused_score == pytest.approx(0.5 / 61)
+    favour_keyword = reciprocal_rank_fusion(vector, keyword, k=60, vector_weight=0.5)
+    assert ids(favour_keyword) == [3, 1, 2]
+    both = reciprocal_rank_fusion([hit(1)], [hit(1)], k=60, vector_weight=2.0, keyword_weight=0.25)
+    assert both[0].fused_score == pytest.approx(2 / 61 + 0.25 / 61)
+
+
+def test_equal_weights_give_the_same_order_as_unweighted_fusion() -> None:
+    vector, keyword = [hit(1), hit(2), hit(3)], [hit(3), hit(4), hit(1)]
+    plain = reciprocal_rank_fusion(vector, keyword, k=60)
+    doubled = reciprocal_rank_fusion(vector, keyword, k=60, vector_weight=2.0, keyword_weight=2.0)
+    assert ids(doubled) == ids(plain)
+
+
+def test_a_zero_weight_branch_keeps_its_ranks_but_does_not_order() -> None:
+    vector, keyword = [hit(1), hit(2)], [hit(2), hit(3)]
+    ranked = reciprocal_rank_fusion(vector, keyword, k=60, keyword_weight=0.0)
+    assert ids(ranked) == [1, 2, 3]  # vector order; the keyword-only chunk comes last with score 0
+    assert ranked[1].keyword_rank == 1
+    assert ranked[1].fused_score == pytest.approx(1 / 62)
+    assert ranked[2].fused_score == 0.0
+
+
 # --- deduplication and budget -----------------------------------------------------------------------------
 
 
@@ -110,6 +143,15 @@ def test_default_settings_match_the_contract() -> None:
     settings = RetrievalSettings()
     assert (settings.top_k, settings.vector_top_k, settings.keyword_top_k, settings.rrf_k) == (8, 40, 40, 60)
     assert settings.max_context_tokens == 8000
+    assert (settings.vector_weight, settings.keyword_weight) == (
+        DEFAULT_VECTOR_WEIGHT,
+        DEFAULT_KEYWORD_WEIGHT,
+    )
+
+
+def test_one_branch_weight_may_be_zero_and_the_bounds_are_inclusive() -> None:
+    assert RetrievalSettings(keyword_weight=0.0).keyword_weight == 0.0
+    assert RetrievalSettings(vector_weight=0.0, keyword_weight=10.0).keyword_weight == 10.0
 
 
 @pytest.mark.parametrize(
@@ -121,9 +163,13 @@ def test_default_settings_match_the_contract() -> None:
         {"keyword_top_k": 201},
         {"rrf_k": 0},
         {"max_context_tokens": 255},
+        {"vector_weight": -0.1},
+        {"keyword_weight": 10.5},
+        {"vector_weight": 0.0, "keyword_weight": 0.0},
+        {"keyword_weight": float("nan")},
     ],
 )
-def test_settings_out_of_range_are_rejected(overrides: dict[str, int]) -> None:
+def test_settings_out_of_range_are_rejected(overrides: dict[str, float]) -> None:
     with pytest.raises(ValueError, match="must be"):
         RetrievalSettings(**overrides)
 

@@ -155,7 +155,14 @@ class RetrieveChunks:
                 found = await uow.search.by_keywords(scope, query, limit=settings.keyword_top_k)
             keyword_empty = found is None
             keyword_hits = found or []
-        ranked = deduplicate(reciprocal_rank_fusion(vector_hits, keyword_hits, k=settings.rrf_k))
+        fused = reciprocal_rank_fusion(
+            vector_hits,
+            keyword_hits,
+            k=settings.rrf_k,
+            vector_weight=settings.vector_weight,
+            keyword_weight=settings.keyword_weight,
+        )
+        ranked = deduplicate(fused)
         selection = fit_budget(ranked, top_k=settings.top_k, max_tokens=settings.max_context_tokens)
         logger.info(
             "retrieval finished",

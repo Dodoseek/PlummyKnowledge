@@ -33,7 +33,14 @@ from plummy.application.knowledge.access import require_kb_access
 from plummy.application.knowledge.use_cases import CreateKnowledgeBase, KnowledgeBaseInput
 from plummy.application.pagination import MAX_LIMIT, PageRequest, SortSpec
 from plummy.application.ports import Clock, DocumentQuery, UnitOfWorkFactory
-from plummy.application.retrieval.model import RetrievalScope, RetrievalSettings, SearchMode
+from plummy.application.retrieval.model import (
+    DEFAULT_KEYWORD_WEIGHT,
+    DEFAULT_RRF_K,
+    DEFAULT_VECTOR_WEIGHT,
+    RetrievalScope,
+    RetrievalSettings,
+    SearchMode,
+)
 from plummy.application.retrieval.use_cases import RetrieveChunks, normalize_query, resolve_scope
 from plummy.application.security import ClientInfo, SecurityContext
 from plummy.domain.documents import DocumentStatus
@@ -60,6 +67,9 @@ class EvalOptions:
     modes: tuple[SearchMode, ...] = (SearchMode.HYBRID, SearchMode.VECTOR, SearchMode.KEYWORD)
     ks: tuple[int, ...] = DEFAULT_KS
     indexing_timeout_seconds: float = 1800.0
+    rrf_k: int = DEFAULT_RRF_K
+    vector_weight: float = DEFAULT_VECTOR_WEIGHT
+    keyword_weight: float = DEFAULT_KEYWORD_WEIGHT
 
     def settings(self) -> RetrievalSettings:
         # The budget is lifted so that the ranking itself is measured; the default budget is reported apart.
@@ -68,6 +78,9 @@ class EvalOptions:
             top_k=top,
             vector_top_k=max(40, top),
             keyword_top_k=max(40, top),
+            rrf_k=self.rrf_k,
+            vector_weight=self.vector_weight,
+            keyword_weight=self.keyword_weight,
             max_context_tokens=128_000,
         )
 
@@ -215,6 +228,8 @@ class RunRetrievalEvaluation:
                 "vector_top_k": settings.vector_top_k,
                 "keyword_top_k": settings.keyword_top_k,
                 "rrf_k": settings.rrf_k,
+                "vector_weight": settings.vector_weight,
+                "keyword_weight": settings.keyword_weight,
                 "max_context_tokens": settings.max_context_tokens,
             },
             "started_at": started.isoformat(),
