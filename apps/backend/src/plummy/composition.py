@@ -112,8 +112,9 @@ from plummy.application.setup.use_cases import (
     IssueBootstrapToken,
     ResetPassword,
 )
-from plummy.application.sources.ports import OAuthClient
+from plummy.application.sources.ports import DataSourceConnector, OAuthClient
 from plummy.application.sources.use_cases import (
+    BrowseDataSource,
     CompleteOAuth,
     CreateDataSource,
     DeleteDataSource,
@@ -122,6 +123,7 @@ from plummy.application.sources.use_cases import (
     ListDataSources,
     StartOAuth,
     UpdateDataSource,
+    ValidateDataSource,
 )
 from plummy.application.system.use_cases import (
     AllowlistEntryView,
@@ -159,6 +161,7 @@ from plummy.infrastructure.http.egress_audit import EgressDenialAuditor
 from plummy.infrastructure.http.safe_client import SafeHttpClient
 from plummy.infrastructure.integrations.ai.factory import HttpProviderGateway
 from plummy.infrastructure.integrations.sources.google_common import GoogleEndpoints
+from plummy.infrastructure.integrations.sources.google_drive import GoogleDriveConnector
 from plummy.infrastructure.integrations.sources.google_oauth import GoogleOAuthClient
 from plummy.infrastructure.parsing.isolated import IsolatedParser
 from plummy.infrastructure.parsing.text import PlainTextParser
@@ -175,6 +178,7 @@ from plummy.infrastructure.storage.local import LocalFileStorage, StorageCheck
 from plummy.workers.app import DEFAULT_NAMESPACE
 
 logger = logging.getLogger(__name__)
+API_CONNECTOR_ATTEMPTS = 2  # a request waits for the provider: little room for backoff
 
 
 @dataclass(frozen=True, slots=True)
@@ -308,6 +312,8 @@ class SourceServices:
     disconnect: DisconnectDataSource
     start_oauth: StartOAuth
     complete_oauth: CompleteOAuth
+    validate: ValidateDataSource
+    browse: BrowseDataSource
 
 
 @dataclass(frozen=True, slots=True)
@@ -544,6 +550,18 @@ def oauth_clients(settings: Settings, http: SafeHttpClient) -> dict[DataSourceTy
     return clients
 
 
+def source_connectors(
+    settings: Settings, http: SafeHttpClient, *, max_attempts: int
+) -> dict[DataSourceType, DataSourceConnector]:
+    """Connectors of the configured source types; ``max_attempts`` per request (few in the API process)."""
+    connectors: dict[DataSourceType, DataSourceConnector] = {}
+    if settings.google_drive_configured:
+        connectors[DataSourceType.GOOGLE_DRIVE] = GoogleDriveConnector(
+            http, GoogleEndpoints.from_config(load_config(settings).google_drive), max_attempts=max_attempts
+        )
+    return connectors
+
+
 def load_egress_policy(settings: Settings) -> EgressPolicy:
     """The outbound network policy from CONFIG_FILE; an invalid file stops the process (ADR-007)."""
     config = load_config(settings)
@@ -620,6 +638,7 @@ def build_resources(
     retrieve = RetrieveChunks(uow, gateway, vault)
     generation_control = RedisGenerationControl(redis)
     clients = oauth_clients(settings, http)
+    connectors = source_connectors(settings, http, max_attempts=API_CONNECTOR_ATTEMPTS)
     oauth_states = RedisOAuthStateStore(redis)
     redirect_uri = settings.oauth_redirect_uri
     chat_timeout = settings.chat_generation_timeout_seconds
@@ -743,11 +762,13 @@ def build_resources(
             list=ListDataSources(uow),
             get=GetDataSource(uow),
             create=CreateDataSource(uow, clock, clients),
-            update=UpdateDataSource(uow, clock),
+            update=UpdateDataSource(uow, clock, vault, clients, connectors),
             delete=DeleteDataSource(uow, jobs, clock, vault, clients),
             disconnect=DisconnectDataSource(uow, clock, vault, clients),
             start_oauth=StartOAuth(uow, oauth_states, clients, redirect_uri),
             complete_oauth=CompleteOAuth(uow, clock, vault, oauth_states, clients, redirect_uri),
+            validate=ValidateDataSource(uow, clock, vault, clients, connectors, limiter),
+            browse=BrowseDataSource(uow, clock, vault, clients, connectors),
         ),
         job_admin=JobServices(list=ListJobs(uow), get=GetJob(uow), retry=RetryJob(uow, jobs, limiter, clock)),
         secrets=vault,

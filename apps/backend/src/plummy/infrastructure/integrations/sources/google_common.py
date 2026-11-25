@@ -16,7 +16,9 @@ from typing import Any, Final
 import httpx
 
 from plummy.application.sources.ports import (
+    ConnectorAccessTokenRejectedError,
     ConnectorError,
+    ConnectorFileTooLargeError,
     ConnectorInvalidResponseError,
     ConnectorNotFoundError,
     ConnectorPermissionDeniedError,
@@ -33,6 +35,7 @@ MAX_JSON_BYTES: Final = 4 * 1024 * 1024
 TIMEOUT: Final = httpx.Timeout(30.0, connect=10.0)
 _RATE_REASONS: Final = frozenset({"rateLimitExceeded", "userRateLimitExceeded"})
 _QUOTA_REASONS: Final = frozenset({"dailyLimitExceeded", "quotaExceeded", "storageQuotaExceeded"})
+_TOO_LARGE_REASONS: Final = frozenset({"exportSizeLimitExceeded"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +99,8 @@ def _reasons(response: httpx.Response) -> set[str]:
 def api_error(response: httpx.Response) -> ConnectorError:
     """A Drive API answer that is not a success, as a typed error."""
     status = response.status_code
+    if status == 401:
+        return ConnectorAccessTokenRejectedError()
     if status == 429:
         return ConnectorRateLimitedError(retry_after(response))
     if status == 403:
@@ -104,6 +109,8 @@ def api_error(response: httpx.Response) -> ConnectorError:
             return ConnectorRateLimitedError(retry_after(response))
         if reasons & _QUOTA_REASONS:
             return ConnectorQuotaExceededError()
+        if reasons & _TOO_LARGE_REASONS:
+            return ConnectorFileTooLargeError()
         return ConnectorPermissionDeniedError()
     if status == 404:
         return ConnectorNotFoundError()

@@ -503,3 +503,236 @@ async def test_unconfigured_connector_is_refused(
         problem(response, 409, "connector_not_configured")
         settings = (await admin.get("/api/v1/system/settings")).json()
         assert settings["connectors"]["google_drive"]["configured"] is False
+
+
+# --- the provider: folder picker, folder choice and validation (ADR-020 §6, §7) ------------------------
+
+
+async def connected_source(env: Env) -> dict[str, Any]:
+    source = await create_source(env)
+    assert (await connect(env, source["id"]))["oauth"] == "connected"
+    return source
+
+
+def refreshes(env: Env) -> int:
+    return sum(request["grant_type"] == "refresh_token" for request in env.google.token_requests)
+
+
+def field_code(response: httpx.Response) -> str:
+    body = problem(response, 422, response.json().get("code", "?"))
+    code: str = body["errors"][0]["code"]
+    return code
+
+
+async def test_browse_reads_folders_with_a_fresh_token_that_is_never_stored(env: Env) -> None:
+    source = await connected_source(env)
+    google = env.google
+    google.shared_drives.append({"id": "drive1", "name": "Team"})
+    sales = google.folder("Sales")
+    google.folder("2026", parent=sales)
+    google.add("notes.txt", parent=sales, content=b"x")
+
+    top = await env.admin.get(f"{URL}/{source['id']}/browse")
+    assert top.status_code == 200, top.text
+    assert top.json() == {
+        "items": [
+            {"id": "drive1", "name": "Team", "kind": "shared_drive"},
+            {"id": sales, "name": "Sales", "kind": "folder"},
+        ],
+        "next_cursor": None,
+        "has_more": False,
+    }
+    below = await env.admin.get(f"{URL}/{source['id']}/browse", params={"parent_id": sales})
+    assert [item["name"] for item in below.json()["items"]] == ["2026"]
+    assert refreshes(env) == 2  # a token per call, none kept
+
+    stored = json.dumps(await env.harness.sql("SELECT * FROM data_source_credentials"), default=str)
+    stored += json.dumps(await env.harness.sql("SELECT action, details::text FROM audit_logs"), default=str)
+    assert not [token for token in google.access_tokens if token in stored]
+    assert await env.harness.sql(
+        "SELECT count(*) FROM secret_references WHERE kind = 'oauth_refresh_token'"
+    ) == [(1,)]
+    [(refreshed,)] = await env.harness.sql("SELECT last_refreshed_at FROM data_source_credentials")
+    assert refreshed is not None
+
+
+async def test_browse_input_and_state_are_checked(env: Env) -> None:
+    source = await create_source(env)
+    problem(await env.admin.get(f"{URL}/{source['id']}/browse"), 409, "source_not_connected")
+    await connect(env, source["id"])
+    browse = f"{URL}/{source['id']}/browse"
+    response = await env.admin.get(browse, params={"parent_id": "../etc"})
+    assert problem(response, 422, "invalid_query_parameter")["errors"][0]["code"] == "invalid_folder_id"
+    response = await env.admin.get(browse, params={"parent_id": "missing"})
+    assert problem(response, 422, "invalid_query_parameter")["errors"][0]["code"] == "folder_not_found"
+    response = await env.admin.get(browse, params={"cursor": "a b"})
+    assert problem(response, 422, "invalid_query_parameter")["errors"][0]["code"] == "invalid_cursor"
+    assert (await env.admin.get(browse, params={"q": "x"})).status_code == 422
+    env.google.api_failures += [httpx_reply(503), httpx_reply(503)]
+    problem(await env.admin.get(browse), 502, "connector_unavailable")
+    [upload] = [item for item in (await env.admin.get(URL)).json()["items"] if item["type"] == "upload"]
+    problem(await env.admin.get(f"{URL}/{upload['id']}/browse"), 409, "upload_source_managed_by_kb")
+    problem(await env.admin.post(f"{URL}/{upload['id']}/validate"), 409, "upload_source_managed_by_kb")
+
+
+def httpx_reply(status: int) -> Any:
+    from tests.fake_http import Reply
+
+    return Reply.json({"error": {"code": status}}, status=status)
+
+
+async def test_choosing_a_folder_checks_it_and_activates_the_source(env: Env) -> None:
+    source = await connected_source(env)
+    google = env.google
+    sales = google.folder("Sales")
+    file_id = google.add("notes.txt", content=b"x")
+    trashed = google.folder("Old")
+    google.files[trashed]["trashed"] = True
+    patch = f"{URL}/{source['id']}"
+
+    assert field_code(await env.admin.patch(patch, json={"folder_id": "../x"})) == "invalid_folder_id"
+    assert field_code(await env.admin.patch(patch, json={"folder_id": "missing"})) == "folder_not_found"
+    assert field_code(await env.admin.patch(patch, json={"folder_id": file_id})) == "not_a_folder"
+    assert field_code(await env.admin.patch(patch, json={"folder_id": trashed})) == "not_a_folder"
+
+    chosen = await env.admin.patch(patch, json={"folder_id": sales})
+    assert chosen.status_code == 200, chosen.text
+    assert (chosen.json()["status"], chosen.json()["folder"]) == ("active", {"id": sales, "name": "Sales"})
+    [(config,)] = await env.harness.sql("SELECT config FROM data_sources WHERE id = :id", id=source["id"])
+    assert config == {"folder_id": sales, "folder_name": "Sales"}
+    same = refreshes(env)
+    await env.admin.patch(patch, json={"folder_id": sales})  # unchanged: no provider call
+    assert refreshes(env) == same
+
+    cleared = await env.admin.patch(patch, json={"folder_id": None})
+    assert (cleared.json()["status"], cleared.json()["folder"]) == ("paused", None)
+    fields = await env.harness.sql(
+        "SELECT details->>'fields' FROM audit_logs WHERE action = 'data_source.updated' ORDER BY created_at"
+    )
+    assert fields == [("folder_id",), ("folder_id",)]
+    audit = json.dumps(await env.harness.sql("SELECT details::text FROM audit_logs"), default=str)
+    assert "Sales" not in audit  # folder names are not audited
+
+
+async def test_a_shared_drive_can_be_the_folder(env: Env) -> None:
+    source = await connected_source(env)
+    env.google.shared_drives.append({"id": "drive1", "name": "Team"})
+    chosen = await env.admin.patch(f"{URL}/{source['id']}", json={"folder_id": "drive1"})
+    assert chosen.status_code == 200, chosen.text
+    [(config,)] = await env.harness.sql("SELECT config FROM data_sources WHERE id = :id", id=source["id"])
+    assert config == {"folder_id": "drive1", "folder_name": "Team", "drive_id": "drive1"}
+
+
+async def test_a_folder_needs_a_connection(env: Env) -> None:
+    source = await create_source(env)
+    response = await env.admin.patch(f"{URL}/{source['id']}", json={"folder_id": "abc"})
+    problem(response, 409, "source_not_connected")
+
+
+async def test_a_revoked_grant_marks_the_source_until_it_is_connected_again(env: Env) -> None:
+    source = await connected_source(env)
+    sales = env.google.folder("Sales")
+    await env.admin.patch(f"{URL}/{source['id']}", json={"folder_id": sales})
+    env.google.refresh_tokens.clear()  # the user revoked the access at Google
+
+    problem(await env.admin.get(f"{URL}/{source['id']}/browse"), 409, "connector_auth_revoked")
+    shown = (await env.admin.get(f"{URL}/{source['id']}")).json()
+    assert (shown["status"], shown["credentials"]["status"]) == ("error", "revoked")
+    assert shown["sync"]["last_error"] == "connector_auth_revoked"
+    problem(await env.admin.get(f"{URL}/{source['id']}/browse"), 409, "source_not_connected")
+    report = await env.admin.post(f"{URL}/{source['id']}/validate")
+    problem(report, 409, "source_not_connected")
+
+    await connect(env, source["id"])
+    again = (await env.admin.get(f"{URL}/{source['id']}")).json()
+    assert (again["status"], again["credentials"]["status"]) == ("active", "valid")
+    assert again["sync"]["last_error"] is None
+
+
+async def test_validate_reports_the_account_and_the_folder(env: Env) -> None:
+    source = await connected_source(env)
+    sales = env.google.folder("Sales")
+    validate = f"{URL}/{source['id']}/validate"
+
+    response = await env.admin.post(validate)
+    assert response.status_code == 200, response.text
+    assert response.json() | {"checked_at": None} == {
+        "status": "ok",
+        "checked_at": None,
+        "error_code": None,
+        "account_label": "Drive Bot <drive-bot@example.com>",
+        "folder_accessible": None,
+    }
+    await env.admin.patch(f"{URL}/{source['id']}", json={"folder_id": sales})
+    assert (await env.admin.post(validate)).json()["folder_accessible"] is True
+
+    env.google.files[sales]["trashed"] = True
+    report = (await env.admin.post(validate)).json()
+    assert (report["status"], report["error_code"], report["folder_accessible"]) == (
+        "failed",
+        "folder_not_found",
+        False,
+    )
+    env.google.user = {"displayName": "Renamed", "emailAddress": "drive-bot@example.com"}
+    env.google.files[sales]["trashed"] = False
+    await env.admin.post(validate)
+    label = (await env.admin.get(f"{URL}/{source['id']}")).json()["credentials"]["account_label"]
+    assert label == "Renamed <drive-bot@example.com>"
+
+    env.google.token_status = 503
+    report = (await env.admin.post(validate)).json()
+    assert (report["status"], report["error_code"]) == ("failed", "connector_unavailable")
+
+
+async def test_validate_is_rate_limited(env: Env) -> None:
+    source = await connected_source(env)
+    statuses = [(await env.admin.post(f"{URL}/{source['id']}/validate")).status_code for _ in range(11)]
+    assert statuses[:10] == [200] * 10
+    problem(await env.admin.post(f"{URL}/{source['id']}/validate"), 429, "rate_limited")
+
+
+async def test_provider_calls_need_manage_rights_on_the_knowledge_base(env: Env) -> None:
+    source = await connected_source(env)
+    await active_user(env.harness, env.admin, "km@example.com", ["knowledge_manager"])
+    async with env.harness.new_client() as manager:
+        assert (await login(manager, "km@example.com")).status_code == 200
+        problem(await manager.get(f"{URL}/{source['id']}/browse"), 403, "permission_denied")
+        problem(await manager.post(f"{URL}/{source['id']}/validate"), 403, "permission_denied")
+        response = await manager.patch(f"{URL}/{source['id']}", json={"folder_id": "abc"})
+        problem(response, 403, "permission_denied")
+        del manager.headers["X-CSRF-Token"]
+        assert (await manager.post(f"{URL}/{source['id']}/validate")).status_code == 403
+    before = refreshes(env)
+    await active_user(env.harness, env.admin, "member@example.com", ["member"])
+    await env.harness.sql(
+        "INSERT INTO roles (id, key, name, description, is_system) "
+        "VALUES (gen_random_uuid(), 'drive_admin', 'D', 'Drive admin', false)"
+    )
+    await env.harness.sql(
+        "INSERT INTO role_permissions (role_id, permission_id) SELECT r.id, p.id FROM roles r, permissions p "
+        "WHERE r.key = 'drive_admin' AND p.key IN ('data_sources.read', 'data_sources.manage')"
+    )
+    await env.harness.sql(
+        "INSERT INTO user_roles (user_id, role_id) SELECT u.id, r.id FROM users u, roles r "
+        "WHERE u.email = 'member@example.com' AND r.key = 'drive_admin'"
+    )
+    async with env.harness.new_client() as member:  # the right permissions, but no access to the KB
+        assert (await login(member, "member@example.com")).status_code == 200
+        problem(await member.get(f"{URL}/{source['id']}/browse"), 404, "not_found")
+        problem(await member.post(f"{URL}/{source['id']}/validate"), 404, "not_found")
+        problem(await member.patch(f"{URL}/{source['id']}", json={"folder_id": "abc"}), 404, "not_found")
+    assert refreshes(env) == before  # refused before any provider call
+
+
+async def test_a_rotated_refresh_token_replaces_the_stored_one(env: Env) -> None:
+    source = await connected_source(env)
+    env.google.rotate_refresh_tokens = True
+    for _ in range(3):  # each call uses the token stored by the previous one
+        assert (await env.admin.get(f"{URL}/{source['id']}/browse")).status_code == 200
+    [current] = env.google.refresh_tokens
+    rows = await env.harness.sql(
+        "SELECT s.ciphertext FROM secret_references s "
+        "JOIN data_source_credentials c ON c.secret_ref_id = s.id"
+    )
+    assert len(rows) == 1
+    assert current.encode() not in bytes(rows[0][0])

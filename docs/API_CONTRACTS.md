@@ -472,7 +472,7 @@
 - Тест отвечает `200`: `{ "status", "latency_ms", "tested_at", "expected_dimensions", "actual_dimensions", "error" }`;
   несовпадение размерности — `error.code = dimension_mismatch`.
 
-### 2.9 `data-sources` (§7) — реализованы list, create, get, patch (имя, расписание), delete, OAuth и disconnect; `validate`, `browse` и выбор папки — шаг 9.3, `sync` — шаг 9.4
+### 2.9 `data-sources` (§7) — реализованы list, create, get, patch, delete, OAuth, disconnect, validate и browse; `sync` — шаг 9.4
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
@@ -520,7 +520,22 @@ KB, иначе `404`; без OAuth client в Instance Settings — `409 connecto
 - `POST` — `{type, name, knowledge_base_id, sync_interval_minutes?}` (по умолчанию 15, `null` — только ручной
   sync, иначе 5–1440); `PATCH` — `name`, `sync_interval_minutes` (переданные поля; `null` отключает расписание).
   Для `upload` `PATCH`/`DELETE`/`oauth/start`/`disconnect` → `409 upload_source_managed_by_kb`.
-- `status` — `paused`, пока не выбрана папка (шаг 9.3), `active` после выбора.
+- `status` — `paused` без папки или без подключения, `active` при валидных credentials и выбранной папке,
+  `error` при отозванном доступе (`sync.last_error = connector_auth_revoked`, credentials `revoked`) — до повторного
+  подключения.
+- `PATCH {"folder_id": "…"}` проверяет папку у провайдера свежим access token (существует, это папка или корень
+  shared drive, не в корзине) и сохраняет `folder = {id, name}`; ошибки поля `folder_id`: `invalid_folder_id`,
+  `folder_not_found`, `not_a_folder`; без подключения — `409 source_not_connected`. `folder_id: null` снимает папку
+  (`paused`). Смена папки сбрасывает курсор: следующая синхронизация — полный обход.
+- `GET …/browse?parent_id=&cursor=` → `200 {"items": [{"id", "name", "kind": "folder" | "shared_drive"}],
+  "next_cursor", "has_more"}`: без `parent_id` — shared drives (первые 100), свои папки и папки, расшаренные
+  учётной записи. Ошибки query: `invalid_folder_id`, `folder_not_found`, `invalid_cursor`.
+- `POST …/validate` → `200 {"status": "ok" | "failed", "checked_at", "error_code", "account_label",
+  "folder_accessible"}`: обновляет токен, читает учётную запись и проверяет папку; сбой провайдера возвращается как
+  `failed` с кодом, не ошибкой HTTP. Лимит `provider_test`.
+- Сбой провайдера в `browse`/`PATCH` — `502` с кодом коннектора (`connector_unavailable`, `connector_rate_limited`,
+  `connector_quota_exceeded`, `connector_invalid_response`, `egress_denied`, …); отказ grant —
+  `409 connector_auth_revoked`. Access token живёт только на время запроса и нигде не сохраняется.
 - `credentials` — `null`, пока источник не подключён; токены и ссылка на секрет не возвращаются никогда.
 - `DELETE` → `200 {"documents_deleted": n}`: документы источника удаляются с purge, credentials удаляются,
   активные sync jobs отменяются, refresh token отзывается у провайдера после commit (best effort).

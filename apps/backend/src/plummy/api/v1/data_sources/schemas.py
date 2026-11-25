@@ -10,7 +10,8 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from plummy.application.pagination import Page
-from plummy.application.sources.use_cases import DataSourceView
+from plummy.application.sources.ports import BrowseKind, BrowsePage
+from plummy.application.sources.use_cases import DataSourceView, ValidationReport, ValidationStatus
 from plummy.domain.knowledge import DataSourceStatus, DataSourceType
 from plummy.domain.sources import CredentialStatus
 
@@ -116,9 +117,11 @@ class CreateDataSourceRequest(_Request):
 class UpdateDataSourceRequest(_Request):
     name: str | None = Field(default=None, min_length=1, max_length=MAX_NAME_INPUT_LENGTH)
     sync_interval_minutes: int | None = None
+    folder_id: str | None = Field(default=None, max_length=256)  # ``null`` removes the folder
 
     def patch_values(self) -> dict[str, Any]:
-        """Only the fields that were sent: ``sync_interval_minutes: null`` means manual sync only."""
+        """Only the fields that were sent: ``sync_interval_minutes: null`` means manual sync only,
+        ``folder_id: null`` removes the folder."""
         return {name: getattr(self, name) for name in self.model_fields_set}
 
 
@@ -128,3 +131,43 @@ class OAuthStartResponse(BaseModel):
 
 class DeletionResponse(BaseModel):
     documents_deleted: int
+
+
+class BrowseEntryResponse(BaseModel):
+    id: str
+    name: str
+    kind: BrowseKind
+
+
+class BrowseResponse(BaseModel):
+    items: list[BrowseEntryResponse]
+    next_cursor: str | None
+    has_more: bool
+
+    @classmethod
+    def build(cls, page: BrowsePage) -> BrowseResponse:
+        return cls(
+            items=[
+                BrowseEntryResponse(id=entry.id, name=entry.name, kind=entry.kind) for entry in page.entries
+            ],
+            next_cursor=page.next_page_token,
+            has_more=page.next_page_token is not None,
+        )
+
+
+class ValidationResponse(BaseModel):
+    status: ValidationStatus
+    checked_at: datetime
+    error_code: str | None
+    account_label: str | None
+    folder_accessible: bool | None
+
+    @classmethod
+    def build(cls, report: ValidationReport) -> ValidationResponse:
+        return cls(
+            status=report.status,
+            checked_at=report.checked_at,
+            error_code=report.error_code,
+            account_label=report.account_label,
+            folder_accessible=report.folder_accessible,
+        )

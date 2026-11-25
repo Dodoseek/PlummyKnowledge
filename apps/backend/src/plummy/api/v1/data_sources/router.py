@@ -14,12 +14,14 @@ from plummy.api.dependencies import ResourcesDep
 from plummy.api.security import SettingsDep, client_info, read_session_token, require_permission
 from plummy.api.v1.common import allow_query, no_store, page_request
 from plummy.api.v1.data_sources.schemas import (
+    BrowseResponse,
     CreateDataSourceRequest,
     DataSourceListResponse,
     DataSourceResponse,
     DeletionResponse,
     OAuthStartResponse,
     UpdateDataSourceRequest,
+    ValidationResponse,
 )
 from plummy.application.errors import AuthenticationRequiredError
 from plummy.application.pagination import SortSpec
@@ -148,3 +150,28 @@ async def disconnect_data_source(
     return DataSourceResponse.build(
         await resources.sources.disconnect.execute(context, client_info(request), source_id)
     )
+
+
+@router.post("/{source_id}/validate", response_model=ValidationResponse)
+async def validate_data_source(
+    source_id: UUID, context: Manager, resources: ResourcesDep
+) -> ValidationResponse:
+    """A fresh token, the account and the chosen folder; provider failures come back as ``failed``."""
+    return ValidationResponse.build(await resources.sources.validate.execute(context, source_id))
+
+
+@router.get(
+    "/{source_id}/browse",
+    response_model=BrowseResponse,
+    dependencies=[Depends(allow_query("parent_id", "cursor"))],
+)
+async def browse_data_source(
+    source_id: UUID,
+    context: Manager,
+    resources: ResourcesDep,
+    parent_id: str | None = None,
+    cursor: str | None = None,
+) -> BrowseResponse:
+    """Folders for the picker: the top level without ``parent_id``."""
+    page = await resources.sources.browse.execute(context, source_id, parent_id, cursor)
+    return BrowseResponse.build(page)

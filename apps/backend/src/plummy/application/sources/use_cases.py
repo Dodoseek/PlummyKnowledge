@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime
+from enum import StrEnum
 from typing import Final
 from uuid import UUID
 
@@ -19,15 +21,33 @@ from plummy.application.audit import by_user
 from plummy.application.errors import (
     ConflictError,
     InvalidInputError,
+    InvalidQueryParameterError,
     NotFoundError,
     PermissionDeniedError,
     ServiceUnavailableError,
 )
 from plummy.application.knowledge.access import require_kb_access
 from plummy.application.pagination import Page, PageRequest
-from plummy.application.ports import Clock, JobQueue, JobQueueUnavailableError, UnitOfWork, UnitOfWorkFactory
+from plummy.application.ports import (
+    Clock,
+    JobQueue,
+    JobQueueUnavailableError,
+    RateLimiter,
+    UnitOfWork,
+    UnitOfWorkFactory,
+)
+from plummy.application.providers.use_cases import enforce_test_limit
 from plummy.application.secret_storage.vault import SecretVault
 from plummy.application.security import ClientInfo, SecurityContext
+from plummy.application.sources.connection import (
+    AccessTokens,
+    ConnectorCallFailedError,
+    ConnectorNotConfiguredError,
+    connector_failure,
+    plausible_page_token,
+    plausible_remote_id,
+    provider_of,
+)
 from plummy.application.sources.oauth import (
     STATE_TTL_SECONDS,
     code_challenge,
@@ -37,12 +57,17 @@ from plummy.application.sources.oauth import (
     state_key,
 )
 from plummy.application.sources.ports import (
+    BrowsePage,
     ConnectorError,
+    ConnectorNotFoundError,
+    ConnectorPermissionDeniedError,
+    Connectors,
     OAuthClient,
     OAuthClients,
     OAuthStateStore,
     OAuthStateUnavailableError,
     PendingAuthorization,
+    RemoteKind,
 )
 from plummy.core.ids import new_id
 from plummy.domain.audit import ActorType, AuditAction, AuditEntry, AuditOutcome
@@ -72,6 +97,7 @@ SOURCE_NOT_FOUND: Final = "Data source not found."
 CANCELLED_BY_SOURCE_DELETION: Final = "source_deleted"
 CANCELLED_BY_DISCONNECT: Final = "source_disconnected"
 MAX_CODE_LENGTH: Final = 2048
+_FOLDER_KEYS: Final = frozenset({"folder_id", "folder_name", "drive_id"})
 
 
 class _Unset:
@@ -79,12 +105,6 @@ class _Unset:
 
 
 UNSET: Final = _Unset()
-
-
-class ConnectorNotConfiguredError(ConflictError):
-    """The OAuth client of this source type is not configured on the server (Instance Settings)."""
-
-    code = "connector_not_configured"
 
 
 class UploadSourceManagedByKnowledgeBaseError(ConflictError):
@@ -116,6 +136,14 @@ class DataSourceInput:
 class DataSourcePatch:
     name: str | None = None
     sync_interval_minutes: int | _Unset | None = UNSET  # ``None`` = manual sync only
+    folder_id: str | _Unset | None = UNSET  # ``None`` = no folder (the source pauses)
+
+
+@dataclass(frozen=True, slots=True)
+class _Folder:
+    id: str
+    name: str
+    drive_id: str | None
 
 
 def _name(value: str) -> str:
@@ -239,8 +267,19 @@ class CreateDataSource:
 
 
 class UpdateDataSource:
-    def __init__(self, uow: UnitOfWorkFactory, clock: Clock) -> None:
-        self._uow, self._clock = uow, clock
+    """Name, schedule and the synced folder. A folder is checked at the provider (it exists, is a folder, is
+    not in the trash) before it is saved; a source with valid credentials and a folder is ``active``."""
+
+    def __init__(
+        self,
+        uow: UnitOfWorkFactory,
+        clock: Clock,
+        vault: SecretVault,
+        clients: OAuthClients,
+        connectors: Connectors,
+    ) -> None:
+        self._uow, self._clock, self._clients, self._connectors = uow, clock, clients, connectors
+        self._tokens = AccessTokens(uow, clock, vault)
 
     async def execute(
         self, context: SecurityContext, client: ClientInfo, source_id: UUID, patch: DataSourcePatch
@@ -253,10 +292,21 @@ class UpdateDataSource:
             if isinstance(patch.sync_interval_minutes, _Unset)
             else _interval(patch.sync_interval_minutes)
         )
+        folder_changed = not isinstance(patch.folder_id, _Unset)
+        folder_id = None if isinstance(patch.folder_id, _Unset) else patch.folder_id
+        if folder_id is not None and not plausible_remote_id(folder_id):
+            raise InvalidInputError("folder_id", "invalid_folder_id", "Not a valid folder identifier.")
+        folder: _Folder | None = None
+        async with self._uow() as uow:
+            source, _ = await _visible(uow, context, source_id, KbAccessLevel.MANAGE)
+            _external(source)
+        if folder_id is not None and folder_id != source.config.get("folder_id"):
+            folder = await self._check_folder(source, folder_id)
         now = self._clock.now()
         async with self._uow() as uow:
             source, kb_id = await _visible(uow, context, source_id, KbAccessLevel.MANAGE, lock=True)
             _external(source)
+            credentials = await uow.source_credentials.get(source.id)
             changed: list[str] = []
             if name is not None and name != source.name:
                 source.name = name
@@ -266,6 +316,9 @@ class UpdateDataSource:
                 if interval is None:
                     source.next_sync_at = None
                 changed.append("sync_interval_minutes")
+            if folder_changed and (folder.id if folder else folder_id) != source.config.get("folder_id"):
+                self._set_folder(source, folder, credentials)
+                changed.append("folder_id")
             if changed:
                 await uow.data_sources.save(source, at=now)
                 await uow.audit.record(
@@ -278,9 +331,44 @@ class UpdateDataSource:
                         details={"fields": ",".join(changed)},
                     )
                 )
-            credentials = await uow.source_credentials.get(source.id)
             await uow.commit()
         return DataSourceView(source, kb_id, credentials)
+
+    async def _check_folder(self, source: DataSource, folder_id: str) -> _Folder:
+        oauth, connector = provider_of(self._clients, self._connectors, source)
+        try:
+            token = await self._tokens.get(oauth, source.id)
+            item = await connector.get_item(token, folder_id)
+        except (ConnectorNotFoundError, ConnectorPermissionDeniedError):
+            raise InvalidInputError("folder_id", "folder_not_found", "The folder was not found.") from None
+        except ConnectorError as exc:
+            raise connector_failure(exc) from None
+        if item.kind is not RemoteKind.FOLDER or item.trashed:
+            raise InvalidInputError(
+                "folder_id", "not_a_folder", "The item is not a folder or is in the trash."
+            )
+        return _Folder(item.id, item.name, item.drive_id)
+
+    @staticmethod
+    def _set_folder(
+        source: DataSource, folder: _Folder | None, credentials: SourceCredentials | None
+    ) -> None:
+        """Another folder is another scope: the next sync lists it in full (and reconciles the documents)."""
+        config = {key: value for key, value in source.config.items() if key not in _FOLDER_KEYS}
+        if folder is not None:
+            config.update(folder_id=folder.id, folder_name=folder.name)
+            if folder.drive_id is not None:
+                config["drive_id"] = folder.drive_id
+        source.config = config
+        source.sync_cursor = None
+        revoked = credentials is not None and credentials.status is CredentialStatus.REVOKED
+        if source.status is not DataSourceStatus.DISCONNECTED and not revoked:
+            connected = credentials is not None and credentials.status is CredentialStatus.VALID
+            source.status = (
+                DataSourceStatus.ACTIVE if folder is not None and connected else DataSourceStatus.PAUSED
+            )
+            if connected:
+                source.last_error = None
 
 
 async def drop_credentials(
@@ -661,3 +749,122 @@ class CompleteOAuth:
                 )
             await uow.audit.record(entry)
             await uow.commit()
+
+
+# --- working with the provider ---------------------------------------------------------------------------
+
+
+class BrowseDataSource:
+    """The folder picker (ADR-020 §6): folders under ``parent_id`` at the provider, read with a fresh access
+    token. Picking a folder does not narrow what the token can read; the UI says so."""
+
+    def __init__(
+        self,
+        uow: UnitOfWorkFactory,
+        clock: Clock,
+        vault: SecretVault,
+        clients: OAuthClients,
+        connectors: Connectors,
+    ) -> None:
+        self._uow, self._clients, self._connectors = uow, clients, connectors
+        self._tokens = AccessTokens(uow, clock, vault)
+
+    async def execute(
+        self, context: SecurityContext, source_id: UUID, parent_id: str | None, cursor: str | None
+    ) -> BrowsePage:
+        context.require(Permission.DATA_SOURCES_MANAGE)
+        if parent_id is not None and not plausible_remote_id(parent_id):
+            raise InvalidQueryParameterError(
+                "parent_id", "invalid_folder_id", "Not a valid folder identifier."
+            )
+        if cursor is not None and not plausible_page_token(cursor):
+            raise InvalidQueryParameterError("cursor", "invalid_cursor", "Not a valid cursor.")
+        async with self._uow() as uow:
+            source, _ = await _visible(uow, context, source_id, KbAccessLevel.MANAGE)
+            _external(source)
+        oauth, connector = provider_of(self._clients, self._connectors, source)
+        try:
+            token = await self._tokens.get(oauth, source.id)
+            return await connector.browse(token, parent_id, page_token=cursor)
+        except (ConnectorNotFoundError, ConnectorPermissionDeniedError):
+            if parent_id is None:
+                raise ConnectorCallFailedError(ConnectorPermissionDeniedError()) from None
+            raise InvalidQueryParameterError(
+                "parent_id", "folder_not_found", "The folder was not found."
+            ) from None
+        except ConnectorError as exc:
+            raise connector_failure(exc) from None
+
+
+class ValidationStatus(StrEnum):
+    OK = "ok"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True, slots=True)
+class ValidationReport:
+    status: ValidationStatus
+    checked_at: datetime
+    error_code: str | None = None
+    account_label: str | None = None
+    folder_accessible: bool | None = None  # ``None`` without a chosen folder
+
+
+class ValidateDataSource:
+    """``validate_connection`` (§7): refreshes the token, reads the account and checks the chosen folder.
+    Provider failures are reported, not raised; ``provider_test`` rate limit."""
+
+    def __init__(
+        self,
+        uow: UnitOfWorkFactory,
+        clock: Clock,
+        vault: SecretVault,
+        clients: OAuthClients,
+        connectors: Connectors,
+        limiter: RateLimiter,
+    ) -> None:
+        self._uow, self._clock, self._clients, self._connectors = uow, clock, clients, connectors
+        self._limiter = limiter
+        self._tokens = AccessTokens(uow, clock, vault)
+
+    async def execute(self, context: SecurityContext, source_id: UUID) -> ValidationReport:
+        context.require(Permission.DATA_SOURCES_MANAGE)
+        async with self._uow() as uow:
+            source, _ = await _visible(uow, context, source_id, KbAccessLevel.MANAGE)
+            _external(source)
+        oauth, connector = provider_of(self._clients, self._connectors, source)
+        await enforce_test_limit(self._limiter)
+        folder_id = source.config.get("folder_id")
+        label: str | None = None
+        accessible: bool | None = None
+        try:
+            token = await self._tokens.get(oauth, source.id)
+            label = normalize_account_label(await oauth.account_label(token))
+            if folder_id is not None:
+                try:
+                    item = await connector.get_item(token, folder_id)
+                    accessible = item.kind is RemoteKind.FOLDER and not item.trashed
+                except (ConnectorNotFoundError, ConnectorPermissionDeniedError):
+                    accessible = False
+        except ConnectorError as exc:
+            return ValidationReport(ValidationStatus.FAILED, self._clock.now(), error_code=exc.code)
+        await self._update_label(source.id, label)
+        failed = accessible is False
+        return ValidationReport(
+            ValidationStatus.FAILED if failed else ValidationStatus.OK,
+            self._clock.now(),
+            error_code="folder_not_found" if failed else None,
+            account_label=label,
+            folder_accessible=accessible,
+        )
+
+    async def _update_label(self, source_id: UUID, label: str | None) -> None:
+        if label is None:
+            return
+        async with self._uow() as uow:
+            credentials = await uow.source_credentials.get(source_id)
+            if credentials is not None and credentials.account_label != label:
+                credentials.account_label = label
+                credentials.updated_at = self._clock.now()
+                await uow.source_credentials.save(credentials)
+                await uow.commit()

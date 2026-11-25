@@ -354,20 +354,27 @@ class StorageProvider(Protocol):
 ### 8.6 `DataSourceConnector` (§7)
 
 ```python
-class DataSourceConnector(Protocol):
-    def capabilities(self) -> ConnectorCapabilities: ...    # incremental changes, export formats, picker, revoke
-    async def validate_connection(self, ctx: ConnectorContext) -> ValidationResult: ...
-    def list_files(self, ctx: ConnectorContext, scope: SourceScope, *, page_token: str | None) -> AsyncIterator[RemoteFilePage]: ...
-    async def download_file(self, ctx: ConnectorContext, file: RemoteFileRef, *, cancel: CancellationToken) -> AsyncIterator[bytes]: ...
-    async def get_changes(self, ctx: ConnectorContext, cursor: SyncCursor | None) -> ChangesPage: ...  # + новый cursor
-    async def get_metadata(self, ctx: ConnectorContext, file: RemoteFileRef) -> RemoteFileMetadata: ...  # ETag/version
+class DataSourceConnector(Protocol):          # application/sources/ports.py
+    source_type: DataSourceType
+    def capabilities(self) -> ConnectorCapabilities: ...  # incremental changes, picker, revoke, exports
+    async def browse(self, access_token, parent_id: str | None, *, page_token) -> BrowsePage: ...   # folder picker
+    async def get_item(self, access_token, item_id: str) -> RemoteItem: ...       # revision = checksum/version
+    async def list_children(self, access_token, folder_id, *, page_token) -> RemotePage: ...  # одна страница
+    async def start_cursor(self, access_token) -> str: ...
+    async def get_changes(self, access_token, cursor: str) -> ChangesPage: ...    # cursor + finished (checkpoint)
+    def download(self, access_token, item: RemoteItem, *, max_bytes: int) -> AsyncIterator[bytes]: ...
 ```
+
+Access token получает вызывающий (`AccessTokens` в `application/sources/connection.py`: refresh по сохранённому
+refresh token, отказ grant → credentials `revoked`, источник `error`) и передаёт в каждый вызов; коннектор его не
+хранит. Рекурсия обхода, область папки и checkpoint — в sync engine, не в адаптере.
 
 Реальный контракт включает (§7): pagination, cancellation, retries, rate limits, typed errors, ETag/version,
 capabilities. Для источника типа `upload` коннектор не нужен: стадия «получение документа» берёт поток из HTTP-запроса,
 дальше pipeline общий ([ADR-008](adr/0008-unified-document-ingestion.md)). Typed errors ([ADR-020](adr/0020-google-drive-connector.md) §9): `ConnectorAuthRevoked`, `ConnectorRateLimited`,
 `ConnectorQuotaExceeded`, `ConnectorNotFound`, `ConnectorPermissionDenied`, `ConnectorTransientError`,
-`ConnectorCursorInvalid` (требует full resync).
+`ConnectorCursorInvalid` (требует full resync); дополнительно `ConnectorAccessTokenRejected` (`401` на свежий токен —
+обновить ещё раз), `ConnectorFileTooLarge`, `ConnectorEgressDenied`, `ConnectorInvalidResponse`.
 
 ### 8.7 Прочие ports
 

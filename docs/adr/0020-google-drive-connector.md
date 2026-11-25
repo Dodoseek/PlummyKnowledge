@@ -47,7 +47,7 @@
 
 - `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` (или `GOOGLE_OAUTH_CLIENT_SECRET_FILE`). Без обоих
   `POST /data-sources` с `type = google_drive` → `409 connector_not_configured`; `GET /system/settings` сообщает
-  `google_drive_configured` (без значений).
+  `connectors.google_drive.configured` и `redirect_uri` (без значений).
 - Адреса Google фиксированы в коде. Секция `[connectors.google_drive]` в `CONFIG_FILE` может переопределить
   `auth_url`, `token_url`, `revoke_url`, `api_url`, `download_hosts` **только при `APP_ENV != production`** — для
   E2E с фейковым сервером. В `production` такая секция — ошибка конфигурации при старте. Переопределённый адрес
@@ -187,6 +187,12 @@
 
 Шаги 9.0–9.5 roadmap: ADR и спецификации; схема, домен и redirects; OAuth и API; адаптер; синхронизация;
 UI, E2E и security gate.
+
+- 9.3: верхний уровень picker'а добавляет `drives.list` (первые 100 shared drives) к перечисленным в §4 методам;
+  корень shared drive можно выбрать папкой (`config.drive_id`). В процессе API запрос к Drive повторяется не более
+  2 раз (ответ пользователю не ждёт минутами), в worker — до 5. `401` на только что полученный токен —
+  `ConnectorAccessTokenRejected` (не отзыв grant): отзыв фиксируется только по `invalid_grant` token endpoint.
+  Если Google выдаёт при refresh новый refresh token, он заменяет сохранённый в vault.
 
 ## Related documents
 
