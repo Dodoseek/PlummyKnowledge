@@ -748,6 +748,9 @@ instructions.
 Авторизация чата ([ADR-005](adr/0005-assistant-access-model.md)): тело запроса **не содержит** идентификаторов KB или
 источников — их вычисляет backend. Недоступный ассистент: новый диалог → `404 not_found`; сообщение в собственный
 диалог → `403 assistant_unavailable`.
+Генерация — в процессе API ([ADR-019](adr/0019-answer-generation-in-api-process.md)): лимит `chat` и не более 2
+одновременных генераций на пользователя (`429 rate_limited` до начала потока); повтор `client_message_id` в диалоге
+→ `409 message_already_sent` с `user_message_id` и `assistant_message_id`, без новой генерации.
 
 ### 2.15 `jobs` (§11, §13 Фаза 11) — реализованы list, get, retry для `ingestion`
 
@@ -923,8 +926,8 @@ data: {"delta":"Перенос возможен "}
 `finish_reason = "user_cancelled"`; частичный ответ сохраняется со статусом `stopped`. Повторный вызов для уже
 завершённой генерации → `202` без эффекта (идемпотентно).
 
-**Открытый вопрос:** поведение при разрыве соединения клиентом (отмена vs. завершение генерации в фоне) и
-поддержка `Last-Event-ID` для переподключения.
+Разрыв соединения клиентом отменяет генерацию; частичный ответ сохраняется как `stopped`. `Last-Event-ID` не
+поддерживается: после обрыва клиент перечитывает сообщения диалога ([ADR-019](adr/0019-answer-generation-in-api-process.md)).
 
 ---
 
@@ -1016,11 +1019,11 @@ data: {"delta":"Перенос возможен "}
 
 1. Хранилище idempotency keys (PostgreSQL / Redis).
 2. Пользовательские роли в MVP.
-3. SSE: разрыв соединения, `Last-Event-ID`.
-4. Нужен ли endpoint скачивания оригинала документа (и с какими заголовками безопасности).
+3. Нужен ли endpoint скачивания оригинала документа (и с какими заголовками безопасности).
 
 Решено: формат ошибок ([ADR-010](adr/0010-api-error-format.md)), пагинация ([ADR-014](adr/0014-list-pagination.md)),
 создание пользователей ссылкой активации ([ADR-015](adr/0015-user-activation-links.md)), setup и системные настройки ([ADR-006](adr/0006-initial-setup-and-system-configuration.md)), доступ к
-ассистентам ([ADR-005](adr/0005-assistant-access-model.md)), сетевые ошибки провайдеров
+ассистентам ([ADR-005](adr/0005-assistant-access-model.md)), генерация и SSE-разрывы
+([ADR-019](adr/0019-answer-generation-in-api-process.md)), сетевые ошибки провайдеров
 ([ADR-007](adr/0007-network-access-and-local-llm.md)), upload как Document Source
 ([ADR-008](adr/0008-unified-document-ingestion.md)).

@@ -510,9 +510,10 @@ sequenceDiagram
 - `POST /api/v1/knowledge-bases/{id}/search` — retrieval без генерации для пользователей с `read`.
 - Оценка качества — [docs/evaluation/](evaluation/README.md) (`python -m plummy.cli eval run`).
 
-**[Proposed] Генерация выполняется в процессе API** (стриминг токенов — I/O-bound, не «долгая операция» в смысле
-§11), с жёстким timeout и лимитом одновременных генераций на пользователя (§8 п.5). Альтернатива — генерация в
-worker с ретрансляцией через Redis pub/sub — требует ADR.
+**Генерация выполняется в процессе API** ([ADR-019](adr/0019-answer-generation-in-api-process.md)): стриминг токенов —
+I/O-bound, не «долгая операция» в смысле §11. Жёсткий timeout, не более 2 одновременных генераций на пользователя
+(семафор в Redis), остановка через флаг в Redis (работает при нескольких процессах API), обрыв соединения отменяет
+генерацию, `Last-Event-ID` в MVP нет.
 
 ### 9.5 Синхронизация источников (§7)
 
@@ -682,9 +683,14 @@ ADR хранятся в [`docs/adr/`](adr/README.md) с индексом (§13 �
 | [ADR-011](adr/0011-database-roles-and-extensions.md) | PostgreSQL Roles and Extensions | Accepted |
 | [ADR-012](adr/0012-single-organization-deployment.md) | Single-Organization Deployment | Accepted |
 | [ADR-013](adr/0013-auth-session-strategy.md) | Auth and Session Strategy | Accepted |
+| [ADR-014](adr/0014-list-pagination.md) | List Pagination | Accepted |
+| [ADR-015](adr/0015-user-activation-links.md) | User Onboarding by Activation Link | Accepted |
+| [ADR-016](adr/0016-secret-encryption.md) | Secret Encryption at Rest | Accepted |
+| [ADR-017](adr/0017-vector-storage.md) | Vector Storage in pgvector | Accepted |
+| [ADR-018](adr/0018-full-text-search-configuration.md) | Full-Text Search Configuration | Accepted |
+| [ADR-019](adr/0019-answer-generation-in-api-process.md) | Answer Generation in the API Process | Accepted |
 
-Темы будущих ADR (шифрование секретов, хранение векторов, формат ошибок и
-пагинация, место генерации ответа, RLS, FTS-конфигурация) перечислены в [adr/README.md](adr/README.md).
+Темы будущих ADR (хранилище idempotency keys, роли БД, RLS) перечислены в [adr/README.md](adr/README.md).
 
 ## 18. Открытые вопросы
 

@@ -35,6 +35,7 @@
 | [ADR-016](0016-secret-encryption.md) | Secret Encryption at Rest | Accepted | 2026-11-18 |
 | [ADR-017](0017-vector-storage.md) | Vector Storage in pgvector | Accepted | 2026-11-19 |
 | [ADR-018](0018-full-text-search-configuration.md) | Full-Text Search Configuration | Accepted | 2026-11-25 |
+| [ADR-019](0019-answer-generation-in-api-process.md) | Answer Generation in the API Process | Accepted | 2026-11-25 |
 
 ADR-001…004 оформляют решения, уже зафиксированные в blueprint v1.0; новых решений они не вводят. ADR-012 изменяет
 блупринт: инсталляция принадлежит одной организации (multi-tenancy упразднена); ADR-005…008, 010, 011 содержат
@@ -48,7 +49,6 @@ ADR-001…004 оформляют решения, уже зафиксирован
 |---|---|---|
 | Хранилище idempotency keys (пагинация решена в ADR-014) | С первой операцией без естественного ключа | [API_CONTRACTS.md §1.7](../API_CONTRACTS.md) |
 | Разделение роли миграций и runtime-роли API/worker | Фаза 2 / 12 | [ADR-011](0011-database-roles-and-extensions.md) |
-| Генерация ответа в процессе API или в worker | Фаза 8 | [ARCHITECTURE.md §9.4](../ARCHITECTURE.md) |
 | PostgreSQL Row Level Security как второй рубеж доступа на уровне KB (нужна ли без multi-tenancy) | Фаза 12 | [SECURITY_MODEL.md §5](../SECURITY_MODEL.md) |
 
 ## Шаблон

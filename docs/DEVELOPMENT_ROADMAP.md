@@ -185,7 +185,8 @@ security gate (проверки безопасности **внутри** фаз
 - SSE client и typed events, stop generation.
 - Citation display и protected in-app viewer.
 - Loading/error/empty states, accessibility, E2E.
-- **Предварительно:** ADR «Генерация в API или worker».
+- **Предварительно:** ADR «Генерация в API или worker» — [ADR-019](adr/0019-answer-generation-in-api-process.md)
+  (генерация в процессе API).
 - **Security gate:** XSS-тесты рендеринга ответа (Markdown без сырого HTML, без автозагрузки внешних изображений);
   CSRF; viewer повторно проверяет доступ; E2E для SC-01.
 - **Выход:** вертикальный сценарий §22 работает end-to-end → **релиз 0.1.0** (вместе с минимальным open-source
