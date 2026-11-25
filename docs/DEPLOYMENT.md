@@ -20,7 +20,9 @@
 | `redis` | `redis:8.6-alpine` | Redis (AOF) | — | `data` |
 | `migrate` | `apps/backend/Dockerfile` (`dev`) | Одноразово: `python -m plummy.cli secrets init-keyring` (только dev, §4), `alembic upgrade head`, затем `python -m plummy.cli setup init-token` (§6); API стартует только после успешного завершения | — | `data` |
 | `backend` | `apps/backend/Dockerfile` (`dev`) | FastAPI, `uvicorn --reload`; healthcheck = `/api/v1/health/ready` | `127.0.0.1:8000` | `data`, `edge` |
-| `worker` | `apps/backend/Dockerfile` (`dev`) | Celery worker, очередь `default`; healthcheck = `celery inspect ping`. Изменения кода — `docker compose restart worker` (без auto-reload) | — | `data` |
+| `worker` | `apps/backend/Dockerfile` (`dev`) | Celery worker, очереди `default`, `embeddings`, `maintenance` (стадии 8–12 ingestion, purge, cleanup); healthcheck = `celery inspect ping`. Вызывает embedding-провайдеров, поэтому в сети `edge` (каждое соединение — через `SafeHttpClient`, ADR-007). Изменения кода — `docker compose restart worker` (без auto-reload) | — | `data`, `edge` |
+| `worker-ingestion` | `apps/backend/Dockerfile` (`ingestion-dev`: образ с Docling и его моделями, ~4 ГБ) | Celery worker, только очередь `ingestion` (стадии 2–7: проверки, тип, безопасность файла, storage, parsing), concurrency 1; parser — в дочернем процессе с timeout и rlimits; `mem_limit` = `INGESTION_MEMORY_LIMIT` (по умолчанию `4g`). Без key ring, секретов провайдеров и setup token. `docker compose restart worker-ingestion` после изменения кода | — | `data` |
+| `scheduler` | `apps/backend/Dockerfile` (`dev`) | Celery beat, ровно один экземпляр: cleanup quarantine (1 ч), повторная публикация `queued` jobs, не дошедших до брокера (5 мин), sweep удалённых документов для purge (10 мин) — в очередь `maintenance`. Только Redis; файл состояния расписания временный (`/tmp`) | — | `data` |
 | `frontend` | `apps/frontend/Dockerfile` (`dev`) | Vite dev server; `/api` проксируется на `backend` (same-origin, без CORS) | `127.0.0.1:5173` | `edge` |
 
 - Сеть `data` — `internal: true`; порты PostgreSQL и Redis не публикуются. Учётные данные БД в `compose.yaml` —
@@ -33,7 +35,9 @@
 - `backend` (dev) перед `uvicorn --reload` выполняет `python -m plummy.check_config`: при невалидной конфигурации
   контейнер завершается с кодом 1 и не перезапускается (как `prod`-таргет).
 - Volumes: `postgres-data`, `redis-data`, `bootstrap-data` (файл setup token; монтируется только в `migrate`, не в
-  `backend`), `secrets-data` (key ring секретов; `migrate` — запись, `backend` и `worker` — только чтение). Исходный код монтируется read-only (`src`, `alembic`, `tests`).
+  `backend`), `secrets-data` (key ring секретов; `migrate` — запись, `backend` и `worker` — только чтение; в
+  `worker-ingestion` и `scheduler` не монтируется), `storage-data` (оригиналы и quarantine; `backend`, `worker`,
+  `worker-ingestion`). Исходный код монтируется read-only (`src`, `alembic`, `tests`).
 - `backend` (dev) доверяет `X-Forwarded-For` от Vite-прокси (`FORWARDED_ALLOW_IPS=*`, только разработка): по нему
   считаются лимиты попыток входа. В production доверенным прокси настраивается только Nginx.
 - Dockerfile backend содержит таргеты `dev` и `prod` (non-root, только runtime-зависимости); Dockerfile frontend —
@@ -42,9 +46,12 @@
 - Миграции не выполняются при старте API; readiness возвращает `503`, пока ревизия БД не совпадает с head.
 - Celery ([ARCHITECTURE.md §3](ARCHITECTURE.md)): брокер и хранилище результатов — тот же Redis, ключи с префиксом
   `plummy:celery:`, только JSON (pickle отклоняется), результаты хранятся 24 ч, `acks_late`. Состояние задач в Redis —
-  не источник истины; долговременное состояние jobs появится в PostgreSQL вместе с ingestion (Фаза 5). Проверка
-  worker: `docker compose exec worker python -m plummy.cli worker check [--simulate-failures N]`.
-- Scheduler (Celery beat), разделение очередей, Nginx, MinIO и prod-compose — Фазы 5 и 11.
+  не источник истины: состояние ingestion jobs хранится в PostgreSQL (`ingestion_jobs`). Проверка worker:
+  `docker compose exec worker python -m plummy.cli worker check [--simulate-failures N]`.
+- Requeue находит только jobs, которые не дошли до брокера (`queued` без `celery_task_id`); сообщение, потерянное
+  внутри Redis после публикации, не обнаруживается: такой job остаётся `queued` (reindex возвращает его же, retry
+  принимает только `failed`/`dead`), автоматического восстановления пока нет. Redis хранит данные в AOF.
+- Nginx, MinIO и prod-compose — Фаза 11.
 
 **Переменные окружения backend (реализовано).** Имена утверждены в задаче Фазы 1 и заменяют предложенные ниже
 `PLUMMY_ENV`, `PLUMMY_LOG_LEVEL`, `PLUMMY_DATABASE_URL_FILE`, `PLUMMY_REDIS_URL_FILE`, `PLUMMY_DB_POOL_SIZE`,
@@ -72,6 +79,11 @@
 | `SECRETS_KEYRING_FILE` | — (обязателен в `production`; dev compose: `/var/lib/plummy/secrets/keyring.json`) | Key ring шифрования секретов ([ADR-016](adr/0016-secret-encryption.md), §4); без него сохранение API keys отвечает `503 secrets_not_configured` |
 | `CONFIG_FILE` | — (пустой allowlist) | TOML-файл Instance Settings со структурой, сейчас `[[network.allowlist]]` ([ADR-007](adr/0007-network-access-and-local-llm.md), §7.3); ≤ 256 КБ, невалидный файл → отказ старта |
 | `WORKER_CONCURRENCY` | `2` (dev compose) | Число процессов Celery worker (флаг `--concurrency` в команде сервиса, не настройка приложения) |
+| `INGESTION_MEMORY_LIMIT` | `4g` (dev compose) | `mem_limit` контейнера `worker-ingestion` (Compose, не настройка приложения) |
+| `STORAGE_BACKEND` | `local` | Пока только `local`; S3-compatible — Фаза 11 |
+| `STORAGE_PATH` | `/var/lib/plummy/storage` | Корень storage (области `quarantine` и `documents`); заменяет черновые `PLUMMY_STORAGE_PATH`, `PLUMMY_QUARANTINE_PATH` |
+| `QUARANTINE_TTL` | `86400` (24 ч) | Срок хранения файлов в quarantine до cleanup; от 10 мин до 7 дней |
+| `UPLOAD_MAX_BYTES` | `52428800` (50 МБ) | Наибольший принимаемый upload (проверяется при потоковой записи); от 1 КБ до 2 ГБ; заменяет черновое `PLUMMY_UPLOAD_MAX_BYTES` |
 
 `NAME` и `NAME_FILE` одновременно — ошибка конфигурации. Невалидная конфигурация → сообщение без значений секретов
 и exit code 1. Frontend: `VITE_API_BASE_URL` (по умолчанию `/api/v1`) — публичное значение, попадает в bundle.
@@ -100,15 +112,18 @@ docker compose run --rm migrate cat /var/lib/plummy/bootstrap/setup-token
 | `nginx` | TLS, SPA, reverse proxy на API, SSE без буферизации | `edge` | `certs` (ro) |
 | `api` | FastAPI | `edge`, `data`, `egress`, `llm`* | — |
 | `worker-ingestion` | Parsing, chunking (очередь `ingestion`) | `data` | `quarantine`, `documents` (при local storage) |
-| `worker-io` | Embeddings, sync, maintenance (очереди `embeddings`, `sync`, `maintenance`) | `data`, `egress`, `llm`* | `quarantine`, `documents` |
-| `scheduler` | Расписания sync, reconciliation, cleanup | `data` | — |
+| `worker-io` | Embeddings, sync, maintenance (очереди `embeddings`, `sync`, `maintenance`); в dev compose — сервис `worker` (§0) | `data`, `egress`, `llm`* | `quarantine`, `documents` |
+| `scheduler` | Cleanup quarantine, requeue jobs, purge sweep (реализовано); позже расписания sync и reconciliation | `data` | — |
 | `migrate` | Одноразовый шаг: Alembic + `python -m plummy.cli setup init-token` | `data` | `bootstrap` |
 | `postgres` | PostgreSQL + pgvector | `data` | `postgres-data` |
 | `redis` | Брокер, кэш, rate limits, locks | `data` | `redis-data` |
 | `minio` | S3-compatible storage (`prod`) | `data` | `minio-data` |
 
 \* только если владелец подключает локальную модель (§6). Разделение worker на `ingestion` (без исходящего
-интернета) и `io` — **[Proposed]**: парсер недоверенных файлов не должен иметь сетевого выхода.
+интернета) и `io` реализовано в dev compose (`worker-ingestion` и `worker`, §0): парсер недоверенных файлов не имеет
+сетевого выхода. В `production` конфигурация сейчас требует `SECRETS_KEYRING_FILE` от **каждого** процесса, в том
+числе `worker-ingestion`, которому key ring не нужен; prod-compose (Фаза 11) должен либо смонтировать ему файл,
+либо снять это требование для ingestion-процесса.
 
 ## 3. Конфигурация окружения (Instance Settings, ADR-006)
 
@@ -122,10 +137,10 @@ docker compose run --rm migrate cat /var/lib/plummy/bootstrap/setup-token
 | БД | `PLUMMY_DATABASE_URL_FILE`, `PLUMMY_DB_POOL_SIZE` | да |
 | Redis | `PLUMMY_REDIS_URL_FILE` | да |
 | Шифрование | `SECRETS_KEYRING_FILE` (key ring с `key_id`, реализовано, §0; заменяет черновое `PLUMMY_SECRETS_KEY_FILE`) | **да, хранится вне БД и отдельно от backup** |
-| Storage | `PLUMMY_STORAGE_BACKEND` (`local` \| `s3`), `PLUMMY_STORAGE_PATH`, `PLUMMY_QUARANTINE_PATH`, `PLUMMY_S3_ENDPOINT`, `PLUMMY_S3_BUCKET`, `PLUMMY_S3_ACCESS_KEY_FILE`, `PLUMMY_S3_SECRET_KEY_FILE` | частично |
+| Storage | `STORAGE_BACKEND`, `STORAGE_PATH`, `QUARANTINE_TTL` (реализовано, §0); `PLUMMY_S3_ENDPOINT`, `PLUMMY_S3_BUCKET`, `PLUMMY_S3_ACCESS_KEY_FILE`, `PLUMMY_S3_SECRET_KEY_FILE` — Фаза 11 | частично |
 | Setup | `SETUP_MODE` (`web` \| `cli_only`), `BOOTSTRAP_DIR`, `BOOTSTRAP_TOKEN_TTL` (реализовано, §0) | — |
 | Безопасность | `CORS_ORIGINS`, `SESSION_IDLE_TTL`, `SESSION_ABSOLUTE_TTL`, `SESSION_COOKIE_SECURE` (реализовано, §0); лимиты rate limit (пока константы, ADR-013 §4) | — |
-| Лимиты | `PLUMMY_UPLOAD_MAX_BYTES`, лимиты страниц/распаковки/времени парсинга, `PLUMMY_MAX_CONCURRENT_GENERATIONS_PER_USER` | — |
+| Лимиты | `UPLOAD_MAX_BYTES` (реализовано, §0); лимиты страниц/распаковки/времени парсинга — пока константы `ParseLimits`; `PLUMMY_MAX_CONCURRENT_GENERATIONS_PER_USER` | — |
 | Jobs | `WORKER_CONCURRENCY` (реализовано в dev compose, §0); retry/backoff — в определении каждой задачи | — |
 | SMTP | `PLUMMY_SMTP_HOST`, `PLUMMY_SMTP_USER`, `PLUMMY_SMTP_PASSWORD_FILE` | да |
 | Коннекторы | `PLUMMY_GOOGLE_CLIENT_ID`, `PLUMMY_GOOGLE_CLIENT_SECRET_FILE`, `PLUMMY_MS_CLIENT_ID`, `PLUMMY_MS_CLIENT_SECRET_FILE` | да |
@@ -235,7 +250,7 @@ docker compose run --rm migrate cat /var/lib/plummy/bootstrap/setup-token
 |---|---|---|
 | `edge` | `nginx`, `api` | — |
 | `data` | `api`, worker-сервисы, `scheduler`, `migrate`, `postgres`, `redis`, `minio` | Нет (`internal: true`) |
-| `egress` | `api`, `worker-io` | Да — облачные провайдеры, Google/Microsoft |
+| `egress` | `api`, `worker-io` (dev: `worker` в сети `edge`) | Да — облачные провайдеры, Google/Microsoft |
 | `llm` | `api`, `worker-io`, сервис локальной модели | Нет (`internal: true`), фиксированная подсеть |
 
 ### 7.2 Второй рубеж egress
@@ -272,7 +287,7 @@ Allowlist по умолчанию пуст; примеры выше не явл�
 
 - TLS терминируется в Nginx; HSTS; security headers (SECURITY_MODEL.md §12).
 - Для SSE: отключённая буферизация ответа, увеличенный read timeout, корректная передача `X-Accel-Buffering: no`.
-- Лимит размера тела запроса согласован с `PLUMMY_UPLOAD_MAX_BYTES`.
+- Лимит размера тела запроса согласован с `UPLOAD_MAX_BYTES`.
 
 ## 9. Health, обновления, масштабирование
 

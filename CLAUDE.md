@@ -11,8 +11,8 @@ PlummyKnowledge — open-source **self-hosted** платформа корпор�
 Лицензия — Apache License 2.0. Одна инсталляция принадлежит **одной** организации и работает на её серверах или в её
 облаке: multi-tenancy, сущности Organization и `organization_id` нет ([ADR-012](docs/adr/0012-single-organization-deployment.md)).
 
-**Текущее состояние:** Фазы 1–4 roadmap завершены (Foundation, Bootstrap & Authentication, Users & RBAC, AI providers
-& network policy). Backend:
+**Текущее состояние:** Фазы 1–5 roadmap завершены (Foundation, Bootstrap & Authentication, Users & RBAC, AI providers
+& network policy, Local document ingestion). Backend:
 FastAPI, Pydantic Settings, SQLAlchemy async, Alembic (`vector`/`citext`, users, activation tokens, groups,
 RBAC-каталог и назначения ролей, sessions, audit_logs), Redis (rate limit, брокер Celery), health live/ready; Celery
 worker с диагностической задачей; первоначальная настройка по bootstrap token и CLI `python -m plummy.cli`;
@@ -23,10 +23,14 @@ cursor-пагинация ([ADR-014](docs/adr/0014-list-pagination.md)); `GET /s
 с key ring вне БД ([ADR-016](docs/adr/0016-secret-encryption.md), CLI `secrets`), network allowlist в `CONFIG_FILE` и
 `SafeHttpClient` ([ADR-007](docs/adr/0007-network-access-and-local-llm.md)), порты `LLMProvider`/`EmbeddingProvider`
 и адаптеры OpenAI, Anthropic, Ollama, OpenAI-compatible (httpx, без SDK), API `providers`, моделей и
-`embedding-profiles` с connection test. Frontend: React 18, Chakra UI, RTK Query, страницы `/setup`, `/login`,
-`/activate`, `/account`, `/admin/users`, `/admin/groups`, `/admin/providers`, `/admin/embedding-profiles`, guard,
-выход. CI (GitHub Actions), pre-commit (secret scan, lint), Dependabot. Application Settings, storage и ingestion,
-KB, Nginx и prod-compose ещё нет ([DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md)).
+`embedding-profiles` с connection test. Фаза 5: хранение векторов ([ADR-017](docs/adr/0017-vector-storage.md)),
+local storage с quarantine, KB с источником `upload`, upload документов, единый ingestion pipeline (стадии 2–7 —
+`worker-ingestion` с Docling без сети и секретов, стадии 8–12 — `worker`: chunking, embeddings, атомарное
+переключение версии), API `knowledge-bases`, `documents`, `jobs`, удаление с purge, Celery beat `scheduler`.
+Frontend: React 18, Chakra UI, RTK Query, страницы `/setup`, `/login`, `/activate`, `/account`, `/admin/users`,
+`/admin/groups`, `/admin/providers`, `/admin/embedding-profiles`, `/knowledge-bases`, `/knowledge-bases/:id`, guard,
+выход. CI (GitHub Actions), pre-commit (secret scan, lint), Dependabot. Application Settings, retrieval, assistants,
+chat, Nginx и prod-compose ещё нет ([DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md)).
 Не начинать Google OAuth, Microsoft Graph и сложный RAG до стабильного запуска каркаса.
 
 ## Приоритет источников
@@ -200,7 +204,7 @@ python3 scripts/version.py release     # релиз X.Y.Z + тег vX.Y.Z (то�
 Среда разработки (из корня репозитория):
 
 ```bash
-docker compose up --build                                   # postgres, redis, migrate, backend, frontend
+docker compose up --build                                   # postgres, redis, migrate, backend, workers, scheduler, frontend
 docker compose exec backend pytest                          # backend: unit + API + integration
 docker compose exec backend ruff check src tests alembic    # backend lint
 docker compose exec backend ruff format --check src tests alembic
@@ -234,7 +238,9 @@ Worker и проверки репозитория:
 
 ```bash
 docker compose exec worker python -m plummy.cli worker check   # задача до worker и обратно
-docker compose restart worker                                  # после изменения кода (нет auto-reload)
+docker compose restart worker worker-ingestion scheduler       # после изменения кода (нет auto-reload)
+docker compose build worker-ingestion                          # образ с Docling и моделями (~4 ГБ)
+docker compose run --rm --no-deps worker-ingestion pytest -p no:cacheprovider tests/ingestion tests/unit/test_isolated_parser.py
 python3 scripts/check_secrets.py                               # secret scan всех tracked-файлов
 python3 -m unittest discover -s scripts/tests                  # тесты scripts/
 ```
@@ -254,7 +260,7 @@ docker compose run --rm migrate python -m plummy.cli secrets generate-key   # н
 есть; `PLUMMY_SKIP_LINT=1` — пропустить lint один раз) → bump `VERSION`. CI — `.github/workflows/ci.yml`: те же
 проверки на Compose-стеке, `pip-audit`, `npm audit`, dependency review в PR.
 
-Ещё не существуют: E2E (Playwright), Celery beat. **Не выдумывать команды** —
+Ещё не существуют: E2E (Playwright). **Не выдумывать команды** —
 сверяться с фактическими конфигурациями в репозитории.
 
 ## Definition of Done (§12)

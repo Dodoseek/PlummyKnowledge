@@ -86,8 +86,9 @@ Workers выполняют parsing, chunking, embeddings, source synchronization
 | `nginx` | TLS termination, раздача собранного SPA, reverse proxy на API, корректная проксировка SSE (без буферизации) | 1+ |
 | `frontend` | Сборка React SPA (в production — статические файлы за Nginx) | — |
 | `api` | HTTP/DTO, аутентификация, вызов use cases, SSE chat streaming. Никаких долгих операций (§11). | Горизонтально, ограниченный DB pool на процесс (§11) |
-| `worker` | Celery tasks: ingestion, embeddings, sync, reindex, delete/purge, cleanup. Реализовано: `plummy.workers` (фабрика приложения, JSON-only, `acks_late`, журнал жизненного цикла), диагностическая задача `plummy.system.ping`, очередь `default` | Регулируемое число workers и concurrency (§11); отдельные очереди — [Proposed] |
-| `scheduler` | **[Proposed]** Celery beat для расписаний sync, reconciliation (§7) и cleanup quarantine/retention (§8) | Ровно 1 экземпляр |
+| `worker` | Celery tasks: стадии 8–12 ingestion (chunking, embeddings, переключение версии), purge, cleanup; позже sync. `plummy.workers`: фабрика приложения, JSON-only, `acks_late`, журнал жизненного цикла, `plummy.system.ping`. Очереди `default`, `embeddings`, `maintenance`; сеть `edge` для вызова embedding-провайдеров через `SafeHttpClient` | Регулируемое число workers и concurrency (§11) |
+| `worker-ingestion` | Стадии 2–7 ingestion (проверки, тип, безопасность файла, storage, parsing через Docling): отдельный образ с Docling и моделями, очередь `ingestion`, concurrency 1, только сеть `data` (без интернета), без key ring и секретов провайдеров; parser — в дочернем процессе с timeout и rlimits, память ограничена `INGESTION_MEMORY_LIMIT` | Горизонтально, по одному документу на процесс |
+| `scheduler` | Celery beat: периодические задачи `maintenance` — cleanup quarantine (1 ч), повторная публикация jobs, не дошедших до брокера (5 мин), sweep удалённых документов для purge (10 мин). Позже — расписания sync и reconciliation (§7). Только Redis, без storage и секретов | Ровно 1 экземпляр |
 | `postgres` | Основное хранилище, pgvector, full-text search | Вертикально; backup/restore (§8, §11) |
 | `redis` | Брокер Celery, кэш, rate limiting, распределённые locks | 1 |
 | `minio` | S3-compatible storage (production-профиль, Фаза 11) | — |
@@ -95,10 +96,11 @@ Workers выполняют parsing, chunking, embeddings, source synchronization
 
 API и worker запускаются независимо (§11). Healthcheck и readiness есть у каждого сервиса (§5, §11).
 
-**[Proposed] Очереди Celery:** `ingestion` (parsing/chunking — CPU/память), `embeddings` (I/O к провайдеру),
-`sync` (коннекторы), `maintenance` (cleanup, purge, reconciliation). Разделение позволяет ограничивать ресурсы
-parser-workers отдельно (§8 п.6). В deployment очереди обслуживают два сервиса: `worker-ingestion` (без исходящего
-интернета) и `worker-io` (embeddings, sync, maintenance) — [DEPLOYMENT.md §2](DEPLOYMENT.md). Одноразовый сервис
+**Очереди Celery:** `ingestion` (стадии 2–7, parsing — CPU/память), `embeddings` (стадии 8–12: chunking, I/O к
+провайдеру, сохранение), `maintenance` (purge, cleanup, requeue, vector index), `default` (диагностика); `sync`
+(коннекторы) — [Proposed], появится с коннекторами. Разделение позволяет ограничивать ресурсы parser-workers
+отдельно (§8 п.6). Очереди обслуживают два сервиса: `worker-ingestion` (`ingestion`, без исходящего интернета) и
+`worker` (`default`, `embeddings`, `maintenance`) — [DEPLOYMENT.md §2](DEPLOYMENT.md). Одноразовый сервис
 `migrate` выполняет миграции и генерацию bootstrap token (ADR-006).
 
 ## 5. Слои и правило зависимостей (§3)
@@ -298,9 +300,14 @@ class EmbeddingProvider(Protocol):
 
 ```python
 class ParserProvider(Protocol):
-    def supported_mime_types(self) -> frozenset[str]: ...
-    async def parse(self, file: QuarantinedFile, limits: ParseLimits) -> NormalizedDocument: ...
+    @property
+    def name(self) -> str: ...                                   # сохраняется в версии документа
+    def supported_formats(self) -> frozenset[DocumentFormat]: ...
+    async def parse(self, path: Path, file_format: DocumentFormat, limits: ParseLimits) -> NormalizedDocument: ...
 ```
+
+Parser получает локальный read-only путь (`StorageProvider.local_path`) и формат, уже определённый по содержимому
+на стадии 3; `ParserRegistry` выбирает реализацию по формату.
 
 `NormalizedDocument` — независимая от парсера структура: страницы, секции/заголовки, параграфы, таблицы, листы и
 строки (для XLSX/CSV), metadata. Первая реализация — Docling (§3). Лимиты страниц, времени и ресурсов передаются
@@ -310,8 +317,15 @@ class ParserProvider(Protocol):
 
 ```python
 class ChunkingStrategy(Protocol):
-    def chunk(self, doc: NormalizedDocument, settings: ChunkingSettings) -> list[ChunkDraft]: ...
+    @property
+    def name(self) -> str: ...                                   # сохраняется в chunk set
+    def chunk(self, document: NormalizedDocument, settings: ChunkingSettings) -> list[ChunkDraft]: ...
 ```
+
+`ChunkingSettings` по умолчанию: `max_tokens = 512`, `overlap_tokens = 64` (overlap — только между частями одного
+слишком длинного блока); размер ограничивается `max_input_tokens` embedding profile. Настройки на уровне KB
+(`knowledge_bases.chunking_settings`) — **[Proposed]**: API для них пока нет, всегда используются значения по
+умолчанию.
 
 Structure-aware: каждый chunk сохраняет page / section / sheet / row (§6). Детерминированность обязательна для
 идемпотентности (одинаковый вход → одинаковые `chunk_index` и `content_hash`).
@@ -320,15 +334,19 @@ Structure-aware: каждый chunk сохраняет page / section / sheet / 
 
 ```python
 class StorageProvider(Protocol):
-    async def put(self, key: StorageKey, data: AsyncIterator[bytes], *, area: StorageArea) -> StoredObject: ...
-    async def open(self, key: StorageKey) -> AsyncIterator[bytes]: ...
-    async def delete(self, key: StorageKey) -> None: ...
-    async def move(self, src: StorageKey, dst: StorageKey) -> None: ...     # quarantine → permanent
+    async def put(self, area: StorageArea, key: StorageKey, data: AsyncIterable[bytes], *,
+                  max_bytes: int | None = None) -> StoredObject: ...       # никогда не перезаписывает
+    def open(self, area: StorageArea, key: StorageKey) -> AsyncIterator[bytes]: ...
+    def local_path(self, area: StorageArea, key: StorageKey) -> AbstractAsyncContextManager[Path]: ...
+    async def move(self, key: StorageKey, source: StorageArea, target: StorageArea) -> None: ...
+    async def delete(self, area: StorageArea, key: StorageKey) -> None: ...  # отсутствующий объект — не ошибка
+    async def exists(self, area: StorageArea, key: StorageKey) -> bool: ...
+    async def purge_expired(self, area: StorageArea, older_than: datetime) -> int: ...
 ```
 
 `StorageArea`: `quarantine` (временная, ограниченные права, cleanup, §8 п.8) и `documents`. Ключи генерирует
 сервер (UUID-based); имя файла пользователя **никогда** не используется как путь (§12: malicious filenames не
-выходят из storage). Реализации: local filesystem, S3-compatible (MinIO).
+выходят из storage). Реализации: local filesystem (`STORAGE_BACKEND=local`, реализована), S3-compatible (MinIO) — Фаза 11.
 
 ### 8.6 `DataSourceConnector` (§7)
 
@@ -393,7 +411,7 @@ flowchart LR
 
 | # | Стадия (ADR-008) | Шаг blueprint §6 | Где | Идемпотентность / примечание |
 |---|---|---|---|---|
-| 1 | Получение документа из источника | 1, 2 | API (upload) / worker (коннектор) | Upload: `Idempotency-Key`; коннектор: `(data_source_id, external_id)` + ETag |
+| 1 | Получение документа из источника | 1, 2 | API (upload) / worker (коннектор) | Upload: `Idempotency-Key` — [Proposed], не реализован: каждый upload создаёт новый документ; коннектор: `(data_source_id, external_id)` + ETag |
 | 2 | Проверка разрешений и состояния ресурсов | — (§8 п.1–2) | worker | Источник активен и не удалён; KB/документ не удалены; файл в выбранной области |
 | 3 | Проверка типа и размера | 3 | worker | Тип по содержимому |
 | 4 | Проверка безопасности файла | 3 | worker | Лимиты страниц, распаковки, macro-форматы |
@@ -418,8 +436,10 @@ TXT, CSV, Markdown (§6); релиз 0.1.0 обязан поддерживать
 ### 9.3 Удаление и reindex (§5, §8, [ADR-008](adr/0008-unified-document-ingestion.md))
 
 - **Удаление документа:** в одной транзакции документ помечается удалённым (`deleted_at`, `deletion_reason`) →
-  немедленно исключается из retrieval (§5, §8 Retention). Затем `maintenance`-job по retention policy удаляет chunks,
-  embeddings, extracted text и оригинал из storage. Повтор job безопасен.
+  немедленно исключается из retrieval (§5, §8 Retention), его активные jobs отменяются. Сразу после commit
+  публикуется `maintenance`-задача purge, которая удаляет chunks, embeddings и файлы версий из storage; если брокер
+  недоступен, документ подхватывает периодический sweep `scheduler`. Повтор purge безопасен. Отсрочка purge
+  (grace period) не реализована — см. [DATABASE_SCHEMA.md §8](DATABASE_SCHEMA.md).
 - **Удаление в источнике / выход за выбранную область:** тот же lifecycle, `deletion_reason = remote_deleted |
   out_of_scope`.
 - **Удаление источника:** все его документы проходят тот же lifecycle; credentials удаляются сразу.
@@ -657,5 +677,4 @@ ADR хранятся в [`docs/adr/`](adr/README.md) с индексом (§13 �
    отдельный `tsvector` на язык).
 3. Ограничение одновременных генераций и поведение при разрыве SSE-соединения (продолжать генерацию и сохранять
    ответ или отменять).
-4. Нужен ли отдельный `scheduler`-контейнер в dev-профиле.
-5. Инструмент проверки правила слоёв в CI.
+4. Инструмент проверки правила слоёв в CI.

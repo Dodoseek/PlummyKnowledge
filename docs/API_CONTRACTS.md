@@ -109,9 +109,13 @@
 | 409 | `provider_in_use` | Провайдер используется embedding profile (позднее — ассистентами) и не может быть удалён |
 | 409 | `model_id_taken` | У провайдера уже есть модель с таким model ID |
 | 409 | `embedding_profile_name_taken` | Имя embedding profile (без учёта регистра) уже занято |
+| 409 | `knowledge_base_name_taken` | Имя базы знаний (без учёта регистра) уже занято |
+| 409 | `source_unavailable` | Upload: источник `upload` базы знаний отсутствует или не активен |
+| 409 | `no_version` | Reindex: у документа нет версии, которую можно обработать |
+| 409 | `job_not_retryable` | Retry: job не в `failed`/`dead`, документ удалён, у документа уже есть активный job или версия удалена |
 | 409 | `invalid_state` | Действие невозможно в текущем состоянии ресурса (например, вернуть `retired` profile в `active`) |
-| 413 | `payload_too_large` | Превышен лимит размера (§8 п.6) |
-| 415 | `unsupported_media_type` | Формат вне списка MVP (§6) |
+| 413 | `payload_too_large` | Превышен лимит размера (§8 п.6; upload — `UPLOAD_MAX_BYTES`) |
+| 415 | `unsupported_media_type` | Формат вне списка MVP (§6); определяется по содержимому, не по имени и `Content-Type` |
 | 422 | `validation_error` | Ошибка валидации DTO; список в `errors` |
 | 422 | `invalid_query_parameter` | Неизвестный или повторённый query-параметр, неразрешённая сортировка, неверный `limit` или `cursor` (§1.6); причина — в `errors[].code` |
 | 422 | `endpoint_not_allowed` | `base_url` провайдера не проходит сетевую политику инсталляции ([ADR-007](adr/0007-network-access-and-local-llm.md)); причина — в `errors[].code` поля `body.base_url` |
@@ -492,11 +496,11 @@ Document Source типа `upload` создаётся и удаляется вм�
 UI обязан показывать **фактические** `granted_scopes` и предупреждение, что выбор папки не ограничивает OAuth token
 (§7).
 
-### 2.10 `knowledge-bases` (§5)
+### 2.10 `knowledge-bases` (§5) — реализованы list, create, get
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
-| GET | `/api/v1/knowledge-bases` | KB, доступные пользователю | KB `read` | auth | — | — | — |
+| GET | `/api/v1/knowledge-bases` | KB, доступные пользователю; `sort`: `name` (по умолчанию), `-name`, `created_at`, `-created_at` | KB `read` | auth | — | — | — |
 | POST | `/api/v1/knowledge-bases` | Создать (embedding profile обязателен) | `knowledge_bases.manage` | auth | — | `kb.created` | — |
 | GET | `/api/v1/knowledge-bases/{id}` | Карточка + статусы индексации | KB `read` | auth | — | — | — |
 | PATCH | `/api/v1/knowledge-bases/{id}` | Изменить; смена embedding profile → reindex | KB `manage` | auth | — | `kb.updated` | — |
@@ -508,14 +512,37 @@ UI обязан показывать **фактические** `granted_scopes`
 | DELETE | `/api/v1/knowledge-bases/{id}/sources/{data_source_id}` | Отвязать (документы источника исключаются из KB) | KB `manage` | auth | — | `kb.source.detached` | — |
 | POST | `/api/v1/knowledge-bases/{id}/reindex` | Переиндексация KB | KB `manage` | auth | Idem | `kb.reindex.requested` | expensive |
 
+Остальные строки таблицы (PATCH, DELETE, access, sources, reindex KB) ещё не реализованы.
+
+**KB DTO (`200`/`201`):**
+
+```json
+{
+  "id": "…", "name": "HR", "description": "Policies", "embedding_profile_id": "…",
+  "indexing": { "documents_total": 3, "indexed": 1, "processing": 1, "failed": 1 },
+  "my_access_level": "manage",
+  "created_at": "…", "updated_at": "…"
+}
+```
+
+`my_access_level` (`read` \| `manage`) — итоговый доступ текущего пользователя; frontend использует его только для
+отображения элементов управления. Пользователь с `knowledge_bases.manage` имеет `manage` во всех KB; остальные —
+по выданному доступу (назначение доступа через API ещё не реализовано). KB без доступа → `404`, `read` там, где
+нужен `manage` → `403`. Создание: тело `{name, description?, embedding_profile_id}`; вместе с KB создаётся её
+источник `upload`. Ошибки поля
+`body.embedding_profile_id` (`422 validation_error`, `errors[].code`): `unknown_embedding_profile`,
+`embedding_profile_not_active`, `dimensions_not_indexable`, `provider_unavailable`; занятое имя —
+`409 knowledge_base_name_taken`. Настройки chunking через API не задаются (**[Proposed]**, всегда значения по
+умолчанию — [ARCHITECTURE.md §8.4](ARCHITECTURE.md)).
+
 Привязка источника к KB требует подтверждения, что все участники KB имеют право видеть все документы источника
 (§8 Document ACL); UI показывает предупреждение, API принимает флаг `acl_acknowledged: true` **[Proposed]**.
 
-### 2.11 `documents` (§5, §6)
+### 2.11 `documents` (§5, §6) — реализовано, кроме source viewer и `Idempotency-Key`
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
-| GET | `/api/v1/documents` | Список; обязательный фильтр `knowledge_base_id`; фильтры `processing_status`, `data_source_id`, `q` | KB `read` | auth | — | — | — |
+| GET | `/api/v1/documents` | Список; обязательный фильтр `knowledge_base_id`; фильтры `processing_status`, `data_source_id`, `q`; `sort`: `-created_at` (по умолчанию), `created_at`, `filename`, `-filename` | KB `read` | auth | — | — | — |
 | POST | `/api/v1/documents` | Upload (`multipart/form-data`: `knowledge_base_id`, `file`) → quarantine + ingestion job | KB `manage` | auth | Idem | `document.uploaded` | upload |
 | GET | `/api/v1/documents/{id}` | Карточка: версия, MIME, checksum, размер, source ID, timestamps, processing status | KB `read` | auth | — | — | — |
 | GET | `/api/v1/documents/{id}/versions` | Версии | KB `read` | auth | — | — | — |
@@ -528,17 +555,45 @@ UI обязан показывать **фактические** `granted_scopes`
 ```json
 {
   "document": { "id": "…", "filename": "Policy.pdf", "processing_status": "pending" },
-  "job": { "id": "…", "type": "ingestion", "status": "queued" }
+  "job": { "id": "…", "type": "ingestion", "kind": "ingest", "status": "queued" }
 }
 ```
 
 Upload и документы из коннекторов проходят один pipeline ([ADR-008](adr/0008-unified-document-ingestion.md)); HTTP-запрос
-только принимает файл в quarantine и ставит job. Повторная загрузка того же контента в существующий документ не
-создаёт новую версию; повторный `reindex` уже обработанной версии завершается без изменений (`result:
-skipped_already_processed`).
+только принимает файл в quarantine и ставит job. Поле `knowledge_base_id` должно идти **перед** `file`: доступ и
+rate limit проверяются до записи первого байта. Каждый upload создаёт **новый** документ (загрузка новой версии
+существующего документа и `Idempotency-Key` — [Proposed], не реализованы). Повторный `reindex` уже обработанной
+версии завершается без изменений (`result: skipped_already_processed`).
 
 Ошибки: `413 payload_too_large`, `415 unsupported_media_type` (MVP: PDF, DOCX, XLSX, TXT, CSV, Markdown; в 0.1.0 —
-PDF, DOCX), `429`. Тип определяется по содержимому, `filename` используется только для отображения.
+PDF, DOCX), `422 validation_error` (`errors[].code = empty_file` и др.), `409 source_unavailable`, `429`. Тип
+определяется по содержимому, `filename` используется только для отображения и никогда — как путь в storage.
+Лимит объёма загрузок в час (§8 п.5) пока не реализован; действует лимит числа запросов.
+
+**Document DTO (`200`):**
+
+```json
+{
+  "id": "…", "filename": "Policy.pdf", "mime_type": "application/pdf",
+  "data_source": { "id": "…", "type": "upload" }, "external_id": "upload:…",
+  "current_version": { "id": "…", "version_number": 1, "checksum_sha256": "…", "size_bytes": 2048,
+                       "mime_type": "application/pdf", "page_count": 2, "status": "ready", "error_code": null,
+                       "created_at": "…", "processed_at": "…" },
+  "latest_version": { "…": "та же структура" },
+  "processing_status": "indexed", "source_modified_at": null,
+  "created_at": "…", "updated_at": "…"
+}
+```
+
+`current_version` — версия, участвующая в retrieval; `latest_version` — последняя версия (в том числе в обработке
+или `failed`, с `error_code` для отображения причины). `processing_status`: `pending` \| `processing` \|
+`indexed` \| `failed` \| `skipped`. Документ без доступа или удалённый → `404`.
+
+**Delete `204`:** документ сразу исключается из retrieval и списков, его активные jobs отменяются; purge chunks,
+vectors и файлов выполняется сразу задачей `maintenance` (отсрочки нет — [DATABASE_SCHEMA.md §8](DATABASE_SCHEMA.md)).
+
+**Reindex `202`:** `{ "job": <Job DTO §2.15>, "created": true }`; если у документа уже есть `queued`/`running` job,
+возвращается он с `created: false`. Нет версии для обработки → `409 no_version`.
 
 **Source viewer `200`:**
 
@@ -604,16 +659,33 @@ PDF, DOCX), `429`. Тип определяется по содержимому, 
 источников — их вычисляет backend. Недоступный ассистент: новый диалог → `404 not_found`; сообщение в собственный
 диалог → `403 assistant_unavailable`.
 
-### 2.15 `jobs` (§11, §13 Фаза 11)
+### 2.15 `jobs` (§11, §13 Фаза 11) — реализованы list, get, retry для `ingestion`
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
-| GET | `/api/v1/jobs` | Ingestion и sync jobs (`type`, `status`, `knowledge_base_id`, `data_source_id`) | `jobs.read` | auth | — | — | — |
+| GET | `/api/v1/jobs` | Ingestion и sync jobs (`type`, `status`, `knowledge_base_id`, `data_source_id`); `sort`: `-queued_at` (по умолчанию), `queued_at` | `jobs.read` | auth | — | — | — |
 | GET | `/api/v1/jobs/{type}/{id}` | Детали, stage, attempts, redacted error | `jobs.read` | auth | — | — | — |
 | POST | `/api/v1/jobs/{type}/{id}/retry` | Повтор `failed`/`dead` job | `jobs.manage` | auth | Idem | `job.retried` | expensive |
 | POST | `/api/v1/jobs/{type}/{id}/cancel` | Отмена `queued`/`running` | `jobs.manage` | auth | — | `job.cancelled` | — |
 
-`{type}`: `ingestion` \| `sync`.
+`{type}`: `ingestion` \| `sync`. Sync jobs появятся с коннекторами: сейчас `type=sync` возвращает пустой список.
+`cancel` и `Idempotency-Key` для retry не реализованы (jobs отменяются удалением документа). Retry невозможен →
+`409 job_not_retryable`.
+
+**Job DTO:**
+
+```json
+{
+  "id": "…", "type": "ingestion", "kind": "ingest", "status": "failed", "stage": "embed",
+  "result": null, "attempt": 3, "max_attempts": 3,
+  "error": { "code": "provider_auth_failed", "message": "…" },
+  "document_id": "…", "document_version_id": "…",
+  "queued_at": "…", "started_at": "…", "finished_at": "…"
+}
+```
+
+`kind`: `ingest` \| `reindex`; `error` хранится уже redacted (стабильный код и короткое сообщение без содержимого
+документа и секретов).
 
 ### 2.16 `audit` (§8 п.9)
 

@@ -126,6 +126,17 @@ security gate (проверки безопасности **внутри** фаз
 - **Security gate:** лимиты размера/страниц/распаковки, archive bombs, malicious filenames, изоляция парсера; SC-05
   для документов; SC-09; deleted docs не находятся.
 - **Выход:** загруженный PDF/DOCX проходит pipeline до `ready`; повторы не создают дубликатов.
+- *(Текущее состояние: **фаза реализована** (5.0–5.7). Хранение векторов — [ADR-017](adr/0017-vector-storage.md);
+  миграции `0009` (KB, источники, документы, версии, chunks, embeddings, `ingestion_jobs`) и `0010`. Local storage с
+  областями `quarantine`/`documents`, ключи генерирует сервер. Upload с потоковой проверкой размера и rate limit;
+  стадии 2–7 — в `worker-ingestion` (отдельный образ с Docling, без сети и секретов, parser в дочернем процессе с
+  timeout/rlimits), стадии 8–12 — в `worker` (structure-aware chunking 512/64, embeddings через `EmbeddingProvider`,
+  атомарное переключение версии). API KB (list/create/get), documents (list/upload/get/versions/delete/reindex),
+  jobs (list/get/retry); purge сразу после удаления; Celery beat `scheduler` (cleanup quarantine, requeue,
+  purge sweep). Frontend `/knowledge-bases`, `/knowledge-bases/:id`. Parsing проверен с реальным Docling
+  (`tests/ingestion`, образ `worker-ingestion`), стадии 8–12 — integration-тестами на PostgreSQL с fake embedder;
+  прогон до `ready` с реальным embedding-провайдером не выполнен. Не реализовано в фазе: `Idempotency-Key` upload, новые версии существующего
+  документа через upload, лимит объёма загрузок в час, cancel jobs, API chunking settings, grace period purge.)*
 
 ### Фаза 6 — Retrieval и RAG evaluation (§13)
 

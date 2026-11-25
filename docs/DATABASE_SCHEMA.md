@@ -298,20 +298,20 @@ associated data AEAD — `plummy-secret-v1|<id>|<kind>`, поэтому шифр
 
 ## 5. Knowledge
 
-### 5.1 `knowledge_bases` (§5)
+### 5.1 `knowledge_bases` (§5) — реализовано, `0009`
 
 | Колонка | Тип | Описание |
 |---|---|---|
 | `name` | `text` | `UNIQUE (lower(name)) WHERE deleted_at IS NULL` |
 | `description` | `text` | |
 | `embedding_config_id` | `uuid` | Активный embedding profile для индексации KB |
-| `chunking_settings` | `jsonb` | **[Proposed]** |
+| `chunking_settings` | `jsonb` | Колонка есть (по умолчанию `{}`); содержимое и API — **[Proposed]**: pipeline всегда использует значения по умолчанию (`max_tokens` 512, `overlap_tokens` 64, [ARCHITECTURE.md §8.4](ARCHITECTURE.md)) |
 | `deleted_at` | `timestamptz` | |
 
 Статус индексации KB (§5) вычисляется агрегатом по `documents.processing_status` и активным jobs; при
 необходимости кэшируется.
 
-### 5.2 `knowledge_base_access` (§5, §8 Document ACL)
+### 5.2 `knowledge_base_access` (§5, §8 Document ACL) — реализовано, `0009`
 
 | Колонка | Тип | Описание |
 |---|---|---|
@@ -375,7 +375,7 @@ SELECT NOT EXISTS (
 При удалении KB её строки в `assistant_knowledge_bases` удаляются (связующая таблица, `ON DELETE CASCADE` допустим);
 ассистент без KB становится недоступен обычным пользователям.
 
-### 5.4 `data_sources` (§7)
+### 5.4 `data_sources` (§7) — реализовано, `0009`
 
 | Колонка | Тип | Описание |
 |---|---|---|
@@ -414,12 +414,12 @@ credentials удаляются немедленно; строки `knowledge_bas
 | `status` | `text` | `valid` \| `expired` \| `revoked` |
 | `expires_at`, `last_refreshed_at`, `revoked_at` | `timestamptz` | |
 
-### 5.6 `knowledge_base_sources` (§5)
+### 5.6 `knowledge_base_sources` (§5) — реализовано, `0009`
 
 `knowledge_base_id`, `data_source_id`, `created_at`; PK `(knowledge_base_id, data_source_id)`;
 индекс `(data_source_id)`.
 
-### 5.7 `documents` (§5)
+### 5.7 `documents` (§5) — реализовано, `0009`
 
 | Колонка | Тип | Описание |
 |---|---|---|
@@ -439,7 +439,7 @@ credentials удаляются немедленно; строки `knowledge_bas
 
 Индексы: `(data_source_id)`, `(processing_status)`, `(deleted_at)`, `(updated_at)`.
 
-### 5.8 `document_versions` (§5, §6)
+### 5.8 `document_versions` (§5, §6) — реализовано, `0009`
 
 | Колонка | Тип | Описание |
 |---|---|---|
@@ -465,7 +465,7 @@ credentials удаляются немедленно; строки `knowledge_bas
 
 Индексы: `(status)`, `(document_id, status)`.
 
-### 5.9 `document_chunks` (§6)
+### 5.9 `document_chunks` (§6) — реализовано, `0009`
 
 | Колонка | Тип | Описание |
 |---|---|---|
@@ -485,7 +485,7 @@ credentials удаляются немедленно; строки `knowledge_bas
 
 Индексы: `GIN (search_vector)`, `(document_version_id)`, `(data_source_id)`.
 
-### 5.10 `embeddings` (§6, §9, [ADR-017](adr/0017-vector-storage.md))
+### 5.10 `embeddings` (§6, §9, [ADR-017](adr/0017-vector-storage.md)) — реализовано, `0009`
 
 | Колонка | Тип | Описание |
 |---|---|---|
@@ -595,7 +595,7 @@ Snapshot metadata на момент ответа, чтобы история ос
 
 ## 7. Jobs и audit
 
-### 7.1 `ingestion_jobs` (§6, §11)
+### 7.1 `ingestion_jobs` (§6, §11) — реализовано, `0009`, `0010`
 
 | Колонка | Тип | Описание |
 |---|---|---|
@@ -612,8 +612,9 @@ Snapshot metadata на момент ответа, чтобы история ос
 | `progress` | `jsonb` | Счётчики |
 | `requested_by` | `uuid` | NULL для системных |
 | `queued_at`, `started_at`, `finished_at` | `timestamptz` | |
+| `updated_at` | `timestamptz` | `0010`; последнее изменение строки — по нему периодический requeue находит `queued` jobs без `celery_task_id` (не дошедшие до брокера) |
 
-Индексы: `(status)`, `(document_id)`, `(queued_at)`.
+Индексы: `(status)`, `(document_id)`, `(queued_at)`; частичный `ix_ingestion_jobs_unpublished (updated_at) WHERE status = 'queued' AND celery_task_id IS NULL` (`0010`).
 
 ### 7.2 `sync_jobs` (§7)
 
@@ -675,7 +676,7 @@ Blueprint требует **определить** lifecycle и сроки; ко�
 
 | Класс данных | При удалении объекта | Срок хранения по умолчанию |
 |---|---|---|
-| Original files | Удаляются purge-job после soft delete документа | Grace period 7 дней, затем удаление |
+| Original files | Удаляются purge-job после soft delete документа | **Реализовано:** purge сразу после soft delete (задача `maintenance`; при недоступном брокере — периодический sweep). Grace period 7 дней — [Proposed], не реализован |
 | Extracted text | Вместе с версией | Как original |
 | Document versions | `outdated` хранятся для истории/цитат | Последние N=3 версии, остальные purge |
 | Chunks | Исключаются из retrieval немедленно; удаляются purge-job | Вместе с версией |
@@ -683,7 +684,7 @@ Blueprint требует **определить** lifecycle и сроки; ко�
 | Chat history | Удаление диалога пользователем → soft delete, purge | Без автоудаления в MVP; настраиваемо |
 | Audit logs | Не удаляются пользователем | 1 год |
 | Credentials | При disconnect/revoke — немедленное удаление `secret_references` | — |
-| Quarantine/temp | Cleanup после обработки или по TTL | 24 часа |
+| Quarantine/temp | Cleanup после обработки или по TTL (`scheduler`, раз в час) | 24 часа (`QUARANTINE_TTL`) |
 | Источник (`data_sources`) | Документы — lifecycle документа; credentials — сразу | — |
 | Неактивные `chunk_set` | Удаляются после переключения на новый набор | Сразу после успешного reindex |
 | Bootstrap token | Хэш обнуляется после инициализации; файл с токеном удаляет владелец | — |
@@ -703,7 +704,10 @@ Blueprint требует **определить** lifecycle и сроки; ко�
 - Тяжёлые индексы (HNSW, GIN) — `CREATE INDEX CONCURRENTLY` в отдельной ревизии.
 - Изменение модели развёртывания (ADR-012: одна организация на инсталляцию) — только после ADR (§15).
 - Реализованы: `0001` (проверка расширений), `0002` (`users`, `instance_state`), `0003` (`permissions`, `roles`,
-  `role_permissions`, `user_roles` + сид каталога и системных ролей), `0004` (`sessions`), `0005` (`audit_logs`).
+  `role_permissions`, `user_roles` + сид каталога и системных ролей), `0004` (`sessions`), `0005` (`audit_logs`),
+  `0006` (`groups`, ссылки активации), `0007` (`secret_references`), `0008` (AI-провайдеры, модели, embedding
+  profiles), `0009` (knowledge bases, источники, документы, версии, chunks, embeddings, `ingestion_jobs`), `0010`
+  (`ingestion_jobs.updated_at` и индекс неопубликованных jobs).
 
 ## 10. Открытые вопросы
 
