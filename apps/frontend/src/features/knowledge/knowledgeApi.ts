@@ -1,4 +1,10 @@
-import { baseApi, DOCUMENTS_TAG, KNOWLEDGE_BASES_TAG } from '../../shared/api/baseApi';
+import {
+  ASSISTANTS_TAG,
+  baseApi,
+  DOCUMENTS_TAG,
+  KB_ACCESS_TAG,
+  KNOWLEDGE_BASES_TAG,
+} from '../../shared/api/baseApi';
 import type { Page } from '../admin/adminApi';
 
 /** DTOs of API_CONTRACTS.md §2.10–2.11 and §4. */
@@ -87,6 +93,32 @@ export interface SearchResult {
   keyword_query_empty: boolean;
 }
 
+export type PrincipalType = 'user' | 'group';
+
+export interface KbGrant {
+  principal_type: PrincipalType;
+  principal_id: string;
+  /** Display only: the user's display name or the group's name. */
+  name: string;
+  email: string | null;
+  access_level: AccessLevel;
+  granted_by: string | null;
+  granted_at: string | null;
+}
+
+export interface GrantInput {
+  principal_type: PrincipalType;
+  principal_id: string;
+  access_level: AccessLevel;
+}
+
+export interface KnowledgeBaseReindexResult {
+  jobs_created: number;
+  job_ids: string[];
+  already_queued: number;
+  without_version: number;
+}
+
 export const UPLOAD_TIMEOUT_MS = 10 * 60_000;
 
 /** Documents still moving through the pipeline: the list polls while there are any. */
@@ -96,7 +128,9 @@ export function isInProgress(status: DocumentStatus): boolean {
 
 const kbTag = (id: string) => ({ type: KNOWLEDGE_BASES_TAG, id }) as const;
 const documentsTag = (kbId: string) => ({ type: DOCUMENTS_TAG, id: kbId }) as const;
+const accessTag = (kbId: string) => ({ type: KB_ACCESS_TAG, id: kbId }) as const;
 const documentPath = (id: string) => `/documents/${encodeURIComponent(id)}`;
+const kbPath = (id: string) => `/knowledge-bases/${encodeURIComponent(id)}`;
 
 export const knowledgeApi = baseApi.injectEndpoints({
   endpoints: (build) => ({
@@ -114,6 +148,36 @@ export const knowledgeApi = baseApi.injectEndpoints({
     >({
       query: (body) => ({ url: '/knowledge-bases', method: 'POST', body }),
       invalidatesTags: [KNOWLEDGE_BASES_TAG],
+    }),
+    updateKnowledgeBase: build.mutation<
+      KnowledgeBase,
+      { id: string; name?: string; description?: string | null }
+    >({
+      query: ({ id, ...body }) => ({ url: kbPath(id), method: 'PATCH', body }),
+      invalidatesTags: (_result, _error, { id }) => [kbTag(id), KNOWLEDGE_BASES_TAG],
+    }),
+    deleteKnowledgeBase: build.mutation<null, string>({
+      query: (id) => ({ url: kbPath(id), method: 'DELETE' }),
+      // Assistants lose the knowledge base too (ADR-005): their availability changes.
+      invalidatesTags: [KNOWLEDGE_BASES_TAG, ASSISTANTS_TAG],
+    }),
+    getKnowledgeBaseAccess: build.query<{ items: KbGrant[] }, string>({
+      query: (id) => `${kbPath(id)}/access`,
+      providesTags: (_result, _error, id) => [accessTag(id)],
+    }),
+    replaceKnowledgeBaseAccess: build.mutation<{ items: KbGrant[] }, { id: string; grants: GrantInput[] }>({
+      query: ({ id, grants }) => ({ url: `${kbPath(id)}/access`, method: 'PUT', body: { grants } }),
+      // My own access level may change with the list, and so may who can use an assistant.
+      invalidatesTags: (_result, _error, { id }) => [
+        accessTag(id),
+        kbTag(id),
+        KNOWLEDGE_BASES_TAG,
+        ASSISTANTS_TAG,
+      ],
+    }),
+    reindexKnowledgeBase: build.mutation<KnowledgeBaseReindexResult, string>({
+      query: (id) => ({ url: `${kbPath(id)}/reindex`, method: 'POST' }),
+      invalidatesTags: (_result, _error, id) => [documentsTag(id), kbTag(id)],
     }),
     listDocuments: build.query<Page<KbDocument>, { kbId: string; cursor?: string }>({
       query: ({ kbId, cursor }) => ({
@@ -155,6 +219,11 @@ export const {
   useListKnowledgeBasesQuery,
   useGetKnowledgeBaseQuery,
   useCreateKnowledgeBaseMutation,
+  useUpdateKnowledgeBaseMutation,
+  useDeleteKnowledgeBaseMutation,
+  useGetKnowledgeBaseAccessQuery,
+  useReplaceKnowledgeBaseAccessMutation,
+  useReindexKnowledgeBaseMutation,
   useListDocumentsQuery,
   useUploadDocumentMutation,
   useDeleteDocumentMutation,

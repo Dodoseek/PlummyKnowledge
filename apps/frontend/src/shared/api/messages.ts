@@ -23,7 +23,7 @@ const MESSAGES: Record<string, string> = {
   cannot_modify_self: 'You cannot disable or delete your own account.',
   invalid_user_state: 'This action is not possible in the user’s current state.',
   provider_name_taken: 'A provider with this name already exists.',
-  provider_in_use: 'The provider is used by an embedding profile and cannot be deleted.',
+  provider_in_use: 'The provider is used by an embedding profile or an assistant and cannot be deleted.',
   model_id_taken: 'This provider already has a model with this ID.',
   embedding_profile_name_taken: 'An embedding profile with this name already exists.',
   reindex_required:
@@ -35,6 +35,8 @@ const MESSAGES: Record<string, string> = {
   secrets_not_configured:
     'Secret storage is not configured on the server (SECRETS_KEYRING_FILE). Keys cannot be saved yet.',
   secret_unavailable: 'The stored key cannot be decrypted on this server. Enter the key again.',
+  assistant_name_taken: 'An assistant with this name already exists.',
+  model_in_use: 'The model is used by an assistant and cannot be deleted. Change the assistant first.',
   knowledge_base_name_taken: 'A knowledge base with this name already exists.',
   unknown_embedding_profile: 'The embedding profile does not exist.',
   embedding_profile_not_active: 'The embedding profile is not active. Choose an active one.',

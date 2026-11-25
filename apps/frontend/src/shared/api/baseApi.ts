@@ -24,6 +24,8 @@ export const MODELS_TAG = 'Models';
 export const EMBEDDING_PROFILES_TAG = 'EmbeddingProfiles';
 export const KNOWLEDGE_BASES_TAG = 'KnowledgeBases';
 export const DOCUMENTS_TAG = 'Documents';
+export const KB_ACCESS_TAG = 'KnowledgeBaseAccess';
+export const ASSISTANTS_TAG = 'Assistants';
 
 const rawBaseQuery = fetchBaseQuery({
   baseUrl: config.apiBaseUrl,
@@ -78,6 +80,8 @@ export const baseApi = createApi({
     EMBEDDING_PROFILES_TAG,
     KNOWLEDGE_BASES_TAG,
     DOCUMENTS_TAG,
+    KB_ACCESS_TAG,
+    ASSISTANTS_TAG,
   ],
   endpoints: () => ({}),
 });

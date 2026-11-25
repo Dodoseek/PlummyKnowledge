@@ -1,5 +1,8 @@
 import type { RouteObject } from 'react-router';
 
+import { AssistantDetailPage } from '../features/assistants/AssistantDetailPage';
+import { AssistantsAdminPage } from '../features/assistants/AssistantsAdminPage';
+import { AssistantsPage } from '../features/assistants/AssistantsPage';
 import { AccountPage } from '../features/account/AccountPage';
 import { GroupDetailPage } from '../features/admin/GroupDetailPage';
 import { GroupsPage } from '../features/admin/GroupsPage';
@@ -38,6 +41,8 @@ export const routes: RouteObject[] = [
           // Visible knowledge bases are filtered by the backend from the session's access.
           { path: 'knowledge-bases', element: <KnowledgeBasesPage /> },
           { path: 'knowledge-bases/:kbId', element: <KnowledgeBasePage /> },
+          // The backend lists only the assistants the session can use (ADR-005).
+          { path: 'assistants', element: <AssistantsPage /> },
           // Admin pages hide themselves without the permission; the backend enforces it on every request.
           { path: 'admin/users', element: <UsersPage /> },
           { path: 'admin/users/:userId', element: <UserDetailPage /> },
@@ -46,6 +51,8 @@ export const routes: RouteObject[] = [
           { path: 'admin/providers', element: <ProvidersPage /> },
           { path: 'admin/providers/:providerId', element: <ProviderDetailPage /> },
           { path: 'admin/embedding-profiles', element: <EmbeddingProfilesPage /> },
+          { path: 'admin/assistants', element: <AssistantsAdminPage /> },
+          { path: 'admin/assistants/:assistantId', element: <AssistantDetailPage /> },
         ],
       },
       { path: '*', element: <NotFoundPage /> },

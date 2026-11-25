@@ -9,7 +9,7 @@ export function AppLayout() {
     <Flex direction="column" minH="100vh">
       <Box as="header" borderBottomWidth="1px" py={3}>
         <Container maxW="container.lg">
-          <Flex align="center" justify="space-between">
+          <Flex align="center" justify="space-between" gap={4}>
             <Heading as={RouterLink} to="/" size="md" color="brand.500">
               PlummyKnowledge
             </Heading>

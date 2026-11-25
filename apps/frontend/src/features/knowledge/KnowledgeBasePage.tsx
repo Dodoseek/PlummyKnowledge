@@ -38,6 +38,7 @@ import { ConfirmButton, Pager } from '../admin/components';
 import { useCursorPager, type CursorPager } from '../admin/useCursorPager';
 import { AccessBadge, DocumentStatusBadge, IndexingSummary } from './components';
 import { formatBytes, ingestionErrorMessage } from './format';
+import { KnowledgeBaseAccessCard, KnowledgeBaseSettingsCard } from './KnowledgeBaseSettings';
 import { SearchCard } from './SearchCard';
 import {
   isInProgress,
@@ -324,6 +325,8 @@ export function KnowledgeBasePage() {
       <SearchCard kbId={kbId} />
       {canManage && <UploadCard kbId={kbId} />}
       <DocumentsCard kbId={kbId} canManage={canManage} pager={pager} documents={documents} />
+      {canManage && <KnowledgeBaseSettingsCard kb={kb.data} />}
+      {canManage && <KnowledgeBaseAccessCard kbId={kbId} />}
     </Stack>
   );
 }

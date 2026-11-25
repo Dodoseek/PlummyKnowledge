@@ -26,10 +26,15 @@ export function UserMenu() {
   };
 
   return (
-    <HStack spacing={4} as="nav" aria-label="Main">
+    <HStack spacing={4} as="nav" aria-label="Main" flexWrap="wrap" justify="flex-end" rowGap={1}>
       <Link as={RouterLink} to="/knowledge-bases" fontSize="sm">
         Knowledge bases
       </Link>
+      {(can(PERMISSIONS.chatUse) || can(PERMISSIONS.assistantsManage)) && (
+        <Link as={RouterLink} to="/assistants" fontSize="sm">
+          Assistants
+        </Link>
+      )}
       {can(PERMISSIONS.usersRead) && (
         <Link as={RouterLink} to="/admin/users" fontSize="sm">
           Users
@@ -43,6 +48,11 @@ export function UserMenu() {
       {can(PERMISSIONS.providersRead) && (
         <Link as={RouterLink} to="/admin/providers" fontSize="sm">
           AI providers
+        </Link>
+      )}
+      {can(PERMISSIONS.assistantsManage) && (
+        <Link as={RouterLink} to="/admin/assistants" fontSize="sm">
+          Manage assistants
         </Link>
       )}
       <Link as={RouterLink} to="/account" fontSize="sm" data-testid="current-user">
