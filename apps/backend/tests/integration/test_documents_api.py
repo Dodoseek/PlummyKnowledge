@@ -27,6 +27,7 @@ from plummy.application.ingestion.maintenance import (
     SweepDeletedDocuments,
 )
 from plummy.application.ingestion.pipeline import RunOutcome
+from plummy.application.sources.sync import ScheduleSyncs
 from plummy.application.storage import StorageArea, StorageKey
 from plummy.composition import MaintenanceServices
 from plummy.infrastructure.clock import SystemClock
@@ -83,6 +84,7 @@ async def maintenance(env: Env) -> AsyncIterator[MaintenanceServices]:
             requeue=RequeueJobs(uow, jobs, clock),
             cleanup_quarantine=CleanupQuarantine(env.storage, clock, ttl=env.harness.settings.quarantine_ttl),
             sweep_chat=SweepChat(uow, clock, timeout_seconds=120),
+            schedule_syncs=ScheduleSyncs(uow, jobs, clock),
         )
     finally:
         await engine.dispose()

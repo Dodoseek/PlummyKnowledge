@@ -4,7 +4,7 @@ credentials show only the account, the granted scopes and their state."""
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -12,8 +12,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from plummy.application.pagination import Page
 from plummy.application.sources.ports import BrowseKind, BrowsePage
 from plummy.application.sources.use_cases import DataSourceView, ValidationReport, ValidationStatus
+from plummy.domain.documents import JobStatus
 from plummy.domain.knowledge import DataSourceStatus, DataSourceType
-from plummy.domain.sources import CredentialStatus
+from plummy.domain.sources import CredentialStatus, SyncJob, SyncMode, SyncTrigger
 
 MAX_NAME_INPUT_LENGTH = 400
 
@@ -170,4 +171,50 @@ class ValidationResponse(BaseModel):
             error_code=report.error_code,
             account_label=report.account_label,
             folder_accessible=report.folder_accessible,
+        )
+
+
+class SyncRequest(_Request):
+    mode: Literal["incremental", "reconciliation"] = "incremental"
+
+    def sync_mode(self) -> SyncMode:
+        return SyncMode(self.mode)
+
+
+class SyncErrorResponse(BaseModel):
+    code: str
+
+
+class SyncJobResponse(BaseModel):
+    """A sync job; ``mode`` is ``initial`` when the source had no cursor yet (a full listing)."""
+
+    id: UUID
+    type: Literal["sync"] = "sync"
+    data_source_id: UUID
+    trigger: SyncTrigger
+    mode: SyncMode
+    status: JobStatus
+    stats: dict[str, int]
+    attempt: int
+    max_attempts: int
+    error: SyncErrorResponse | None
+    queued_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+
+    @classmethod
+    def build(cls, job: SyncJob) -> SyncJobResponse:
+        return cls(
+            id=job.id,
+            data_source_id=job.data_source_id,
+            trigger=job.trigger,
+            mode=job.mode,
+            status=job.status,
+            stats=job.stats.as_dict(),
+            attempt=job.attempt,
+            max_attempts=job.max_attempts,
+            error=SyncErrorResponse(code=job.error_code) if job.error_code else None,
+            queued_at=job.queued_at,
+            started_at=job.started_at,
+            finished_at=job.finished_at,
         )

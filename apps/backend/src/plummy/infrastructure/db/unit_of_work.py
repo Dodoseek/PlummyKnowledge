@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from types import TracebackType
 from typing import Any, Self
@@ -131,6 +131,7 @@ from plummy.infrastructure.db.models import (
     RolePermissionModel,
     SecretReferenceModel,
     SessionModel,
+    SyncJobModel,
     UserGroupModel,
     UserModel,
     UserRoleModel,
@@ -1696,6 +1697,25 @@ class SqlDataSourceRepository:
         )
         return await paginate(self._db, statement, DataSourceModel, page, _data_source)
 
+    async def due_for_sync(self, now: datetime, *, limit: int) -> list[UUID]:
+        active_job = exists().where(
+            SyncJobModel.data_source_id == DataSourceModel.id,
+            SyncJobModel.status.in_((str(JobStatus.QUEUED), str(JobStatus.RUNNING))),
+        )
+        rows = await self._db.scalars(
+            select(DataSourceModel.id)
+            .where(
+                DataSourceModel.status == str(DataSourceStatus.ACTIVE),
+                DataSourceModel.deleted_at.is_(None),
+                DataSourceModel.next_sync_at.is_not(None),
+                DataSourceModel.next_sync_at <= now,
+                ~active_job,
+            )
+            .order_by(DataSourceModel.next_sync_at)
+            .limit(limit)
+        )
+        return list(rows)
+
     async def detach(self, source_id: UUID) -> None:
         await self._db.execute(
             delete(KnowledgeBaseSourceModel).where(KnowledgeBaseSourceModel.data_source_id == source_id)
@@ -1716,6 +1736,8 @@ def _document(row: DocumentModel) -> Document:
         deleted_at=row.deleted_at,
         deletion_reason=DeletionReason(row.deletion_reason) if row.deletion_reason else None,
         purged_at=row.purged_at,
+        source_metadata={str(key): str(value) for key, value in row.source_metadata.items()},
+        external_etag=row.external_etag,
     )
 
 
@@ -1732,6 +1754,7 @@ def _version(row: DocumentVersionModel) -> DocumentVersion:
         created_at=row.created_at,
         updated_at=row.updated_at,
         page_count=row.page_count,
+        external_version=row.external_version,
         extracted_storage_key=row.extracted_storage_key,
         parser=row.parser,
         error_code=row.error_code,
@@ -1754,6 +1777,7 @@ class SqlDocumentRepository:
                 mime_type=document.mime_type,
                 processing_status=str(document.processing_status),
                 source_metadata=dict(document.source_metadata),
+                external_etag=document.external_etag,
                 created_at=document.created_at,
                 updated_at=document.updated_at,
             )
@@ -1888,6 +1912,7 @@ class SqlDocumentRepository:
                 mime_type=version.mime_type,
                 size_bytes=version.size_bytes,
                 storage_key=version.storage_key,
+                external_version=version.external_version,
                 status=str(version.status),
                 created_at=version.created_at,
                 updated_at=version.updated_at,
@@ -1898,6 +1923,71 @@ class SqlDocumentRepository:
     async def get_version(self, version_id: UUID) -> DocumentVersion | None:
         row = await self._db.get(DocumentVersionModel, version_id, populate_existing=True)
         return _version(row) if row is not None else None
+
+    async def live_by_external_id(
+        self, source_id: UUID, external_id: str, *, lock: bool = False
+    ) -> Document | None:
+        statement = select(DocumentModel).where(
+            DocumentModel.data_source_id == source_id,
+            DocumentModel.external_id == external_id,
+            DocumentModel.deleted_at.is_(None),
+        )
+        if lock:
+            statement = statement.with_for_update()
+        row = await self._db.scalar(statement.execution_options(populate_existing=True))
+        return _document(row) if row is not None else None
+
+    async def live_external_ids(self, source_id: UUID) -> dict[str, UUID]:
+        rows = await self._db.execute(
+            select(DocumentModel.external_id, DocumentModel.id).where(
+                DocumentModel.data_source_id == source_id, DocumentModel.deleted_at.is_(None)
+            )
+        )
+        return {str(external_id): document_id for external_id, document_id in rows}
+
+    async def version_with_checksum(
+        self, document_id: UUID, checksum_sha256: bytes
+    ) -> DocumentVersion | None:
+        row = await self._db.scalar(
+            select(DocumentVersionModel)
+            .where(
+                DocumentVersionModel.document_id == document_id,
+                DocumentVersionModel.checksum_sha256 == checksum_sha256,
+            )
+            .execution_options(populate_existing=True)
+        )
+        return _version(row) if row is not None else None
+
+    async def update_source_fields(
+        self,
+        document_id: UUID,
+        *,
+        filename: str,
+        external_etag: str | None,
+        source_metadata: Mapping[str, str],
+        at: datetime,
+    ) -> None:
+        await self._db.execute(
+            update(DocumentModel)
+            .where(DocumentModel.id == document_id)
+            .values(
+                filename=filename,
+                external_etag=external_etag,
+                source_metadata=dict(source_metadata),
+                updated_at=at,
+            )
+        )
+
+    async def has_ancestor(self, source_id: UUID, folder_id: str, *, outside: str | None = None) -> bool:
+        path = DocumentModel.source_metadata["ancestors"].astext
+        conditions = [
+            DocumentModel.data_source_id == source_id,
+            DocumentModel.deleted_at.is_(None),
+            path.like(f"%/{escape_like(folder_id)}/%", escape="\\"),
+        ]
+        if outside is not None:
+            conditions.append(path.not_like(f"{escape_like(outside)}%", escape="\\"))
+        return bool(await self._db.scalar(select(exists().where(*conditions))))
 
     async def set_status(self, document_id: UUID, status: DocumentStatus, *, at: datetime) -> None:
         await self._db.execute(

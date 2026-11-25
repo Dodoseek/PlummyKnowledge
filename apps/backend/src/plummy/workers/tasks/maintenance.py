@@ -19,6 +19,7 @@ from plummy.workers.app import (
     CLEANUP_QUARANTINE_TASK,
     PURGE_TASK,
     REQUEUE_JOBS_TASK,
+    SCHEDULE_SYNCS_TASK,
     SWEEP_CHAT_TASK,
     SWEEP_DELETED_TASK,
     VECTOR_INDEX_TASK,
@@ -69,6 +70,11 @@ def _sweep_chat(task: Any) -> int:
     return _retrying(task, lambda: _maintenance(lambda s: s.sweep_chat.execute()), countdown=60)
 
 
+def _schedule_syncs(task: Any) -> int:
+    """ADR-020 §8: sync jobs for sources whose time has come; lost and stalled jobs are sent again."""
+    return _retrying(task, lambda: _maintenance(lambda s: s.schedule_syncs.execute()), countdown=30)
+
+
 run_ensure_vector_index = shared_task(
     name=VECTOR_INDEX_TASK, bind=True, max_retries=10, soft_time_limit=60 * 60, time_limit=61 * 60
 )(_ensure_vector_index)
@@ -79,3 +85,4 @@ run_cleanup_quarantine = shared_task(name=CLEANUP_QUARANTINE_TASK, bind=True, ma
 run_requeue_jobs = shared_task(name=REQUEUE_JOBS_TASK, bind=True, max_retries=2)(_requeue_jobs)
 run_sweep_deleted = shared_task(name=SWEEP_DELETED_TASK, bind=True, max_retries=2)(_sweep_deleted)
 run_sweep_chat = shared_task(name=SWEEP_CHAT_TASK, bind=True, max_retries=2)(_sweep_chat)
+run_schedule_syncs = shared_task(name=SCHEDULE_SYNCS_TASK, bind=True, max_retries=1)(_schedule_syncs)

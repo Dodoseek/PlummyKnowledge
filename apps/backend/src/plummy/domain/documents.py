@@ -98,6 +98,7 @@ class Document:
     created_at: datetime
     updated_at: datetime
     source_metadata: dict[str, str] = field(default_factory=dict)
+    external_etag: str | None = None  # the source's revision of the content (a sync compares it, ADR-020 §8)
     deleted_at: datetime | None = None
     deletion_reason: DeletionReason | None = None
     purged_at: datetime | None = None
@@ -116,6 +117,7 @@ class DocumentVersion:
     created_at: datetime
     updated_at: datetime
     page_count: int | None = None
+    external_version: str | None = None  # the source's revision this version was downloaded at
     extracted_storage_key: str | None = None
     parser: str | None = None
     error_code: str | None = None

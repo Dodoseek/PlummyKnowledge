@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
@@ -410,3 +412,52 @@ async def test_source_sync_downgrade_and_upgrade_again(migrator: Migrator, datab
     await migrator.upgrade()
     assert await _query(database_url, exists) == [True]
     assert await _query(database_url, columns) == [1]
+
+
+_DOCUMENT = text(
+    "INSERT INTO documents (id, data_source_id, external_id, filename, deleted_at, deletion_reason) "
+    "VALUES (gen_random_uuid(), :source, 'drive-file-1', 'a.txt', :deleted, :reason)"
+)
+
+
+async def test_external_ids_are_unique_among_live_documents(migrator: Migrator, database_url: str) -> None:
+    # 0016: a file restored in the source gets a new document beside the deleted one waiting for its purge.
+    await migrator.upgrade()
+    engine = create_async_engine(database_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO data_sources (id, type, name, status) "
+                    "VALUES (:source, 'google_drive', 'Drive', 'active')"
+                ),
+                {"source": _SOURCE},
+            )
+            await connection.execute(
+                _DOCUMENT,
+                {
+                    "source": _SOURCE,
+                    "deleted": datetime(2026, 11, 26, tzinfo=UTC),
+                    "reason": "remote_deleted",
+                },
+            )
+            await connection.execute(_DOCUMENT, {"source": _SOURCE, "deleted": None, "reason": None})
+        with pytest.raises(DBAPIError, match="uq_documents_live_external_id"):
+            async with engine.begin() as connection:
+                await connection.execute(_DOCUMENT, {"source": _SOURCE, "deleted": None, "reason": None})
+    finally:
+        await engine.dispose()
+
+
+async def test_live_external_id_index_downgrade_and_upgrade_again(
+    migrator: Migrator, database_url: str
+) -> None:
+    await migrator.upgrade()
+    await migrator.downgrade("0015")
+    constraint = (
+        "SELECT count(*) FROM pg_constraint WHERE conname = 'uq_documents_data_source_id_external_id'"
+    )
+    index = "SELECT count(*) FROM pg_indexes WHERE indexname = 'uq_documents_live_external_id'"
+    assert (await _query(database_url, constraint), await _query(database_url, index)) == ([1], [0])
+    await migrator.upgrade()
+    assert (await _query(database_url, constraint), await _query(database_url, index)) == ([0], [1])

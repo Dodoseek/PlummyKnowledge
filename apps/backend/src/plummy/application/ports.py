@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from types import TracebackType
@@ -27,7 +27,7 @@ from plummy.domain.documents import (
 from plummy.domain.identity import Group, InstanceState, SessionRevokeReason, User, UserSession, UserStatus
 from plummy.domain.knowledge import DataSource, KbAccessLevel, KbGrant, KnowledgeBase
 from plummy.domain.secrets import SecretKind, SecretValue
-from plummy.domain.sources import SourceCredentials
+from plummy.domain.sources import SourceCredentials, SyncJob
 
 
 class Clock(Protocol):
@@ -657,6 +657,11 @@ class DataSourceRepository(Protocol):
         """Removes the source from its knowledge base (on deletion)."""
         ...
 
+    async def due_for_sync(self, now: datetime, *, limit: int) -> list[UUID]:
+        """Active, non-deleted sources whose ``next_sync_at`` has come and that have no active sync job,
+        the longest overdue first."""
+        ...
+
 
 class SourceCredentialRepository(Protocol):
     async def get(self, source_id: UUID) -> SourceCredentials | None: ...
@@ -669,8 +674,37 @@ class SourceCredentialRepository(Protocol):
 
 
 class SyncJobRepository(Protocol):
+    async def add(self, job: SyncJob) -> None:
+        """Raises :class:`UniqueViolationError` when the source already has an active job (the partial
+        unique index); callers lock the source row and check :meth:`active_for_source` first."""
+        ...
+
+    async def get(self, job_id: UUID) -> SyncJob | None: ...
+
+    async def get_for_update(self, job_id: UUID) -> SyncJob | None:
+        """Locks the row (after the source row: the order every writer uses)."""
+        ...
+
+    async def save(self, job: SyncJob) -> None:
+        """Writes status, mode, cursors, stats, attempt, error and timestamps; ``updated_at`` too."""
+        ...
+
+    async def set_task_id(self, job_id: UUID, task_id: str | None) -> None: ...
+
+    async def active_for_source(self, source_id: UUID) -> SyncJob | None:
+        """The queued or running job of the source, if any."""
+        ...
+
     async def cancel_active(self, source_id: UUID, *, error_code: str, at: datetime) -> int:
         """Queued or running jobs of the source become ``cancelled``; how many."""
+        ...
+
+    async def unpublished(self, *, idle_since: datetime, limit: int) -> list[UUID]:
+        """``queued`` jobs without a task ID, unchanged since ``idle_since``: the broker never got them."""
+        ...
+
+    async def stalled(self, *, idle_since: datetime, limit: int) -> list[UUID]:
+        """``running`` jobs without a checkpoint since ``idle_since``: their worker died or was stopped."""
         ...
 
 
@@ -763,6 +797,39 @@ class DocumentRepository(Protocol):
         at: datetime,
     ) -> None:
         """Stage 7 result: where the normalized document is and which parser produced it."""
+        ...
+
+    async def live_by_external_id(
+        self, source_id: UUID, external_id: str, *, lock: bool = False
+    ) -> Document | None:
+        """The live document of the source with that source ID (unique among live documents)."""
+        ...
+
+    async def live_external_ids(self, source_id: UUID) -> dict[str, UUID]:
+        """Source ID -> document ID of every live document of the source."""
+        ...
+
+    async def version_with_checksum(
+        self, document_id: UUID, checksum_sha256: bytes
+    ) -> DocumentVersion | None:
+        """The version of the document with that content, if any (``UNIQUE (document_id, checksum)``)."""
+        ...
+
+    async def update_source_fields(
+        self,
+        document_id: UUID,
+        *,
+        filename: str,
+        external_etag: str | None,
+        source_metadata: Mapping[str, str],
+        at: datetime,
+    ) -> None:
+        """Name, revision and source metadata as the source reports them (a sync; no reindexing)."""
+        ...
+
+    async def has_ancestor(self, source_id: UUID, folder_id: str, *, outside: str | None = None) -> bool:
+        """Whether a live document of the source lies under the folder (``source_metadata.ancestors``);
+        with ``outside``, only documents whose stored path does not start with that prefix count."""
         ...
 
     async def activate_version(
@@ -947,6 +1014,10 @@ class JobQueue(Protocol):
 
     async def enqueue_purge(self, document_id: UUID) -> str:
         """``purge_document`` on the ``maintenance`` queue: derived data and files of a deleted document."""
+        ...
+
+    async def enqueue_sync(self, job_id: UUID) -> str:
+        """A sync job on the ``connectors`` queue (the worker with network and secrets, ADR-020 §8)."""
         ...
 
 

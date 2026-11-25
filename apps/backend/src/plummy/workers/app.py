@@ -25,15 +25,18 @@ DEFAULT_QUEUE = "default"
 INGESTION_QUEUE = "ingestion"
 EMBEDDINGS_QUEUE = "embeddings"
 MAINTENANCE_QUEUE = "maintenance"
+CONNECTORS_QUEUE = "connectors"  # sync of external sources: network and secrets, the ``worker`` (ADR-020 §8)
 INGESTION_TASK = "plummy.ingestion.run_job"  # stages 2-7, worker-ingestion (no network)
 INDEXING_TASK = "plummy.ingestion.index_job"  # stages 8-12, worker with egress to embedding providers
 VECTOR_INDEX_TASK = "plummy.maintenance.ensure_vector_index"
 PURGE_TASK = "plummy.maintenance.purge_document"
+SYNC_TASK = "plummy.connectors.sync"
 # Periodic tasks, sent by the single ``scheduler`` (Celery beat) process.
 CLEANUP_QUARANTINE_TASK = "plummy.maintenance.cleanup_quarantine"
 REQUEUE_JOBS_TASK = "plummy.maintenance.requeue_jobs"
 SWEEP_DELETED_TASK = "plummy.maintenance.sweep_deleted_documents"
 SWEEP_CHAT_TASK = "plummy.maintenance.sweep_chat"
+SCHEDULE_SYNCS_TASK = "plummy.maintenance.schedule_syncs"
 MAINTENANCE_TASKS = (
     VECTOR_INDEX_TASK,
     PURGE_TASK,
@@ -41,6 +44,7 @@ MAINTENANCE_TASKS = (
     REQUEUE_JOBS_TASK,
     SWEEP_DELETED_TASK,
     SWEEP_CHAT_TASK,
+    SCHEDULE_SYNCS_TASK,
 )
 # (task, interval in seconds). A run that is still waiting when the next one is due is dropped (``expires``).
 BEAT_SCHEDULE = (
@@ -48,6 +52,7 @@ BEAT_SCHEDULE = (
     (REQUEUE_JOBS_TASK, 5 * 60),
     (SWEEP_DELETED_TASK, 10 * 60),
     (SWEEP_CHAT_TASK, 5 * 60),
+    (SCHEDULE_SYNCS_TASK, 60),
 )
 RESULT_TTL_SECONDS = 24 * 60 * 60
 # Hard ceiling for any task; long-running tasks set their own limits explicitly.
@@ -60,6 +65,7 @@ TASK_MODULES = (
     "plummy.workers.tasks.system",
     "plummy.workers.tasks.ingestion",
     "plummy.workers.tasks.maintenance",
+    "plummy.workers.tasks.connectors",
 )
 
 
@@ -95,6 +101,7 @@ def celery_config(
         "task_routes": {
             INGESTION_TASK: {"queue": INGESTION_QUEUE},
             INDEXING_TASK: {"queue": EMBEDDINGS_QUEUE},
+            SYNC_TASK: {"queue": CONNECTORS_QUEUE},
             **{task: {"queue": MAINTENANCE_QUEUE} for task in MAINTENANCE_TASKS},
         },
         "beat_schedule": {

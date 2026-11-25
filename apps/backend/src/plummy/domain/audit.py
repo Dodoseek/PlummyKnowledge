@@ -77,6 +77,7 @@ class AuditAction(StrEnum):
     DATA_SOURCE_CONNECTED = "data_source.connected"
     DATA_SOURCE_OAUTH_FAILED = "data_source.oauth.failed"
     DATA_SOURCE_DISCONNECTED = "data_source.disconnected"
+    SYNC_REQUESTED = "sync.requested"
     NETWORK_EGRESS_DENIED = "network.egress.denied"
 
 

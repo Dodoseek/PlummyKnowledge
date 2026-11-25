@@ -24,7 +24,7 @@
 | Организация | Инсталляция принадлежит одной организации ([ADR-012](adr/0012-single-organization-deployment.md)): таблицы `organizations` и колонок `organization_id` нет; внешние ключи — обычные `(<fk>) REFERENCES parent(id)`. |
 | Foreign keys | Обязательны (§9). `ON DELETE` по умолчанию `RESTRICT`; каскад — только для чисто зависимых связующих таблиц. Удаление данных идёт через lifecycle-jobs, а не каскады. |
 | Индексы | По `status`, `source_id` (`data_source_id`), `document_id`, timestamps (§9). |
-| External IDs | Unique в пределах source: `UNIQUE (data_source_id, external_id)` (§9). |
+| External IDs | Unique среди живых документов source: `uq_documents_live_external_id (data_source_id, external_id) WHERE deleted_at IS NULL` (`0016`, §9). |
 | Timestamps | `created_at timestamptz NOT NULL DEFAULT now()`, `updated_at timestamptz NOT NULL`; все времена — UTC. |
 | Soft delete | `deleted_at timestamptz NULL`. Soft delete **не должен** оставлять данные доступными для retrieval (§8 Retention). |
 | Enum | `text` + `CHECK (... IN (...))` вместо PostgreSQL `ENUM` — проще миграции. |
@@ -396,8 +396,8 @@ SELECT NOT EXISTS (
 Локальная загрузка тоже является источником ([ADR-008](adr/0008-unified-document-ingestion.md)): при создании KB
 автоматически создаётся `data_sources(type='upload')` и связь в `knowledge_base_sources`. Upload-источник нельзя
 подключить к другой KB, создать или удалить через API отдельно — он живёт и удаляется вместе со своей KB. Это сохраняет
-KB-level доступ (ADR-012), обеспечивает один ingestion pipeline (§22 п.3) и единое правило
-`UNIQUE (data_source_id, external_id)`. Для `upload` `external_id` генерирует сервер; credentials и cursor не
+KB-level доступ (ADR-012), обеспечивает один ingestion pipeline (§22 п.3) и единое правило уникальности
+`(data_source_id, external_id)` среди живых документов. Для `upload` `external_id` генерирует сервер; credentials и cursor не
 используются.
 
 **Правила удаления источника:** `deleted_at` → все документы источника проходят lifecycle удаления документа (§8);
@@ -430,15 +430,15 @@ credentials удаляются немедленно; строки `knowledge_bas
 | Колонка | Тип | Описание |
 |---|---|---|
 | `data_source_id` | `uuid` | Source ID (§5) |
-| `external_id` | `text` | ID файла в источнике; для upload — генерируется сервером. `UNIQUE (data_source_id, external_id)` (§9) |
+| `external_id` | `text` | ID файла в источнике; для upload — генерируется сервером. Уникален среди живых документов source (`uq_documents_live_external_id … WHERE deleted_at IS NULL`, `0016`): восстановленный в источнике файл получает новый документ рядом с удалённым, ожидающим purge |
 | `filename` | `text` | Исходное имя — только для отображения, **никогда** не путь в storage (§12) |
 | `mime_type` | `text` | Определённый по содержимому |
 | `external_path` | `text` | Путь в источнике (для UI) |
-| `external_etag` | `text` | ETag/version в источнике (§7) |
+| `external_etag` | `text` | Revision в источнике (`md5:<checksum>` или `v:<version>` для Google-форматов); sync сравнивает её, чтобы не скачивать неизменённый файл |
 | `current_version_id` | `uuid` | Версия, участвующая в retrieval; FK `document_versions` (deferrable) |
 | `processing_status` | `text` | `pending` \| `processing` \| `indexed` \| `failed` \| `skipped` (§5) |
 | `source_created_at`, `source_modified_at` | `timestamptz` | Timestamps источника (§5) |
-| `source_metadata` | `jsonb` | Metadata оригинального источника (владелец, MIME источника, revision, web URL — только для отображения) ([ADR-008](adr/0008-unified-document-ingestion.md)) |
+| `source_metadata` | `jsonb` | Metadata оригинального источника (MIME источника, `modified_at`; `ancestors` — цепочка ID папок от выбранной папки, `/root/…/parent/`, по ней sync находит документы под перемещённой папкой) ([ADR-008](adr/0008-unified-document-ingestion.md), [ADR-020](adr/0020-google-drive-connector.md) §8) |
 | `deleted_at` | `timestamptz` | Soft delete → немедленное исключение из retrieval |
 | `deletion_reason` | `text` | `user` \| `remote_deleted` \| `out_of_scope` \| `source_deleted` \| `kb_deleted` |
 | `purged_at` | `timestamptz` | Производные данные удалены по retention |
@@ -457,7 +457,7 @@ credentials удаляются немедленно; строки `knowledge_bas
 | `page_count` | `integer` | |
 | `storage_key` | `text` | Ключ оригинала (сгенерирован сервером) |
 | `extracted_storage_key` | `text` | Нормализованная структура / extracted text |
-| `external_version` | `text` | ETag/revision источника |
+| `external_version` | `text` | Revision источника, с которой скачана версия |
 | `parser` | `text` | Например `docling@<version>` |
 | `status` | `text` | `pending` \| `processing` \| `ready` \| `failed` \| `outdated` \| `deleted` |
 | `error_code` | `text` | |
@@ -643,7 +643,7 @@ Snapshot metadata на момент ответа, чтобы история ос
 | `mode` | `text` | `initial` \| `incremental` \| `reconciliation` |
 | `status` | `text` | Как у `ingestion_jobs` |
 | `cursor_before`, `cursor_after` | `text` | Checkpoint |
-| `stats` | `jsonb` | added / updated / deleted / skipped / failed |
+| `stats` | `jsonb` | added / updated / renamed / deleted / skipped / failed |
 | `attempt`, `max_attempts` | `integer` | |
 | `celery_task_id` | `text` | Опубликованная задача |
 | `error_code`, `error_message` | `text` | Код `^[a-z_]{1,64}$`, сообщение ≤ 500, без имён файлов и ответов провайдера |
@@ -727,7 +727,9 @@ Blueprint требует **определить** lifecycle и сроки; ко�
   `0006` (`groups`, ссылки активации), `0007` (`secret_references`), `0008` (AI-провайдеры, модели, embedding
   profiles), `0009` (knowledge bases, источники, документы, версии, chunks, embeddings, `ingestion_jobs`), `0010`
   (`ingestion_jobs.updated_at` и индекс неопубликованных jobs), `0011` (`document_chunks.search_vector`, ADR-018),
-  `0012` (GIN-индекс `search_vector`, `CONCURRENTLY`).
+  `0012` (GIN-индекс `search_vector`, `CONCURRENTLY`), `0013` (ассистенты), `0014` (диалоги, сообщения, цитаты,
+  generation runs), `0015` (sync state источников, `data_source_credentials`, `sync_jobs`, одна KB на источник),
+  `0016` (уникальность `external_id` только среди живых документов).
 
 ## 10. Открытые вопросы
 

@@ -367,7 +367,10 @@ class DataSourceConnector(Protocol):          # application/sources/ports.py
 
 Access token получает вызывающий (`AccessTokens` в `application/sources/connection.py`: refresh по сохранённому
 refresh token, отказ grant → credentials `revoked`, источник `error`) и передаёт в каждый вызов; коннектор его не
-хранит. Рекурсия обхода, область папки и checkpoint — в sync engine, не в адаптере.
+хранит. Рекурсия обхода, область папки и checkpoint — в sync engine (`application/sources/sync.py`: `RunSyncJob` на
+очереди `connectors`, `ScheduleSyncs` из Celery beat; постановка jobs — `application/sources/jobs.py`), не в адаптере.
+Скачанный файл кладётся в quarantine и становится версией документа с ingestion job — дальше тот же pipeline, что у
+upload ([ADR-008](adr/0008-unified-document-ingestion.md)).
 
 Реальный контракт включает (§7): pagination, cancellation, retries, rate limits, typed errors, ETag/version,
 capabilities. Для источника типа `upload` коннектор не нужен: стадия «получение документа» берёт поток из HTTP-запроса,

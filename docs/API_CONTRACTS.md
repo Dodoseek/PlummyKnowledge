@@ -97,7 +97,7 @@
 | 405 | `method_not_allowed` | Метод не поддерживается маршрутом; заголовок `Allow` |
 | 409 | `conflict` | Конфликт состояния (уникальность, версия) |
 | 409 | `idempotency_key_mismatch` | Тот же `Idempotency-Key` с другим телом запроса |
-| 409 | `sync_already_running` | Для источника уже есть активный sync (§7) |
+| 409 | `sync_in_progress` | Для источника уже есть активный sync (§7, [ADR-020](adr/0020-google-drive-connector.md)) |
 | 409 | `email_taken` | Email уже занят пользователем, который не удалён |
 | 409 | `group_name_taken` | Имя группы (без учёта регистра) уже занято |
 | 409 | `last_administrator` | Операция оставила бы инсталляцию без активного администратора |
@@ -472,7 +472,7 @@
 - Тест отвечает `200`: `{ "status", "latency_ms", "tested_at", "expected_dimensions", "actual_dimensions", "error" }`;
   несовпадение размерности — `error.code = dimension_mismatch`.
 
-### 2.9 `data-sources` (§7) — реализованы list, create, get, patch, delete, OAuth, disconnect, validate и browse; `sync` — шаг 9.4
+### 2.9 `data-sources` (§7) — реализованы list, create, get, patch, delete, OAuth, disconnect, validate, browse и sync
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
@@ -536,6 +536,18 @@ KB, иначе `404`; без OAuth client в Instance Settings — `409 connecto
 - Сбой провайдера в `browse`/`PATCH` — `502` с кодом коннектора (`connector_unavailable`, `connector_rate_limited`,
   `connector_quota_exceeded`, `connector_invalid_response`, `egress_denied`, …); отказ grant —
   `409 connector_auth_revoked`. Access token живёт только на время запроса и нигде не сохраняется.
+- `POST …/sync` с телом `{"mode": "incremental" | "reconciliation"}` (по умолчанию `incremental`; тело можно не
+  передавать) → `202` с sync job: `{"id", "type": "sync", "data_source_id", "trigger", "mode", "status", "stats",
+  "attempt", "max_attempts", "error": {"code"} | null, "queued_at", "started_at", "finished_at"}`. Без сохранённого
+  курсора `mode` становится `initial` (полный обход). Требует `data_sources.sync` и `manage` к KB источника.
+  Ошибки: `409 sync_in_progress` (уже есть `queued`/`running` job), `409 source_not_connected`,
+  `409 connector_auth_revoked`, `409 source_not_active` (нет папки, `paused`, `disconnected`), для `upload` —
+  `409 upload_source_managed_by_kb`, `mode = initial` → `422`; лимит `sync` — 6 запросов в час на источник
+  (`429 rate_limited` + `Retry-After`). Audit `sync.requested` с `sync_job_id` и `mode`.
+- Начальная синхронизация ставится сама, когда источник становится `active` (выбрана папка при валидных
+  credentials или подключение источника с выбранной папкой); смена папки отменяет активный job
+  (`source_reconfigured`) и ставит полный обход новой; `disconnect` и `DELETE` отменяют активные jobs. Дальше
+  scheduler ставит инкрементальную синхронизацию по `sync.next_sync_at` и раз в сутки — reconciliation.
 - `credentials` — `null`, пока источник не подключён; токены и ссылка на секрет не возвращаются никогда.
 - `DELETE` → `200 {"documents_deleted": n}`: документы источника удаляются с purge, credentials удаляются,
   активные sync jobs отменяются, refresh token отзывается у провайдера после commit (best effort).
@@ -859,7 +871,8 @@ assistant_unavailable`; `404 not_found` (чужой или несуществу�
 | POST | `/api/v1/jobs/{type}/{id}/retry` | Повтор `failed`/`dead` job | `jobs.manage` | auth | Idem | `job.retried` | expensive |
 | POST | `/api/v1/jobs/{type}/{id}/cancel` | Отмена `queued`/`running` | `jobs.manage` | auth | — | `job.cancelled` | — |
 
-`{type}`: `ingestion` \| `sync`. Sync jobs появятся с коннекторами: сейчас `type=sync` возвращает пустой список.
+`{type}`: `ingestion` \| `sync`. Sync jobs создаются с шага 9.4 (их состояние — в ответе `POST /data-sources/{id}/sync`
+и в `sync` карточки источника); в `/jobs` они появятся с шагом 9.5, до этого `type=sync` возвращает пустой список.
 `cancel` и `Idempotency-Key` для retry не реализованы (jobs отменяются удалением документа). Retry невозможен →
 `409 job_not_retryable`.
 

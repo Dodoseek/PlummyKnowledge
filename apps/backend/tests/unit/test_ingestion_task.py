@@ -11,6 +11,7 @@ import pytest
 from plummy.application.ingestion.pipeline import RunOutcome
 from plummy.workers.app import (
     CLEANUP_QUARANTINE_TASK,
+    CONNECTORS_QUEUE,
     EMBEDDINGS_QUEUE,
     INDEXING_TASK,
     INGESTION_QUEUE,
@@ -18,8 +19,10 @@ from plummy.workers.app import (
     MAINTENANCE_QUEUE,
     PURGE_TASK,
     REQUEUE_JOBS_TASK,
+    SCHEDULE_SYNCS_TASK,
     SWEEP_CHAT_TASK,
     SWEEP_DELETED_TASK,
+    SYNC_TASK,
     VECTOR_INDEX_TASK,
     celery_config,
 )
@@ -100,13 +103,21 @@ def test_tasks_are_routed_to_their_queues() -> None:
         REQUEUE_JOBS_TASK: {"queue": MAINTENANCE_QUEUE},
         SWEEP_DELETED_TASK: {"queue": MAINTENANCE_QUEUE},
         SWEEP_CHAT_TASK: {"queue": MAINTENANCE_QUEUE},
+        SCHEDULE_SYNCS_TASK: {"queue": MAINTENANCE_QUEUE},
+        SYNC_TASK: {"queue": CONNECTORS_QUEUE},  # the worker with network and secrets (ADR-020 §8)
     }
     assert config["accept_content"] == ["json"]
 
 
 def test_beat_sends_only_maintenance_tasks_that_expire() -> None:
     schedule: dict[str, Any] = celery_config(make_settings())["beat_schedule"]
-    assert set(schedule) == {CLEANUP_QUARANTINE_TASK, REQUEUE_JOBS_TASK, SWEEP_DELETED_TASK, SWEEP_CHAT_TASK}
+    assert set(schedule) == {
+        CLEANUP_QUARANTINE_TASK,
+        REQUEUE_JOBS_TASK,
+        SWEEP_DELETED_TASK,
+        SWEEP_CHAT_TASK,
+        SCHEDULE_SYNCS_TASK,
+    }
     for name, entry in schedule.items():
         assert entry["task"] == name
         assert 60 <= entry["schedule"] <= 3600

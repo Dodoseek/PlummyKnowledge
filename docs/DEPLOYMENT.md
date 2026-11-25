@@ -20,9 +20,9 @@
 | `redis` | `redis:8.6-alpine` | Redis (AOF) | — | `data` |
 | `migrate` | `apps/backend/Dockerfile` (`dev`) | Одноразово: `python -m plummy.cli secrets init-keyring` (только dev, §4), `alembic upgrade head`, затем `python -m plummy.cli setup init-token` (§6); API стартует только после успешного завершения | — | `data` |
 | `backend` | `apps/backend/Dockerfile` (`dev`) | FastAPI, `uvicorn --reload`; healthcheck = `/api/v1/health/ready` | `127.0.0.1:8000` | `data`, `edge` |
-| `worker` | `apps/backend/Dockerfile` (`dev`) | Celery worker, очереди `default`, `embeddings`, `maintenance` (стадии 8–12 ingestion, purge, cleanup); healthcheck = `celery inspect ping`. Вызывает embedding-провайдеров, поэтому в сети `edge` (каждое соединение — через `SafeHttpClient`, ADR-007). Изменения кода — `docker compose restart worker` (без auto-reload) | — | `data`, `edge` |
+| `worker` | `apps/backend/Dockerfile` (`dev`) | Celery worker, очереди `default`, `embeddings`, `maintenance`, `connectors` (стадии 8–12 ingestion, purge, cleanup, синхронизация внешних источников — ADR-020); healthcheck = `celery inspect ping`. Вызывает embedding-провайдеров и Google Drive, поэтому в сети `edge` (каждое соединение — через `SafeHttpClient`, ADR-007). Изменения кода — `docker compose restart worker` (без auto-reload) | — | `data`, `edge` |
 | `worker-ingestion` | `apps/backend/Dockerfile` (`ingestion-dev`: образ с Docling и его моделями, ~4 ГБ) | Celery worker, только очередь `ingestion` (стадии 2–7: проверки, тип, безопасность файла, storage, parsing), concurrency 1; parser — в дочернем процессе с timeout и rlimits; `mem_limit` = `INGESTION_MEMORY_LIMIT` (по умолчанию `4g`). Без key ring, секретов провайдеров и setup token. `docker compose restart worker-ingestion` после изменения кода | — | `data` |
-| `scheduler` | `apps/backend/Dockerfile` (`dev`) | Celery beat, ровно один экземпляр: cleanup quarantine (1 ч), повторная публикация `queued` jobs, не дошедших до брокера (5 мин), sweep удалённых документов для purge (10 мин), sweep чата — зависшие `streaming`-ответы и удалённые диалоги (5 мин) — в очередь `maintenance`. Только Redis; файл состояния расписания временный (`/tmp`) | — | `data` |
+| `scheduler` | `apps/backend/Dockerfile` (`dev`) | Celery beat, ровно один экземпляр: cleanup quarantine (1 ч), повторная публикация `queued` jobs, не дошедших до брокера (5 мин), sweep удалённых документов для purge (10 мин), sweep чата — зависшие `streaming`-ответы и удалённые диалоги (5 мин), планировщик синхронизации источников (1 мин: sync jobs по `next_sync_at`, раз в сутки reconciliation, повтор потерянных и зависших jobs) — в очередь `maintenance`. Только Redis; файл состояния расписания временный (`/tmp`) | — | `data` |
 | `frontend` | `apps/frontend/Dockerfile` (`dev`) | Vite dev server; `/api` проксируется на `backend` (same-origin, без CORS) | `127.0.0.1:5173` | `edge` |
 
 - Сеть `data` — `internal: true`; порты PostgreSQL и Redis не публикуются. Учётные данные БД в `compose.yaml` —
@@ -130,7 +130,7 @@ docker compose down --volumes
 | `nginx` | TLS, SPA, reverse proxy на API, SSE без буферизации | `edge` | `certs` (ro) |
 | `api` | FastAPI | `edge`, `data`, `egress`, `llm`* | — |
 | `worker-ingestion` | Parsing, chunking (очередь `ingestion`) | `data` | `quarantine`, `documents` (при local storage) |
-| `worker-io` | Embeddings, sync, maintenance (очереди `embeddings`, `sync`, `maintenance`); в dev compose — сервис `worker` (§0) | `data`, `egress`, `llm`* | `quarantine`, `documents` |
+| `worker-io` | Embeddings, sync, maintenance (очереди `embeddings`, `connectors`, `maintenance`); в dev compose — сервис `worker` (§0) | `data`, `egress`, `llm`* | `quarantine`, `documents` |
 | `scheduler` | Cleanup quarantine, requeue jobs, purge sweep (реализовано); позже расписания sync и reconciliation | `data` | — |
 | `migrate` | Одноразовый шаг: Alembic + `python -m plummy.cli setup init-token` | `data` | `bootstrap` |
 | `postgres` | PostgreSQL + pgvector | `data` | `postgres-data` |

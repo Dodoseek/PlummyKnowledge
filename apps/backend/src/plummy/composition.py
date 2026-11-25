@@ -113,6 +113,7 @@ from plummy.application.setup.use_cases import (
     ResetPassword,
 )
 from plummy.application.sources.ports import DataSourceConnector, OAuthClient
+from plummy.application.sources.sync import RunSyncJob, ScheduleSyncs
 from plummy.application.sources.use_cases import (
     BrowseDataSource,
     CompleteOAuth,
@@ -121,6 +122,7 @@ from plummy.application.sources.use_cases import (
     DisconnectDataSource,
     GetDataSource,
     ListDataSources,
+    RequestSync,
     StartOAuth,
     UpdateDataSource,
     ValidateDataSource,
@@ -179,6 +181,7 @@ from plummy.workers.app import DEFAULT_NAMESPACE
 
 logger = logging.getLogger(__name__)
 API_CONNECTOR_ATTEMPTS = 2  # a request waits for the provider: little room for backoff
+WORKER_CONNECTOR_ATTEMPTS = 5  # per request in a sync job (ADR-020 §8)
 
 
 @dataclass(frozen=True, slots=True)
@@ -314,6 +317,7 @@ class SourceServices:
     complete_oauth: CompleteOAuth
     validate: ValidateDataSource
     browse: BrowseDataSource
+    sync: RequestSync
 
 
 @dataclass(frozen=True, slots=True)
@@ -451,6 +455,34 @@ async def vector_index_runner(settings: Settings) -> AsyncIterator[EnsureVectorI
         await engine.dispose()
 
 
+@asynccontextmanager
+async def sync_runner(settings: Settings) -> AsyncIterator[RunSyncJob]:
+    """One sync job (the worker on the ``connectors`` queue): the provider through ``SafeHttpClient``, the
+    refresh token from the vault, the downloaded files into quarantine for the ingestion pipeline."""
+    clock = SystemClock()
+    vault = SecretVault(load_secret_cipher(settings), clock)
+    policy = load_egress_policy(settings)
+    engine = create_engine(settings, application_name="plummy-worker")
+    uow = SqlAlchemyUnitOfWorkFactory(create_session_factory(engine))
+    http = SafeHttpClient(policy, on_denied=EgressDenialAuditor(uow))
+    jobs = CeleryJobQueue(settings)
+    try:
+        yield RunSyncJob(
+            uow,
+            create_storage(settings),
+            clock,
+            vault,
+            oauth_clients(settings, http),
+            source_connectors(settings, http, max_attempts=WORKER_CONNECTOR_ATTEMPTS),
+            jobs,
+            max_bytes=settings.upload_max_bytes,
+        )
+    finally:
+        jobs.close()
+        await http.aclose()
+        await engine.dispose()
+
+
 @dataclass(frozen=True, slots=True)
 class MaintenanceServices:
     purge: PurgeDocument
@@ -458,6 +490,7 @@ class MaintenanceServices:
     requeue: RequeueJobs
     cleanup_quarantine: CleanupQuarantine
     sweep_chat: SweepChat
+    schedule_syncs: ScheduleSyncs
 
 
 @asynccontextmanager
@@ -475,6 +508,7 @@ async def maintenance_runner(settings: Settings) -> AsyncIterator[MaintenanceSer
             requeue=RequeueJobs(uow, jobs, clock),
             cleanup_quarantine=CleanupQuarantine(storage, clock, ttl=settings.quarantine_ttl),
             sweep_chat=SweepChat(uow, clock, timeout_seconds=settings.chat_generation_timeout_seconds),
+            schedule_syncs=ScheduleSyncs(uow, jobs, clock),
         )
     finally:
         jobs.close()
@@ -762,13 +796,14 @@ def build_resources(
             list=ListDataSources(uow),
             get=GetDataSource(uow),
             create=CreateDataSource(uow, clock, clients),
-            update=UpdateDataSource(uow, clock, vault, clients, connectors),
+            update=UpdateDataSource(uow, clock, vault, clients, connectors, jobs),
             delete=DeleteDataSource(uow, jobs, clock, vault, clients),
             disconnect=DisconnectDataSource(uow, clock, vault, clients),
             start_oauth=StartOAuth(uow, oauth_states, clients, redirect_uri),
-            complete_oauth=CompleteOAuth(uow, clock, vault, oauth_states, clients, redirect_uri),
+            complete_oauth=CompleteOAuth(uow, clock, vault, oauth_states, clients, redirect_uri, jobs),
             validate=ValidateDataSource(uow, clock, vault, clients, connectors, limiter),
             browse=BrowseDataSource(uow, clock, vault, clients, connectors),
+            sync=RequestSync(uow, jobs, limiter, clock),
         ),
         job_admin=JobServices(list=ListJobs(uow), get=GetJob(uow), retry=RetryJob(uow, jobs, limiter, clock)),
         secrets=vault,

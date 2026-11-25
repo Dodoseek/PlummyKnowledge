@@ -710,7 +710,14 @@ class DocumentModel(Base):
         ),
         CheckConstraint("(deleted_at IS NULL) = (deletion_reason IS NULL)", name="deletion_consistent"),
         CheckConstraint("jsonb_typeof(source_metadata) = 'object'", name="source_metadata_object"),
-        UniqueConstraint("data_source_id", "external_id"),
+        # Unique among live documents: a restored file gets a new document beside the deleted one (0016).
+        Index(
+            "uq_documents_live_external_id",
+            "data_source_id",
+            "external_id",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
         Index("ix_documents_data_source_id_created_at_id", "data_source_id", "created_at", "id"),
         Index("ix_documents_processing_status", "processing_status"),
         Index("ix_documents_deleted_at", "deleted_at"),

@@ -18,12 +18,14 @@ from typing import Final
 from uuid import UUID
 
 from plummy.application.audit import by_user
+from plummy.application.auth.throttle import Limit
 from plummy.application.errors import (
     ConflictError,
     InvalidInputError,
     InvalidQueryParameterError,
     NotFoundError,
     PermissionDeniedError,
+    RateLimitedError,
     ServiceUnavailableError,
 )
 from plummy.application.knowledge.access import require_kb_access
@@ -33,6 +35,7 @@ from plummy.application.ports import (
     JobQueue,
     JobQueueUnavailableError,
     RateLimiter,
+    RateLimiterUnavailableError,
     UnitOfWork,
     UnitOfWorkFactory,
 )
@@ -43,10 +46,18 @@ from plummy.application.sources.connection import (
     AccessTokens,
     ConnectorCallFailedError,
     ConnectorNotConfiguredError,
+    SourceAuthRevokedError,
+    SourceNotConnectedError,
     connector_failure,
     plausible_page_token,
     plausible_remote_id,
     provider_of,
+)
+from plummy.application.sources.jobs import (
+    CANCELLED_BY_RECONFIGURATION,
+    add_sync_job,
+    first_mode,
+    publish_sync,
 )
 from plummy.application.sources.oauth import (
     STATE_TTL_SECONDS,
@@ -84,10 +95,15 @@ from plummy.domain.knowledge import (
 from plummy.domain.secrets import SecretKind, SecretValue
 from plummy.domain.sources import (
     DEFAULT_SYNC_INTERVAL_MINUTES,
+    MANUAL_SYNCS_PER_HOUR,
     CredentialStatus,
     InvalidSyncIntervalError,
     SourceCredentials,
+    SyncJob,
+    SyncMode,
+    SyncTrigger,
     check_sync_interval,
+    next_sync_after,
     normalize_account_label,
 )
 
@@ -277,8 +293,10 @@ class UpdateDataSource:
         vault: SecretVault,
         clients: OAuthClients,
         connectors: Connectors,
+        queue: JobQueue,
     ) -> None:
         self._uow, self._clock, self._clients, self._connectors = uow, clock, clients, connectors
+        self._queue = queue
         self._tokens = AccessTokens(uow, clock, vault)
 
     async def execute(
@@ -308,17 +326,32 @@ class UpdateDataSource:
             _external(source)
             credentials = await uow.source_credentials.get(source.id)
             changed: list[str] = []
+            job: SyncJob | None = None
             if name is not None and name != source.name:
                 source.name = name
                 changed.append("name")
             if interval_changed and interval != source.sync_interval_minutes:
                 source.sync_interval_minutes = interval
-                if interval is None:
-                    source.next_sync_at = None
+                source.next_sync_at = (
+                    next_sync_after(source.last_sync_at, interval)
+                    if source.last_sync_at is not None
+                    else None
+                )
                 changed.append("sync_interval_minutes")
             if folder_changed and (folder.id if folder else folder_id) != source.config.get("folder_id"):
                 self._set_folder(source, folder, credentials)
                 changed.append("folder_id")
+                # The running sync belongs to the old folder; the new one is listed from scratch.
+                await uow.sync_jobs.cancel_active(source.id, error_code=CANCELLED_BY_RECONFIGURATION, at=now)
+                if source.status is DataSourceStatus.ACTIVE:
+                    job = await add_sync_job(
+                        uow,
+                        source,
+                        trigger=SyncTrigger.INITIAL,
+                        mode=SyncMode.INITIAL,
+                        requested_by=context.user_id,
+                        now=now,
+                    )
             if changed:
                 await uow.data_sources.save(source, at=now)
                 await uow.audit.record(
@@ -332,6 +365,8 @@ class UpdateDataSource:
                     )
                 )
             await uow.commit()
+        if job is not None:
+            await publish_sync(self._uow, self._queue, job.id)
         return DataSourceView(source, kb_id, credentials)
 
     async def _check_folder(self, source: DataSource, folder_id: str) -> _Folder:
@@ -587,9 +622,11 @@ class CompleteOAuth:
         states: OAuthStateStore,
         clients: OAuthClients,
         redirect_uri: str | None,
+        queue: JobQueue,
     ) -> None:
         self._uow, self._clock, self._vault = uow, clock, vault
         self._states, self._clients, self._redirect_uri = states, clients, redirect_uri
+        self._queue = queue
 
     async def execute(
         self, context: SecurityContext | None, client: ClientInfo, params: CallbackParams
@@ -698,6 +735,17 @@ class CompleteOAuth:
                 DataSourceStatus.ACTIVE if source.config.get("folder_id") else DataSourceStatus.PAUSED
             )
             source.last_error = None
+            job = None
+            if source.status is DataSourceStatus.ACTIVE:
+                trigger = SyncTrigger.INITIAL if source.sync_cursor is None else SyncTrigger.MANUAL
+                job = await add_sync_job(
+                    uow,
+                    source,
+                    trigger=trigger,
+                    mode=first_mode(source),
+                    requested_by=context.user_id,
+                    now=now,
+                )
             await uow.data_sources.save(source, at=now)
             await uow.audit.record(
                 by_user(
@@ -715,6 +763,8 @@ class CompleteOAuth:
             await uow.commit()
         if previous is not None and previous.reveal() != grant.refresh_token.reveal():
             await revoke_token(oauth, previous, source.id)
+        if job is not None:
+            await publish_sync(self._uow, self._queue, job.id)
 
     async def _record_failure(
         self,
@@ -749,6 +799,88 @@ class CompleteOAuth:
                 )
             await uow.audit.record(entry)
             await uow.commit()
+
+
+class SyncInProgressError(ConflictError):
+    """The source already has a queued or running sync job."""
+
+    code = "sync_in_progress"
+
+
+class SourceNotActiveError(ConflictError):
+    """The source cannot sync now: no folder chosen, paused or disconnected."""
+
+    code = "source_not_active"
+
+
+class RequestSync:
+    """``POST /data-sources/{id}/sync``: ``data_sources.sync`` and ``manage`` on the knowledge base; at most
+    :data:`MANUAL_SYNCS_PER_HOUR` per source. Without a saved cursor the sync is a full listing."""
+
+    def __init__(self, uow: UnitOfWorkFactory, queue: JobQueue, limiter: RateLimiter, clock: Clock) -> None:
+        self._uow, self._queue, self._limiter, self._clock = uow, queue, limiter, clock
+
+    async def execute(
+        self, context: SecurityContext, client: ClientInfo, source_id: UUID, mode: SyncMode
+    ) -> SyncJob:
+        context.require(Permission.DATA_SOURCES_SYNC)
+        if mode is SyncMode.INITIAL:
+            raise InvalidInputError("mode", "invalid_mode", "The mode must be incremental or reconciliation.")
+        async with self._uow() as uow:
+            source, _ = await _visible(uow, context, source_id, KbAccessLevel.MANAGE)
+            _external(source)
+            await self._check_ready(uow, source)
+            if await uow.sync_jobs.active_for_source(source.id) is not None:
+                raise SyncInProgressError("A sync of this source is already queued or running.")
+        await self._enforce_rate_limit(source_id)
+        now = self._clock.now()
+        async with self._uow() as uow:
+            source, kb_id = await _visible(uow, context, source_id, KbAccessLevel.MANAGE, lock=True)
+            await self._check_ready(uow, source)
+            trigger = SyncTrigger.RECONCILIATION if mode is SyncMode.RECONCILIATION else SyncTrigger.MANUAL
+            job = await add_sync_job(
+                uow, source, trigger=trigger, mode=mode, requested_by=context.user_id, now=now
+            )
+            if job is None:
+                raise SyncInProgressError("A sync of this source is already queued or running.")
+            await uow.audit.record(
+                by_user(
+                    context,
+                    client,
+                    AuditAction.SYNC_REQUESTED,
+                    target_type="data_source",
+                    target_id=source.id,
+                    details={
+                        "sync_job_id": str(job.id),
+                        "mode": str(job.mode),
+                        "knowledge_base_id": str(kb_id),
+                    },
+                )
+            )
+            await uow.commit()
+        await publish_sync(self._uow, self._queue, job.id)  # the scheduler sends it later if this fails
+        return job
+
+    @staticmethod
+    async def _check_ready(uow: UnitOfWork, source: DataSource) -> None:
+        credentials = await uow.source_credentials.get(source.id)
+        if credentials is not None and credentials.status is CredentialStatus.REVOKED:
+            raise SourceAuthRevokedError()
+        if credentials is None or credentials.status is not CredentialStatus.VALID:
+            raise SourceNotConnectedError()
+        if source.status is not DataSourceStatus.ACTIVE:
+            raise SourceNotActiveError("Choose a folder before syncing this source.")
+
+    async def _enforce_rate_limit(self, source_id: UUID) -> None:
+        limit = Limit(f"sync:source:{source_id.hex}:1h", MANUAL_SYNCS_PER_HOUR, 60 * 60)
+        try:
+            status = await self._limiter.hit(
+                limit.name, limit=limit.limit, window_seconds=limit.window_seconds
+            )
+        except RateLimiterUnavailableError:
+            raise ServiceUnavailableError() from None
+        if not status.allowed:
+            raise RateLimitedError(status.retry_after_seconds)
 
 
 # --- working with the provider ---------------------------------------------------------------------------

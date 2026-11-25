@@ -20,6 +20,8 @@ MAX_SYNC_INTERVAL_MINUTES: Final = 24 * 60
 RECONCILIATION_INTERVAL: Final = timedelta(days=1)
 MAX_SYNC_ATTEMPTS: Final = 5
 MAX_ACCOUNT_LABEL_LENGTH: Final = 320
+MAX_FOLDER_DEPTH: Final = 64  # levels below the synced folder; deeper items are out of scope (ADR-020 §8)
+MANUAL_SYNCS_PER_HOUR: Final = 6  # the ``sync`` rate-limit profile, per source (API_CONTRACTS.md §5)
 
 
 class CredentialStatus(StrEnum):

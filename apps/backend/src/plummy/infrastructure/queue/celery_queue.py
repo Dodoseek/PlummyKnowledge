@@ -11,6 +11,7 @@ from kombu.exceptions import OperationalError
 from plummy.application.ports import JobQueueUnavailableError
 from plummy.core.config import Settings
 from plummy.workers.app import (
+    CONNECTORS_QUEUE,
     DEFAULT_NAMESPACE,
     EMBEDDINGS_QUEUE,
     INDEXING_TASK,
@@ -18,6 +19,7 @@ from plummy.workers.app import (
     INGESTION_TASK,
     MAINTENANCE_QUEUE,
     PURGE_TASK,
+    SYNC_TASK,
     VECTOR_INDEX_TASK,
     close_celery_app,
     create_celery_app,
@@ -39,6 +41,9 @@ class CeleryJobQueue:
 
     async def enqueue_purge(self, document_id: UUID) -> str:
         return await self._send(PURGE_TASK, document_id, MAINTENANCE_QUEUE)
+
+    async def enqueue_sync(self, job_id: UUID) -> str:
+        return await self._send(SYNC_TASK, job_id, CONNECTORS_QUEUE)
 
     async def _send(self, task: str, object_id: UUID, queue: str) -> str:
         try:

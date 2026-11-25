@@ -7,15 +7,18 @@ from uuid import uuid4
 
 import pytest
 
+from plummy.application.sources.jobs import first_mode
 from plummy.domain.knowledge import DataSource, DataSourceStatus, DataSourceType
 from plummy.domain.sources import (
     InvalidSyncIntervalError,
+    SyncMode,
     SyncStats,
     check_sync_interval,
     next_sync_after,
     normalize_account_label,
     reconciliation_due,
 )
+from plummy.workers.tasks.connectors import MAX_RETRY_DELAY_SECONDS, RETRY_BACKOFF_SECONDS, retry_delay
 
 NOW = datetime(2026, 11, 26, 12, 0, tzinfo=UTC)
 
@@ -78,3 +81,27 @@ def test_upload_source_is_not_external() -> None:
 
     assert not source(DataSourceType.UPLOAD).is_external
     assert source(DataSourceType.GOOGLE_DRIVE).is_external
+
+
+def test_sync_retry_delay_follows_the_backoff_and_retry_after() -> None:
+    assert [retry_delay(n, None) for n in range(7)] == [*RETRY_BACKOFF_SECONDS, 3600, 3600]
+    assert retry_delay(0, 42.5) == 42  # the provider asks for longer than the first backoff step
+    assert retry_delay(2, 5.0) == RETRY_BACKOFF_SECONDS[2]  # never shorter than the backoff
+    assert retry_delay(0, 10**9) == MAX_RETRY_DELAY_SECONDS
+
+
+def test_first_sync_mode_depends_on_the_cursor() -> None:
+    now = datetime.now(UTC)
+    source = DataSource(
+        id=uuid4(),
+        type=DataSourceType.GOOGLE_DRIVE,
+        name="Drive",
+        status=DataSourceStatus.ACTIVE,
+        owner_knowledge_base_id=None,
+        created_by=None,
+        created_at=now,
+        updated_at=now,
+    )
+    assert first_mode(source) is SyncMode.INITIAL
+    source.sync_cursor = "42"
+    assert first_mode(source) is SyncMode.INCREMENTAL

@@ -20,6 +20,8 @@ from plummy.api.v1.data_sources.schemas import (
     DataSourceResponse,
     DeletionResponse,
     OAuthStartResponse,
+    SyncJobResponse,
+    SyncRequest,
     UpdateDataSourceRequest,
     ValidationResponse,
 )
@@ -41,6 +43,7 @@ MAX_CALLBACK_PARAM_LENGTH = 4096
 
 Reader = Annotated[SecurityContext, Depends(require_permission(Permission.DATA_SOURCES_READ))]
 Manager = Annotated[SecurityContext, Depends(require_permission(Permission.DATA_SOURCES_MANAGE))]
+Syncer = Annotated[SecurityContext, Depends(require_permission(Permission.DATA_SOURCES_SYNC))]
 
 
 @router.get(
@@ -150,6 +153,20 @@ async def disconnect_data_source(
     return DataSourceResponse.build(
         await resources.sources.disconnect.execute(context, client_info(request), source_id)
     )
+
+
+@router.post("/{source_id}/sync", response_model=SyncJobResponse, status_code=status.HTTP_202_ACCEPTED)
+async def sync_data_source(
+    source_id: UUID,
+    request: Request,
+    context: Syncer,
+    resources: ResourcesDep,
+    body: SyncRequest | None = None,
+) -> SyncJobResponse:
+    """Queues a sync job (``409 sync_in_progress`` while one is queued or running); the worker runs it."""
+    mode = (body or SyncRequest()).sync_mode()
+    job = await resources.sources.sync.execute(context, client_info(request), source_id, mode)
+    return SyncJobResponse.build(job)
 
 
 @router.post("/{source_id}/validate", response_model=ValidationResponse)
