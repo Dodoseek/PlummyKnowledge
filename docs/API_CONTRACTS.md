@@ -556,7 +556,7 @@ UI обязан показывать **фактические** `granted_scopes`
 }
 ```
 
-`score` — RRF-оценка (сумма `1/(60 + rank)` по веткам), `vector_rank`/`keyword_rank` — место в ветке или `null`.
+`score` — взвешенная RRF-оценка (сумма `weight/(60 + rank)` по веткам; вес vector 1,0, keyword 0,1), `vector_rank`/`keyword_rank` — место в ветке или `null`.
 Keyword-ветка ищет по **любому** слову запроса (стемминг русского и английского, операторы и кавычки — обычные
 символы, [ADR-018](adr/0018-full-text-search-configuration.md) §3).
 Одинаковый текст (`content_hash`) возвращается один раз. `keyword_query_empty: true` — запрос состоит только из

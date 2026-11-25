@@ -155,8 +155,8 @@ security gate (проверки безопасности **внутри** фаз
   87 вопросов), Recall@K/MRR/nDCG, `python -m plummy.cli eval run`; baseline на `bge-m3` (Ollama) —
   [docs/evaluation/baseline-2026-11.md](evaluation/baseline-2026-11.md): vector R@10 0,99 / MRR 0,89, hybrid
   R@10 0,99 / MRR 0,81, keyword R@10 0,94 / MRR 0,70. **Отклонения от плана:** citation precision и прочие
-  метрики генерации перенесены в harness Фазы 8 (нужны ответы LLM); равновесный RRF уступает vector в top-1 —
-  решение по весам fusion/режиму по умолчанию не принято; rate limit поиска — новый профиль `search`
+  метрики генерации перенесены в harness Фазы 8 (нужны ответы LLM); равновесный RRF уступал vector в top-1 —
+  после перебора fusion взвешена (vector 1,0, keyword 0,1): hybrid R@1 0,82 / MRR 0,90, на уровне vector; rate limit поиска — новый профиль `search`
   **[Proposed]**.)*
 
 ### Фаза 7 — Knowledge Bases и Assistants (§13, ADR-005)

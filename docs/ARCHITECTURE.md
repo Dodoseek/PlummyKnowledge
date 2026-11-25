@@ -501,7 +501,8 @@ sequenceDiagram
   (`mixed_embedding_profiles`). Ветки: vector (`infrastructure/db/retrieval.py`, выражение и предикат partial
   HNSW-индекса [ADR-017](adr/0017-vector-storage.md); точный перебор при < 10 000 кандидатов, иначе iterative
   scan) и FTS (совпадение по любому слову: `plainto_tsquery` с `&` → `|`, ранжирование `ts_rank`,
-  [ADR-018](adr/0018-full-text-search-configuration.md) §3; запрос из одних стоп-слов пропускает FTS). Далее RRF (`k = 60`), dedup по `content_hash`, top-k и бюджет
+  [ADR-018](adr/0018-full-text-search-configuration.md) §3; запрос из одних стоп-слов пропускает FTS). Далее взвешенный RRF (`k = 60`, вес vector 1,0, keyword 0,1 — по
+  baseline [docs/evaluation/](evaluation/baseline-2026-11.md)), dedup по `content_hash`, top-k и бюджет
   токенов (по умолчанию 8 chunks, 40 кандидатов на ветку, 8000 токенов). Текст запроса не логируется.
 - `application/retrieval/context.py`: `CitationRegistry` (`c1…cn` только для отобранных chunks),
   `build_chat_request` (system rules первыми, chunks — только в `ChatRequest.context`, который адаптеры

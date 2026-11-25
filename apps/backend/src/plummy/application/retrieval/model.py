@@ -28,7 +28,7 @@ MAX_TOP_K: Final = 50
 # Weighted RRF (ARCHITECTURE.md §9.4): chosen on the synthetic-v1 baseline, docs/evaluation/.
 DEFAULT_RRF_K: Final = 60
 DEFAULT_VECTOR_WEIGHT: Final = 1.0
-DEFAULT_KEYWORD_WEIGHT: Final = 1.0
+DEFAULT_KEYWORD_WEIGHT: Final = 0.1
 MAX_BRANCH_WEIGHT: Final = 10.0
 
 
