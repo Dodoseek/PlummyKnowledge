@@ -531,6 +531,7 @@ class AssistantModel(Base):
         CheckConstraint("max_history_messages BETWEEN 0 AND 100", name="max_history_messages"),
         CheckConstraint("max_output_tokens BETWEEN 1 AND 128000", name="max_output_tokens"),
         CheckConstraint("status IN ('active', 'disabled')", name="status"),
+        CheckConstraint("model_config_id IS NOT NULL OR deleted_at IS NOT NULL", name="model_config"),
         Index("uq_assistants_name_active", "name", unique=True, postgresql_where=text("deleted_at IS NULL")),
         Index("ix_assistants_created_at_id", "created_at", "id"),
         Index("ix_assistants_model_config_id", "model_config_id"),
@@ -541,8 +542,8 @@ class AssistantModel(Base):
     name: Mapped[str] = mapped_column(CITEXT(), nullable=False)
     description: Mapped[str | None] = mapped_column(Text(), nullable=True)
     instructions: Mapped[str] = mapped_column(Text(), nullable=False, server_default=text("''"))
-    model_config_id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True), ForeignKey("model_configs.id", ondelete="RESTRICT"), nullable=False
+    model_config_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("model_configs.id", ondelete="SET NULL"), nullable=True
     )
     embedding_config_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True),

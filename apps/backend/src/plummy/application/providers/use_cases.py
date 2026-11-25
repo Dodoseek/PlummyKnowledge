@@ -29,6 +29,7 @@ from plummy.application.errors import (
     EndpointNotAllowedError,
     InvalidInputError,
     ModelIdTakenError,
+    ModelInUseError,
     NotFoundError,
     ProviderInUseError,
     ProviderNameTakenError,
@@ -356,6 +357,8 @@ class DeleteProvider:
             provider = await load_provider(uow, provider_id, for_update=True)
             if await uow.embedding_profiles.count_for_provider(provider.id):
                 raise ProviderInUseError("The provider is used by an embedding profile.")
+            if await uow.assistants.count_using_provider(provider.id):
+                raise ProviderInUseError("A model of the provider is used by an assistant.")
             secret_id = provider.secret_id
             provider.secret_id = provider.secret_hint = None
             provider.deleted_at = now
@@ -592,6 +595,8 @@ class DeleteModel:
         async with self._uow() as uow:
             await load_provider(uow, provider_id)
             model = await _load_model(uow, provider_id, config_id)
+            if await uow.assistants.count_using_model(model.id):
+                raise ModelInUseError("The model is used by an assistant.")
             await uow.models.delete(model.id)
             await uow.audit.record(
                 by_user(

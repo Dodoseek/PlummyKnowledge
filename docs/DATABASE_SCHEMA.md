@@ -335,7 +335,7 @@ MVP: доступ только на уровне KB; document-level ACL отсу
 |---|---|---|
 | `name`, `description` | `citext`, `text` | Имя 1–200 символов, `UNIQUE (lower(name)) WHERE deleted_at IS NULL`; описание ≤ 2000 |
 | `instructions` | `text` | System instructions, ≤ 20 000 символов (по умолчанию `''`); не должны содержать секретов (§8) |
-| `model_config_id` | `uuid` | LLM; FK `ON DELETE RESTRICT` — используемую модель нельзя удалить |
+| `model_config_id` | `uuid` | LLM. Модель, которую использует живой ассистент, удалить нельзя (`409`, проверка в use case); у удалённых ассистентов FK `ON DELETE SET NULL`; CHECK: `NULL` только при `deleted_at` |
 | `embedding_config_id` | `uuid` | Embedding profile; совпадает с `embedding_config_id` каждой привязанной KB (проверка в use case, утверждено 2026-11-25); FK `RESTRICT` |
 | `retrieval_settings` | `jsonb` | Объект: top-k (vector/FTS/итоговый), RRF k, веса веток fusion |
 | `max_context_tokens` | `integer` | Context budget (§6), 256–128 000, по умолчанию 8000 |

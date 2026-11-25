@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends
 
 from plummy.api.security import verify_origin
+from plummy.api.v1.assistants.router import router as assistants_router
 from plummy.api.v1.auth.router import router as auth_router
 from plummy.api.v1.documents.router import router as documents_router
 from plummy.api.v1.embedding_profiles.router import router as embedding_profiles_router
@@ -26,5 +27,6 @@ router.include_router(providers_router)
 router.include_router(embedding_profiles_router)
 router.include_router(knowledge_bases_router)
 router.include_router(documents_router)
+router.include_router(assistants_router)
 router.include_router(jobs_router)
 router.include_router(system_router)

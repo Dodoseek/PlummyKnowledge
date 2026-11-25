@@ -2,7 +2,9 @@
 
 There is no access table: who may use an assistant follows from the access to every one of its knowledge
 bases. Deleting a knowledge base removes its links here (the application does it with the soft delete;
-``ON DELETE CASCADE`` covers a hard delete). A model or an embedding profile in use cannot be deleted.
+``ON DELETE CASCADE`` covers a hard delete). An embedding profile in use cannot be deleted. A chat model is
+refused for deletion by the application while a live assistant uses it; a deleted assistant loses it
+(``SET NULL``), so it never blocks the model. Only deleted assistants have no model (CHECK).
 
 Revision ID: 0013
 Revises: 0012
@@ -43,7 +45,7 @@ def upgrade() -> None:
         sa.Column("name", postgresql.CITEXT(), nullable=False),
         sa.Column("description", sa.Text(), nullable=True),
         sa.Column("instructions", sa.Text(), server_default=sa.text("''"), nullable=False),
-        sa.Column("model_config_id", UUID, nullable=False),
+        sa.Column("model_config_id", UUID, nullable=True),
         sa.Column("embedding_config_id", UUID, nullable=False),
         sa.Column(
             "retrieval_settings", postgresql.JSONB(), server_default=sa.text("'{}'::jsonb"), nullable=False
@@ -64,11 +66,12 @@ def upgrade() -> None:
         _ck("max_history_messages", "max_history_messages BETWEEN 0 AND 100"),
         _ck("max_output_tokens", "max_output_tokens BETWEEN 1 AND 128000"),
         _ck("status", "status IN ('active', 'disabled')"),
+        _ck("model_config", "model_config_id IS NOT NULL OR deleted_at IS NOT NULL"),
         sa.ForeignKeyConstraint(
             ["model_config_id"],
             ["model_configs.id"],
             name=op.f("fk_assistants_model_config_id_model_configs"),
-            ondelete="RESTRICT",
+            ondelete="SET NULL",
         ),
         sa.ForeignKeyConstraint(
             ["embedding_config_id"],

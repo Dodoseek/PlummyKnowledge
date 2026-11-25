@@ -246,7 +246,8 @@ async def test_chunk_search_vector_downgrade_and_upgrade_again(migrator: Migrato
 
 
 async def test_assistant_tables_link_and_protect(migrator: Migrator, database_url: str) -> None:
-    # DATABASE_SCHEMA.md §5.3: a model or profile in use cannot be deleted; links go with either side.
+    # DATABASE_SCHEMA.md §5.3: a profile in use cannot be deleted, a model leaves deleted assistants;
+    # links go with either side.
     await migrator.upgrade()
     actions = await _query(
         database_url,
@@ -259,7 +260,7 @@ async def test_assistant_tables_link_and_protect(migrator: Migrator, database_ur
         "fk_assistant_knowledge_bases_knowledge_base_id_knowledge_bases:c",
         "fk_assistants_created_by_users:n",
         "fk_assistants_embedding_config_id_embedding_provider_configs:r",
-        "fk_assistants_model_config_id_model_configs:r",
+        "fk_assistants_model_config_id_model_configs:n",
     ]
     assert await _query(
         database_url,

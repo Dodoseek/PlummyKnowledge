@@ -13,6 +13,7 @@ from plummy.application.ingestion.chunking import ChunkDraft
 from plummy.application.pagination import Page, PageRequest
 from plummy.application.retrieval.model import ChunkHit, RetrievalScope
 from plummy.domain.ai import AIProvider, EmbeddingProfile, ModelConfig, TestStatus
+from plummy.domain.assistants import Assistant
 from plummy.domain.audit import AuditEntry
 from plummy.domain.documents import (
     DeletionReason,
@@ -382,6 +383,10 @@ class ModelConfigRepository(Protocol):
 
     async def get(self, provider_id: UUID, config_id: UUID) -> ModelConfig | None: ...
 
+    async def find(self, config_id: UUID) -> ModelConfig | None:
+        """By id alone, whatever the provider."""
+        ...
+
     async def add(self, model: ModelConfig) -> None:
         """Raises :class:`UniqueViolationError` for a model ID the provider already has."""
         ...
@@ -467,6 +472,40 @@ class KnowledgeBaseRepository(Protocol):
 
     async def linked_to_source(self, source_id: UUID) -> list[KnowledgeBase]:
         """Live knowledge bases that include the document source."""
+        ...
+
+
+class AssistantRepository(Protocol):
+    """Non-deleted assistants with their knowledge base ids (links to live knowledge bases only)."""
+
+    async def add(self, assistant: Assistant) -> None:
+        """With its knowledge base links; raises :class:`UniqueViolationError` for a taken name."""
+        ...
+
+    async def get(self, assistant_id: UUID) -> Assistant | None: ...
+
+    async def get_for_update(self, assistant_id: UUID) -> Assistant | None: ...
+
+    async def get_by_name(self, name: str) -> Assistant | None: ...
+
+    async def update(self, assistant: Assistant, *, at: datetime) -> None:
+        """Every field and the knowledge base links; raises :class:`UniqueViolationError` for a taken name."""
+        ...
+
+    async def mark_deleted(self, assistant_id: UUID, *, at: datetime) -> None: ...
+
+    async def page(
+        self, page: PageRequest, *, usable_by: UUID | None, all_knowledge_bases: bool
+    ) -> Page[Assistant]:
+        """All assistants with ``usable_by=None``. Otherwise only those the user can chat with (ADR-005):
+        active, with at least one knowledge base and a grant to every one of them (direct or through a
+        non-deleted group) unless ``all_knowledge_bases`` (``knowledge_bases.manage``)."""
+        ...
+
+    async def count_using_model(self, config_id: UUID) -> int: ...
+
+    async def count_using_provider(self, provider_id: UUID) -> int:
+        """Assistants whose chat model belongs to the provider."""
         ...
 
 
@@ -751,6 +790,7 @@ class UnitOfWork(Protocol):
     models: ModelConfigRepository
     embedding_profiles: EmbeddingProfileRepository
     knowledge_bases: KnowledgeBaseRepository
+    assistants: AssistantRepository
     data_sources: DataSourceRepository
     documents: DocumentRepository
     ingestion_jobs: IngestionJobRepository

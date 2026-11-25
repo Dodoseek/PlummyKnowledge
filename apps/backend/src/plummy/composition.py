@@ -18,6 +18,13 @@ from urllib.parse import urlsplit
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from plummy.application.assistants.use_cases import (
+    CreateAssistant,
+    DeleteAssistant,
+    GetAssistant,
+    ListAssistants,
+    UpdateAssistant,
+)
 from plummy.application.auth.account import ChangePassword, ListMySessions, RevokeMySession
 from plummy.application.auth.activation import ActivateAccount
 from plummy.application.auth.sessions import SessionIssuer, SessionPolicy
@@ -219,6 +226,17 @@ class KnowledgeServices:
 
 
 @dataclass(frozen=True, slots=True)
+class AssistantServices:
+    """Assistants; who may see or use one is decided by the use cases (ADR-005)."""
+
+    list: ListAssistants
+    get: GetAssistant
+    create: CreateAssistant
+    update: UpdateAssistant
+    delete: DeleteAssistant
+
+
+@dataclass(frozen=True, slots=True)
 class DocumentServices:
     """Documents; access to the knowledge base is checked by the use cases."""
 
@@ -264,6 +282,7 @@ class Resources:
     auth: AuthServices
     admin: AdminServices
     knowledge: KnowledgeServices
+    assistants: AssistantServices
     documents: DocumentServices
     job_admin: JobServices
     secrets: SecretVault
@@ -584,6 +603,13 @@ def build_resources(
             replace_access=ReplaceKnowledgeBaseAccess(uow, clock),
             retrieve=retrieve,
             search=SearchKnowledgeBase(uow, retrieve, limiter),
+        ),
+        assistants=AssistantServices(
+            list=ListAssistants(uow),
+            get=GetAssistant(uow),
+            create=CreateAssistant(uow, clock),
+            update=UpdateAssistant(uow, clock),
+            delete=DeleteAssistant(uow, clock),
         ),
         documents=DocumentServices(
             upload=UploadDocument(uow, storage, jobs, limiter, clock, max_bytes=settings.upload_max_bytes),

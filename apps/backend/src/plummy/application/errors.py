@@ -155,7 +155,7 @@ class ProviderNameTakenError(ConflictError):
 
 
 class ProviderInUseError(ConflictError):
-    """The provider is still used by an embedding profile (later also by assistants)."""
+    """The provider is still used by an embedding profile or, through a chat model, by an assistant."""
 
     code = "provider_in_use"
 
@@ -176,6 +176,18 @@ class KnowledgeBaseNameTakenError(ConflictError):
     """Another knowledge base already has this name."""
 
     code = "knowledge_base_name_taken"
+
+
+class AssistantNameTakenError(ConflictError):
+    """Another assistant already has this name."""
+
+    code = "assistant_name_taken"
+
+
+class ModelInUseError(ConflictError):
+    """A live assistant uses the chat model."""
+
+    code = "model_in_use"
 
 
 class ReindexRequiredError(ConflictError):

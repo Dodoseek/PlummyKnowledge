@@ -8,7 +8,7 @@ from types import TracebackType
 from typing import Any, Self
 from uuid import UUID
 
-from sqlalchemy import Select, cast, delete, func, literal, or_, select, tuple_, union, update
+from sqlalchemy import Select, and_, cast, delete, exists, func, literal, or_, select, tuple_, union, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -18,6 +18,7 @@ from plummy.application.pagination import Page, PageRequest, encode_cursor, esca
 from plummy.application.ports import (
     ActivationRecord,
     ActivationTokenRepository,
+    AssistantRepository,
     AuditLog,
     ChunkRepository,
     ChunkSearch,
@@ -59,6 +60,7 @@ from plummy.domain.ai import (
     ProviderType,
     TestStatus,
 )
+from plummy.domain.assistants import Assistant, AssistantRetrieval, AssistantStatus
 from plummy.domain.audit import AuditEntry
 from plummy.domain.documents import (
     DeletionReason,
@@ -95,6 +97,8 @@ from plummy.infrastructure.db.base import Base
 from plummy.infrastructure.db.models import (
     ActivationTokenModel,
     AIProviderModel,
+    AssistantKnowledgeBaseModel,
+    AssistantModel,
     AuditLogModel,
     DataSourceModel,
     DocumentChunkModel,
@@ -977,6 +981,10 @@ class SqlModelConfigRepository:
         )
         return _model_config(row) if row is not None else None
 
+    async def find(self, config_id: UUID) -> ModelConfig | None:
+        row = await self._db.get(ModelConfigModel, config_id)
+        return _model_config(row) if row is not None else None
+
     async def add(self, model: ModelConfig) -> None:
         self._db.add(
             ModelConfigModel(
@@ -1182,6 +1190,9 @@ class SqlKnowledgeBaseRepository:
 
     async def mark_deleted(self, kb_id: UUID, *, at: datetime) -> None:
         await self._db.execute(
+            delete(AssistantKnowledgeBaseModel).where(AssistantKnowledgeBaseModel.knowledge_base_id == kb_id)
+        )
+        await self._db.execute(
             delete(KnowledgeBaseAccessModel).where(KnowledgeBaseAccessModel.knowledge_base_id == kb_id)
         )
         await self._db.execute(
@@ -1317,6 +1328,218 @@ class SqlKnowledgeBaseRepository:
             .order_by(KnowledgeBaseModel.id)
         )
         return [_knowledge_base(row) for row in rows]
+
+
+def _live_links() -> Select[UUID, UUID]:
+    """Links of assistants to knowledge bases that are not deleted."""
+    return select(
+        AssistantKnowledgeBaseModel.assistant_id, AssistantKnowledgeBaseModel.knowledge_base_id
+    ).join(
+        KnowledgeBaseModel,
+        and_(
+            KnowledgeBaseModel.id == AssistantKnowledgeBaseModel.knowledge_base_id,
+            KnowledgeBaseModel.deleted_at.is_(None),
+        ),
+    )
+
+
+def _assistant(row: AssistantModel, knowledge_base_ids: Sequence[UUID]) -> Assistant:
+    if row.model_config_id is None:  # only deleted assistants, which are never loaded (CHECK constraint)
+        raise ValueError("assistant without a chat model")
+    retrieval = row.retrieval_settings
+    return Assistant(
+        id=row.id,
+        name=row.name,
+        description=row.description,
+        instructions=row.instructions,
+        model_config_id=row.model_config_id,
+        embedding_profile_id=row.embedding_config_id,
+        retrieval=AssistantRetrieval(
+            top_k=int(retrieval["top_k"]),
+            vector_top_k=int(retrieval["vector_top_k"]),
+            keyword_top_k=int(retrieval["keyword_top_k"]),
+            rrf_k=int(retrieval["rrf_k"]),
+            vector_weight=float(retrieval["vector_weight"]),
+            keyword_weight=float(retrieval["keyword_weight"]),
+        ),
+        max_context_tokens=row.max_context_tokens,
+        max_history_messages=row.max_history_messages,
+        max_output_tokens=row.max_output_tokens,
+        status=AssistantStatus(row.status),
+        created_by=row.created_by,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+        knowledge_base_ids=tuple(sorted(knowledge_base_ids)),
+        deleted_at=row.deleted_at,
+    )
+
+
+def _assistant_values(assistant: Assistant) -> dict[str, Any]:
+    retrieval = assistant.retrieval
+    return {
+        "name": assistant.name,
+        "description": assistant.description,
+        "instructions": assistant.instructions,
+        "model_config_id": assistant.model_config_id,
+        "embedding_config_id": assistant.embedding_profile_id,
+        "retrieval_settings": {
+            "top_k": retrieval.top_k,
+            "vector_top_k": retrieval.vector_top_k,
+            "keyword_top_k": retrieval.keyword_top_k,
+            "rrf_k": retrieval.rrf_k,
+            "vector_weight": retrieval.vector_weight,
+            "keyword_weight": retrieval.keyword_weight,
+        },
+        "max_context_tokens": assistant.max_context_tokens,
+        "max_history_messages": assistant.max_history_messages,
+        "max_output_tokens": assistant.max_output_tokens,
+        "status": str(assistant.status),
+    }
+
+
+class SqlAssistantRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._db = session
+
+    async def _links(self, assistant_ids: Sequence[UUID]) -> dict[UUID, list[UUID]]:
+        if not assistant_ids:
+            return {}
+        rows = await self._db.execute(
+            _live_links().where(AssistantKnowledgeBaseModel.assistant_id.in_(assistant_ids))
+        )
+        links: dict[UUID, list[UUID]] = {}
+        for assistant_id, kb_id in rows.all():
+            links.setdefault(assistant_id, []).append(kb_id)
+        return links
+
+    async def _one(self, statement: Select[AssistantModel]) -> Assistant | None:
+        row = await self._db.scalar(statement)
+        if row is None:
+            return None
+        return _assistant(row, (await self._links([row.id])).get(row.id, []))
+
+    async def _replace_links(self, assistant_id: UUID, kb_ids: Sequence[UUID], *, at: datetime) -> None:
+        await self._db.execute(
+            delete(AssistantKnowledgeBaseModel).where(
+                AssistantKnowledgeBaseModel.assistant_id == assistant_id,
+                AssistantKnowledgeBaseModel.knowledge_base_id.not_in(kb_ids),
+            )
+        )
+        if kb_ids:
+            await self._db.execute(
+                pg_insert(AssistantKnowledgeBaseModel)
+                .values(
+                    [
+                        {"assistant_id": assistant_id, "knowledge_base_id": kb_id, "created_at": at}
+                        for kb_id in kb_ids
+                    ]
+                )
+                .on_conflict_do_nothing()
+            )
+
+    async def add(self, assistant: Assistant) -> None:
+        self._db.add(
+            AssistantModel(
+                id=assistant.id,
+                created_by=assistant.created_by,
+                created_at=assistant.created_at,
+                updated_at=assistant.updated_at,
+                **_assistant_values(assistant),
+            )
+        )
+        await _flush_unique(self._db, "uq_assistants_name_active")
+        await self._replace_links(assistant.id, assistant.knowledge_base_ids, at=assistant.created_at)
+
+    async def get(self, assistant_id: UUID) -> Assistant | None:
+        return await self._one(
+            select(AssistantModel).where(
+                AssistantModel.id == assistant_id, AssistantModel.deleted_at.is_(None)
+            )
+        )
+
+    async def get_for_update(self, assistant_id: UUID) -> Assistant | None:
+        return await self._one(
+            select(AssistantModel)
+            .where(AssistantModel.id == assistant_id, AssistantModel.deleted_at.is_(None))
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+
+    async def get_by_name(self, name: str) -> Assistant | None:
+        return await self._one(
+            select(AssistantModel).where(AssistantModel.name == name, AssistantModel.deleted_at.is_(None))
+        )
+
+    async def update(self, assistant: Assistant, *, at: datetime) -> None:
+        try:
+            await self._db.execute(
+                update(AssistantModel)
+                .where(AssistantModel.id == assistant.id)
+                .values(updated_at=at, **_assistant_values(assistant))
+            )
+        except IntegrityError as exc:
+            if "uq_assistants_name_active" in str(exc.orig):
+                raise UniqueViolationError("uq_assistants_name_active") from None
+            raise
+        await self._replace_links(assistant.id, assistant.knowledge_base_ids, at=at)
+
+    async def mark_deleted(self, assistant_id: UUID, *, at: datetime) -> None:
+        await self._db.execute(
+            delete(AssistantKnowledgeBaseModel).where(
+                AssistantKnowledgeBaseModel.assistant_id == assistant_id
+            )
+        )
+        await self._db.execute(
+            update(AssistantModel)
+            .where(AssistantModel.id == assistant_id, AssistantModel.deleted_at.is_(None))
+            .values(deleted_at=at, updated_at=at)
+        )
+
+    async def page(
+        self, page: PageRequest, *, usable_by: UUID | None, all_knowledge_bases: bool
+    ) -> Page[Assistant]:
+        statement = select(AssistantModel).where(AssistantModel.deleted_at.is_(None))
+        if usable_by is not None:
+            links = _live_links().subquery()
+            statement = statement.where(
+                AssistantModel.status == str(AssistantStatus.ACTIVE),
+                exists().where(links.c.assistant_id == AssistantModel.id),
+            )
+            if not all_knowledge_bases:
+                granted = select(KnowledgeBaseAccessModel.knowledge_base_id).where(
+                    or_(
+                        KnowledgeBaseAccessModel.user_id == usable_by,
+                        KnowledgeBaseAccessModel.group_id.in_(_groups_of(usable_by)),
+                    )
+                )
+                statement = statement.where(
+                    ~exists().where(
+                        links.c.assistant_id == AssistantModel.id, links.c.knowledge_base_id.not_in(granted)
+                    )
+                )
+        result = await _paginate(self._db, statement, AssistantModel, page, lambda row: row)
+        links_of = await self._links([row.id for row in result.items])
+        return Page(
+            items=[_assistant(row, links_of.get(row.id, [])) for row in result.items],
+            next_cursor=result.next_cursor,
+        )
+
+    async def count_using_model(self, config_id: UUID) -> int:
+        count = await self._db.scalar(
+            select(func.count())
+            .select_from(AssistantModel)
+            .where(AssistantModel.model_config_id == config_id, AssistantModel.deleted_at.is_(None))
+        )
+        return int(count or 0)
+
+    async def count_using_provider(self, provider_id: UUID) -> int:
+        count = await self._db.scalar(
+            select(func.count())
+            .select_from(AssistantModel)
+            .join(ModelConfigModel, ModelConfigModel.id == AssistantModel.model_config_id)
+            .where(ModelConfigModel.provider_id == provider_id, AssistantModel.deleted_at.is_(None))
+        )
+        return int(count or 0)
 
 
 def _data_source(row: DataSourceModel) -> DataSource:
@@ -1983,6 +2206,7 @@ class SqlAlchemyUnitOfWork:
     models: ModelConfigRepository
     embedding_profiles: EmbeddingProfileRepository
     knowledge_bases: KnowledgeBaseRepository
+    assistants: AssistantRepository
     data_sources: DataSourceRepository
     documents: DocumentRepository
     ingestion_jobs: IngestionJobRepository
@@ -2009,6 +2233,7 @@ class SqlAlchemyUnitOfWork:
         self.models = SqlModelConfigRepository(session)
         self.embedding_profiles = SqlEmbeddingProfileRepository(session)
         self.knowledge_bases = SqlKnowledgeBaseRepository(session)
+        self.assistants = SqlAssistantRepository(session)
         self.data_sources = SqlDataSourceRepository(session)
         self.documents = SqlDocumentRepository(session)
         self.ingestion_jobs = SqlIngestionJobRepository(session)

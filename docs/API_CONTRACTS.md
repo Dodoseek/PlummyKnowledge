@@ -673,7 +673,7 @@ vectors и файлов выполняется сразу задачей `mainte
 Доступ проверяется при **каждом** запросе (наличие цитаты в истории не даёт права). Удалённый/purged документ или
 отозванный доступ → `404`. Текст отдаётся как данные; клиент отображает его без интерпретации HTML.
 
-### 2.12 `assistants` (§5)
+### 2.12 `assistants` (§5) — реализовано
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
@@ -687,14 +687,43 @@ vectors и файлов выполняется сразу задачей `mainte
 доступ ко всем KB ассистента; ассистент без KB — только пользователям с `assistants.manage`. Недоступный ассистент:
 `GET /assistants/{id}` → `404`. Проверка повторяется на каждом запросе.
 
+DTO — §4 `Assistant`. `GET /assistants` — cursor-пагинация, `sort`: `name` (по умолчанию), `-name`,
+`created_at`, `-created_at`. Без `assistants.manage` и без `chat.use` — `403`. С `chat.use` список и карточка
+содержат только доступные ассистенты (`instructions: null`); остальные — `404`. С `assistants.manage` — все
+ассистенты, `instructions` и `availability` для **текущего** пользователя:
+
 ```json
-// элемент списка для пользователя с assistants.manage
-{ "id": "…", "name": "HR Assistant", "status": "active",
-  "availability": { "available": false, "reason": "missing_kb_access" } }   // missing_kb_access | no_knowledge_bases | disabled
+{ "availability": { "available": false, "reason": "missing_kb_access" } }   // disabled | missing_kb_access
 ```
 
-Валидация: все KB ассистента используют тот же embedding profile, что и ассистент **[Proposed]**; модель —
-включённый `model_config`.
+Ассистент без KB для `assistants.manage` доступен (предпросмотр, ADR-005 п.4); обычным пользователям он не виден
+(`no_knowledge_bases` во внешних ответах не встречается — такие пользователи получают `404`).
+
+Тело `POST`/`PATCH` (в `PATCH` применяются только переданные поля, `description: null` очищает описание):
+
+```json
+{ "name": "HR Assistant", "description": "…", "instructions": "…",
+  "model_config_id": "…", "embedding_profile_id": "…", "knowledge_base_ids": ["…"],
+  "retrieval": { "top_k": 8, "vector_top_k": 40, "keyword_top_k": 40, "rrf_k": 60,
+                 "vector_weight": 1.0, "keyword_weight": 0.1 },
+  "limits": { "max_context_tokens": 8000, "max_history_messages": 10, "max_output_tokens": 1024 },
+  "status": "active" }
+```
+
+В `POST` обязательны `name`, `model_config_id`, `embedding_profile_id`; остальное — значения по умолчанию из примера
+(`instructions` — пустая строка, `knowledge_base_ids` — пусто). Ошибки (`422 validation_error`, `errors[].code`):
+`body.name` — `invalid_name`; `body.instructions` — `invalid_instructions` (≤ 20 000 печатных символов);
+`body.model_config_id` — `unknown_model`, `model_disabled` (модель или провайдер выключены; проверяется при
+установке или смене модели); `body.embedding_profile_id` — `unknown_embedding_profile`, `embedding_profile_not_active`;
+`body.knowledge_base_ids` — `unknown_knowledge_base` (нет KB или у вызывающего нет к ней доступа `read`),
+`duplicate_knowledge_base`, `embedding_profile_mismatch` (все KB обязаны использовать embedding profile ассистента —
+утверждено 2026-11-25), не более 20 KB; `body.retrieval` — `out_of_range` (правила retrieval: top_k 1–50,
+ветки top_k–200, `rrf_k` 1–1000, веса 0–10 и не оба 0); `body.limits.*` — `out_of_range` (context 256–128 000,
+история 0–100, ответ 1–128 000), `exceeds_model_limit` (больше `max_output_tokens` модели). Занятое имя —
+`409 assistant_name_taken`. Удаление — soft delete, KB не затрагиваются; удалённая KB отвязывается от ассистентов.
+Модель или провайдер, используемые живым ассистентом, не удаляются: `409 model_in_use` / `409 provider_in_use`.
+Audit: `assistant.created`, `assistant.updated` (имена изменённых полей), `assistant.deleted` — без текста
+instructions.
 
 ### 2.13 `conversations` (§5)
 
@@ -927,10 +956,12 @@ data: {"delta":"Перенос возможен "}
   "instructions": "…",                           // только для assistants.manage
   "model_config_id": "…", "embedding_profile_id": "…",
   "knowledge_base_ids": ["…"],
-  "retrieval": { "top_k": 8, "vector_top_k": 40, "keyword_top_k": 40, "rrf_k": 60 },
+  "retrieval": { "top_k": 8, "vector_top_k": 40, "keyword_top_k": 40, "rrf_k": 60,
+                 "vector_weight": 1.0, "keyword_weight": 0.1 },
   "limits": { "max_context_tokens": 8000, "max_history_messages": 10, "max_output_tokens": 1024 },
   "status": "active",
-  "availability": { "available": true, "reason": null }   // ADR-005
+  "availability": { "available": true, "reason": null },   // ADR-005
+  "created_at": "…", "updated_at": "…"
 }
 
 // Job
