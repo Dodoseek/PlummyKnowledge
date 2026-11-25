@@ -65,6 +65,7 @@ class AuditAction(StrEnum):
     ASSISTANT_CREATED = "assistant.created"
     ASSISTANT_UPDATED = "assistant.updated"
     ASSISTANT_DELETED = "assistant.deleted"
+    CONVERSATION_DELETED = "conversation.deleted"
     DOCUMENT_UPLOADED = "document.uploaded"
     DOCUMENT_DELETED = "document.deleted"
     DOCUMENT_REINDEX_REQUESTED = "document.reindex.requested"

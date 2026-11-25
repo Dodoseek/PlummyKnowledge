@@ -30,6 +30,14 @@ from plummy.application.auth.activation import ActivateAccount
 from plummy.application.auth.sessions import SessionIssuer, SessionPolicy
 from plummy.application.auth.throttle import AttemptThrottle
 from plummy.application.auth.use_cases import AuthenticateSession, Login, Logout
+from plummy.application.chat.conversations import (
+    CreateConversation,
+    DeleteConversation,
+    GetConversation,
+    ListConversations,
+    ListMessages,
+    RenameConversation,
+)
 from plummy.application.documents.upload import UploadDocument
 from plummy.application.documents.use_cases import (
     DeleteDocument,
@@ -237,6 +245,18 @@ class AssistantServices:
 
 
 @dataclass(frozen=True, slots=True)
+class ConversationServices:
+    """Conversations; each is private to its owner (API_CONTRACTS.md §2.13)."""
+
+    list: ListConversations
+    create: CreateConversation
+    get: GetConversation
+    rename: RenameConversation
+    delete: DeleteConversation
+    messages: ListMessages
+
+
+@dataclass(frozen=True, slots=True)
 class DocumentServices:
     """Documents; access to the knowledge base is checked by the use cases."""
 
@@ -283,6 +303,7 @@ class Resources:
     admin: AdminServices
     knowledge: KnowledgeServices
     assistants: AssistantServices
+    conversations: ConversationServices
     documents: DocumentServices
     job_admin: JobServices
     secrets: SecretVault
@@ -610,6 +631,14 @@ def build_resources(
             create=CreateAssistant(uow, clock),
             update=UpdateAssistant(uow, clock),
             delete=DeleteAssistant(uow, clock),
+        ),
+        conversations=ConversationServices(
+            list=ListConversations(uow),
+            create=CreateConversation(uow, clock),
+            get=GetConversation(uow),
+            rename=RenameConversation(uow, clock),
+            delete=DeleteConversation(uow, clock),
+            messages=ListMessages(uow),
         ),
         documents=DocumentServices(
             upload=UploadDocument(uow, storage, jobs, limiter, clock, max_bytes=settings.upload_max_bytes),

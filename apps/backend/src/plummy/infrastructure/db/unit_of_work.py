@@ -2,19 +2,19 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from datetime import datetime
 from types import TracebackType
 from typing import Any, Self
 from uuid import UUID
 
-from sqlalchemy import Select, and_, cast, delete, exists, func, literal, or_, select, tuple_, union, update
+from sqlalchemy import Select, and_, cast, delete, exists, func, or_, select, union, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from plummy.application.ingestion.chunking import ChunkDraft
-from plummy.application.pagination import Page, PageRequest, encode_cursor, escape_like
+from plummy.application.pagination import Page, PageRequest, escape_like
 from plummy.application.ports import (
     ActivationRecord,
     ActivationTokenRepository,
@@ -23,6 +23,7 @@ from plummy.application.ports import (
     ChunkRepository,
     ChunkSearch,
     ChunkToEmbed,
+    ConversationRepository,
     DataSourceRepository,
     DocumentQuery,
     DocumentRepository,
@@ -34,6 +35,7 @@ from plummy.application.ports import (
     InstanceStateRepository,
     JobQuery,
     KnowledgeBaseRepository,
+    MessageRepository,
     ModelConfigRepository,
     NewEmbedding,
     PermissionInfo,
@@ -93,7 +95,7 @@ from plummy.domain.knowledge import (
     PrincipalType,
 )
 from plummy.domain.secrets import SecretKind
-from plummy.infrastructure.db.base import Base
+from plummy.infrastructure.db.chat import SqlConversationRepository, SqlMessageRepository
 from plummy.infrastructure.db.models import (
     ActivationTokenModel,
     AIProviderModel,
@@ -123,6 +125,7 @@ from plummy.infrastructure.db.models import (
     UserModel,
     UserRoleModel,
 )
+from plummy.infrastructure.db.paging import paginate
 from plummy.infrastructure.db.retrieval import SqlChunkSearch
 from plummy.infrastructure.db.types import Vector, vector_literal
 
@@ -151,31 +154,6 @@ def _group(row: GroupModel) -> Group:
         created_at=row.created_at,
         deleted_at=row.deleted_at,
     )
-
-
-async def _paginate[M: Base, D](
-    db: AsyncSession,
-    statement: Select[M],
-    model: type[M],
-    page: PageRequest,
-    mapper: Callable[[M], D],
-) -> Page[D]:
-    """Keyset pagination over ``(sort column, id)`` (ADR-014)."""
-    column: Any = getattr(model, page.sort.field)
-    row_id: Any = getattr(model, "id")  # noqa: B009 - every paginated model has ``id``
-    if page.after is not None:
-        # Bind the cursor value with the column's type (e.g. citext) so it compares like the ORDER BY.
-        key = tuple_(literal(page.after.value, type_=column.type), literal(page.after.id, type_=row_id.type))
-        position = tuple_(column, row_id)
-        statement = statement.where(position < key if page.sort.descending else position > key)
-    order = (column.desc(), row_id.desc()) if page.sort.descending else (column.asc(), row_id.asc())
-    rows = list((await db.scalars(statement.order_by(*order).limit(page.limit + 1))).all())
-    next_cursor = None
-    if len(rows) > page.limit:
-        rows = rows[: page.limit]
-        last = rows[-1]
-        next_cursor = encode_cursor(page.sort, getattr(last, page.sort.field), getattr(last, "id"))  # noqa: B009
-    return Page(items=[mapper(row) for row in rows], next_cursor=next_cursor)
 
 
 def _search(pattern_source: str, *columns: Any) -> Any:
@@ -239,7 +217,7 @@ class SqlUserRepository:
             statement = statement.where(UserModel.id.in_(members))
         if query.search:
             statement = statement.where(_search(query.search, UserModel.email, UserModel.display_name))
-        return await _paginate(self._db, statement, UserModel, page, _user)
+        return await paginate(self._db, statement, UserModel, page, _user)
 
     async def existing_ids(self, user_ids: frozenset[UUID]) -> frozenset[UUID]:
         if not user_ids:
@@ -476,7 +454,7 @@ class SqlGroupRepository:
         statement = select(GroupModel).where(GroupModel.deleted_at.is_(None))
         if search:
             statement = statement.where(_search(search, GroupModel.name))
-        return await _paginate(self._db, statement, GroupModel, page, _group)
+        return await paginate(self._db, statement, GroupModel, page, _group)
 
     async def update(self, group: Group, *, at: datetime) -> None:
         try:
@@ -897,7 +875,7 @@ class SqlProviderRepository:
 
     async def page(self, page: PageRequest) -> Page[AIProvider]:
         statement = select(AIProviderModel).where(AIProviderModel.deleted_at.is_(None))
-        result = await _paginate(self._db, statement, AIProviderModel, page, lambda row: row)
+        result = await paginate(self._db, statement, AIProviderModel, page, lambda row: row)
         secret_ids = [row.secret_ref_id for row in result.items if row.secret_ref_id is not None]
         hints: dict[UUID, str | None] = {}
         if secret_ids:
@@ -1046,7 +1024,7 @@ class SqlEmbeddingProfileRepository:
         self._db = session
 
     async def page(self, page: PageRequest) -> Page[EmbeddingProfile]:
-        return await _paginate(
+        return await paginate(
             self._db, select(EmbeddingProfileModel), EmbeddingProfileModel, page, _embedding_profile
         )
 
@@ -1269,7 +1247,7 @@ class SqlKnowledgeBaseRepository:
                 )
             )
             statement = statement.where(KnowledgeBaseModel.id.in_(granted))
-        return await _paginate(self._db, statement, KnowledgeBaseModel, page, _knowledge_base)
+        return await paginate(self._db, statement, KnowledgeBaseModel, page, _knowledge_base)
 
     async def grants_of_user(self, user_id: UUID, kb_ids: list[UUID]) -> dict[UUID, list[KbAccessLevel]]:
         if not kb_ids:
@@ -1517,12 +1495,35 @@ class SqlAssistantRepository:
                         links.c.assistant_id == AssistantModel.id, links.c.knowledge_base_id.not_in(granted)
                     )
                 )
-        result = await _paginate(self._db, statement, AssistantModel, page, lambda row: row)
+        result = await paginate(self._db, statement, AssistantModel, page, lambda row: row)
         links_of = await self._links([row.id for row in result.items])
         return Page(
             items=[_assistant(row, links_of.get(row.id, [])) for row in result.items],
             next_cursor=result.next_cursor,
         )
+
+    async def get_many(self, assistant_ids: Sequence[UUID]) -> list[Assistant]:
+        if not assistant_ids:
+            return []
+        rows = list(
+            (
+                await self._db.scalars(
+                    select(AssistantModel).where(
+                        AssistantModel.id.in_(assistant_ids), AssistantModel.deleted_at.is_(None)
+                    )
+                )
+            ).all()
+        )
+        links_of = await self._links([row.id for row in rows])
+        return [_assistant(row, links_of.get(row.id, [])) for row in rows]
+
+    async def names(self, assistant_ids: Sequence[UUID]) -> dict[UUID, str]:
+        if not assistant_ids:
+            return {}
+        rows = await self._db.execute(
+            select(AssistantModel.id, AssistantModel.name).where(AssistantModel.id.in_(assistant_ids))
+        )
+        return {assistant_id: str(name) for assistant_id, name in rows.all()}
 
     async def count_using_model(self, config_id: UUID) -> int:
         count = await self._db.scalar(
@@ -1692,7 +1693,7 @@ class SqlDocumentRepository:
             statement = statement.where(DocumentModel.processing_status == str(query.status))
         if query.search:
             statement = statement.where(_search(query.search, DocumentModel.filename))
-        return await _paginate(self._db, statement, DocumentModel, page, _document)
+        return await paginate(self._db, statement, DocumentModel, page, _document)
 
     async def versions(self, document_id: UUID) -> list[DocumentVersion]:
         rows = await self._db.scalars(
@@ -2178,7 +2179,7 @@ class SqlIngestionJobRepository:
                     select(DocumentModel.id).where(DocumentModel.data_source_id.in_(query.source_ids))
                 )
             )
-        return await _paginate(self._db, statement, IngestionJobModel, page, _job)
+        return await paginate(self._db, statement, IngestionJobModel, page, _job)
 
     async def unpublished(self, *, idle_since: datetime, limit: int) -> list[IngestionJob]:
         rows = await self._db.scalars(
@@ -2207,6 +2208,8 @@ class SqlAlchemyUnitOfWork:
     embedding_profiles: EmbeddingProfileRepository
     knowledge_bases: KnowledgeBaseRepository
     assistants: AssistantRepository
+    conversations: ConversationRepository
+    messages: MessageRepository
     data_sources: DataSourceRepository
     documents: DocumentRepository
     ingestion_jobs: IngestionJobRepository
@@ -2234,6 +2237,8 @@ class SqlAlchemyUnitOfWork:
         self.embedding_profiles = SqlEmbeddingProfileRepository(session)
         self.knowledge_bases = SqlKnowledgeBaseRepository(session)
         self.assistants = SqlAssistantRepository(session)
+        self.conversations = SqlConversationRepository(session)
+        self.messages = SqlMessageRepository(session)
         self.data_sources = SqlDataSourceRepository(session)
         self.documents = SqlDocumentRepository(session)
         self.ingestion_jobs = SqlIngestionJobRepository(session)

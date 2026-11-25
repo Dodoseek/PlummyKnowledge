@@ -15,6 +15,7 @@ from plummy.application.retrieval.model import ChunkHit, RetrievalScope
 from plummy.domain.ai import AIProvider, EmbeddingProfile, ModelConfig, TestStatus
 from plummy.domain.assistants import Assistant
 from plummy.domain.audit import AuditEntry
+from plummy.domain.chat import Conversation, Message
 from plummy.domain.documents import (
     DeletionReason,
     Document,
@@ -502,11 +503,43 @@ class AssistantRepository(Protocol):
         non-deleted group) unless ``all_knowledge_bases`` (``knowledge_bases.manage``)."""
         ...
 
+    async def get_many(self, assistant_ids: Sequence[UUID]) -> list[Assistant]:
+        """The non-deleted ones among ``assistant_ids``."""
+        ...
+
+    async def names(self, assistant_ids: Sequence[UUID]) -> dict[UUID, str]:
+        """Names including deleted assistants: a conversation keeps showing whom it was with."""
+        ...
+
     async def count_using_model(self, config_id: UUID) -> int: ...
 
     async def count_using_provider(self, provider_id: UUID) -> int:
         """Assistants whose chat model belongs to the provider."""
         ...
+
+
+class ConversationRepository(Protocol):
+    """Non-deleted conversations; every read is scoped to the owner (DATABASE_SCHEMA.md §6.1)."""
+
+    async def add(self, conversation: Conversation) -> None: ...
+
+    async def get_owned(self, conversation_id: UUID, user_id: UUID) -> Conversation | None: ...
+
+    async def get_owned_for_update(self, conversation_id: UUID, user_id: UUID) -> Conversation | None: ...
+
+    async def page(
+        self, user_id: UUID, page: PageRequest, *, assistant_id: UUID | None = None
+    ) -> Page[Conversation]: ...
+
+    async def rename(self, conversation_id: UUID, title: str, *, at: datetime) -> None: ...
+
+    async def mark_deleted(self, conversation_id: UUID, *, at: datetime) -> None: ...
+
+
+class MessageRepository(Protocol):
+    """Messages with their citations (DATABASE_SCHEMA.md §6.2-6.3)."""
+
+    async def page(self, conversation_id: UUID, page: PageRequest) -> Page[Message]: ...
 
 
 class DataSourceRepository(Protocol):
@@ -791,6 +824,8 @@ class UnitOfWork(Protocol):
     embedding_profiles: EmbeddingProfileRepository
     knowledge_bases: KnowledgeBaseRepository
     assistants: AssistantRepository
+    conversations: ConversationRepository
+    messages: MessageRepository
     data_sources: DataSourceRepository
     documents: DocumentRepository
     ingestion_jobs: IngestionJobRepository

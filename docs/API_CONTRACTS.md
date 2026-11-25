@@ -725,16 +725,35 @@ DTO — §4 `Assistant`. `GET /assistants` — cursor-пагинация, `sort`
 Audit: `assistant.created`, `assistant.updated` (имена изменённых полей), `assistant.deleted` — без текста
 instructions.
 
-### 2.13 `conversations` (§5)
+### 2.13 `conversations` (§5) — реализовано
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
-| GET | `/api/v1/conversations` | Мои диалоги (`assistant_id`, `sort=-last_message_at`) | `chat.use` | auth | — | — | — |
-| POST | `/api/v1/conversations` | Создать диалог с ассистентом | `chat.use` + доступ к ассистенту | auth | — | — | — |
+| GET | `/api/v1/conversations` | Мои диалоги (`assistant_id`; `sort=-last_message_at` (по умолчанию) \| `-created_at`) | `chat.use` | auth | — | — | — |
+| POST | `/api/v1/conversations` | Создать диалог с ассистентом (`{ "assistant_id", "title"? }`) | `chat.use` + доступ к ассистенту | auth | — | — | — |
 | GET | `/api/v1/conversations/{id}` | Диалог (только владелец) | владелец | auth | — | — | — |
-| PATCH | `/api/v1/conversations/{id}` | Переименовать | владелец | auth | — | — | — |
-| DELETE | `/api/v1/conversations/{id}` | Удалить (soft delete → purge по retention) | владелец | auth | — | `conversation.deleted` | — |
-| GET | `/api/v1/conversations/{id}/messages` | Сообщения с цитатами | владелец | auth | — | — | — |
+| PATCH | `/api/v1/conversations/{id}` | Переименовать (`{ "title" }`, 1–200 символов) | владелец | auth | — | — | — |
+| DELETE | `/api/v1/conversations/{id}` | Удалить (soft delete → purge задачей очистки) | владелец | auth | — | `conversation.deleted` | — |
+| GET | `/api/v1/conversations/{id}/messages` | Сообщения с цитатами (`sort=-sequence` (по умолчанию) \| `sequence`) | владелец | auth | — | — | — |
+
+Чужой или удалённый диалог → `404 not_found` для всех методов, в том числе для администратора. Новый диалог с
+ассистентом, которым нельзя пользоваться сейчас (ADR-005; `disabled` — и для `assistants.manage`), → `404`. Название
+по умолчанию — `New conversation`; первое сообщение в новом диалоге задаёт название из начала вопроса (§3). История
+своего диалога читается и после потери доступа к ассистенту; `assistant.available` показывает, можно ли продолжить.
+
+```jsonc
+// Conversation
+{ "id": "…", "title": "Перенос отпуска",
+  "assistant": { "id": "…", "name": "HR", "available": true },   // имя сохраняется и у удалённого ассистента
+  "created_at": "…", "updated_at": "…", "last_message_at": "…" }
+
+// Message
+{ "id": "…", "sequence": 2, "role": "assistant", "content": "… [c1]",
+  "status": "completed",            // completed | streaming | stopped | failed
+  "error_code": null,
+  "citations": [ /* как событие citation, §3.3 */ ],
+  "created_at": "…", "completed_at": "…" }
+```
 
 ### 2.14 `chat/stream` (§5, §6)
 

@@ -21,7 +21,7 @@ MAX_LIMIT = 100
 MAX_CURSOR_LENGTH = 1024
 CURSOR_VERSION = 1
 
-CursorValue = str | datetime
+CursorValue = str | datetime | int
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,7 +31,7 @@ class SortSpec:
     key: str
     field: str
     descending: bool
-    value_type: type[str] | type[datetime]
+    value_type: type[str] | type[datetime] | type[int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,7 +79,7 @@ def parse_limit(value: int | None) -> int:
 
 
 def encode_cursor(sort: SortSpec, value: CursorValue, row_id: UUID) -> str:
-    raw = value.isoformat() if isinstance(value, datetime) else value
+    raw = value.isoformat() if isinstance(value, datetime) else str(value)
     payload = json.dumps({"v": CURSOR_VERSION, "s": sort.key, "k": [raw, str(row_id)]}, separators=(",", ":"))
     return base64.urlsafe_b64encode(payload.encode("utf-8")).rstrip(b"=").decode("ascii")
 
@@ -107,9 +107,15 @@ def decode_cursor(value: str | None, sort: SortSpec) -> Cursor | None:
     raw_value, raw_id = key
     try:
         row_id = UUID(raw_id)
-        cursor_value: CursorValue = (
-            datetime.fromisoformat(raw_value) if sort.value_type is datetime else raw_value
-        )
+        cursor_value: CursorValue
+        if sort.value_type is datetime:
+            cursor_value = datetime.fromisoformat(raw_value)
+        elif sort.value_type is int:
+            if not raw_value.isascii() or not raw_value.lstrip("-").isdigit() or len(raw_value) > 12:
+                raise ValueError(raw_value)
+            cursor_value = int(raw_value)
+        else:
+            cursor_value = raw_value
     except ValueError:
         raise _invalid_cursor() from None
     if isinstance(cursor_value, datetime) and cursor_value.tzinfo is None:
