@@ -35,6 +35,17 @@ const MESSAGES: Record<string, string> = {
   secrets_not_configured:
     'Secret storage is not configured on the server (SECRETS_KEYRING_FILE). Keys cannot be saved yet.',
   secret_unavailable: 'The stored key cannot be decrypted on this server. Enter the key again.',
+  knowledge_base_name_taken: 'A knowledge base with this name already exists.',
+  unknown_embedding_profile: 'The embedding profile does not exist.',
+  embedding_profile_not_active: 'The embedding profile is not active. Choose an active one.',
+  dimensions_not_indexable: 'Vectors of this profile are too large to index. Choose a smaller profile.',
+  provider_unavailable: 'The AI provider is disabled, deleted or unreachable.',
+  payload_too_large: 'The file is larger than the server allows.',
+  unsupported_media_type: 'This file type is not supported. Use PDF, DOCX, XLSX, TXT, CSV or Markdown.',
+  empty_file: 'The file is empty.',
+  source_unavailable: 'Uploads to this knowledge base are not possible right now.',
+  no_version: 'The document has no version to index.',
+  job_not_retryable: 'This job cannot be retried in its current state.',
   activation_token_invalid:
     'This activation link is invalid, expired or already used. Ask your administrator for a new one.',
 };

@@ -8,6 +8,8 @@ import { UsersPage } from '../features/admin/UsersPage';
 import { ActivatePage } from '../features/auth/ActivatePage';
 import { LoginPage } from '../features/auth/LoginPage';
 import { RequireAuth } from '../features/auth/RequireAuth';
+import { KnowledgeBasePage } from '../features/knowledge/KnowledgeBasePage';
+import { KnowledgeBasesPage } from '../features/knowledge/KnowledgeBasesPage';
 import { EmbeddingProfilesPage } from '../features/providers/EmbeddingProfilesPage';
 import { ProviderDetailPage } from '../features/providers/ProviderDetailPage';
 import { ProvidersPage } from '../features/providers/ProvidersPage';
@@ -33,6 +35,9 @@ export const routes: RouteObject[] = [
         children: [
           { index: true, element: <HomePage /> },
           { path: 'account', element: <AccountPage /> },
+          // Visible knowledge bases are filtered by the backend from the session's access.
+          { path: 'knowledge-bases', element: <KnowledgeBasesPage /> },
+          { path: 'knowledge-bases/:kbId', element: <KnowledgeBasePage /> },
           // Admin pages hide themselves without the permission; the backend enforces it on every request.
           { path: 'admin/users', element: <UsersPage /> },
           { path: 'admin/users/:userId', element: <UserDetailPage /> },

@@ -27,6 +27,9 @@ export function UserMenu() {
 
   return (
     <HStack spacing={4} as="nav" aria-label="Main">
+      <Link as={RouterLink} to="/knowledge-bases" fontSize="sm">
+        Knowledge bases
+      </Link>
       {can(PERMISSIONS.usersRead) && (
         <Link as={RouterLink} to="/admin/users" fontSize="sm">
           Users

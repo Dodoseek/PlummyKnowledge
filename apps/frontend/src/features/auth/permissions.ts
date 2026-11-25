@@ -18,4 +18,5 @@ export const PERMISSIONS = {
   rolesAssign: 'roles.assign',
   providersRead: 'providers.read',
   providersManage: 'providers.manage',
+  knowledgeBasesManage: 'knowledge_bases.manage',
 } as const;
