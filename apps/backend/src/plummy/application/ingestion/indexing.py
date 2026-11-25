@@ -18,19 +18,17 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import math
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Final
 
-from plummy.application.ai.ports import (
-    CancellationToken,
-    EmbeddingProvider,
-    ProviderError,
-    ProviderGateway,
-    UnsupportedCapability,
+from plummy.application.ai.embedding import (
+    EmbeddingSetupError,
+    InvalidVectorError,
+    checked_vector,
+    embedding_provider_for,
 )
-from plummy.application.errors import ServiceUnavailableError
+from plummy.application.ai.ports import CancellationToken, EmbeddingProvider, ProviderError, ProviderGateway
 from plummy.application.ingestion.chunking import ChunkingError, ChunkingSettings, ChunkingStrategy
 from plummy.application.ingestion.parsing import NormalizedDocument
 from plummy.application.ingestion.pipeline import (
@@ -49,7 +47,6 @@ from plummy.application.ports import (
     UnitOfWorkFactory,
     VectorIndexManager,
 )
-from plummy.application.providers.use_cases import connection_for
 from plummy.application.secret_storage.vault import SecretVault
 from plummy.application.storage import StorageArea, StorageKey, StorageObjectNotFoundError, StorageProvider
 from plummy.domain.ai import EmbeddingProfile, EmbeddingProfileStatus
@@ -205,23 +202,10 @@ class RunIndexingJob(JobRunner):
 
     async def _provider(self, profile: EmbeddingProfile) -> EmbeddingProvider:
         async with self._uow() as uow:
-            provider = await uow.providers.get(profile.provider_id)
-            if provider is None or provider.deleted_at is not None or not provider.enabled:
-                raise PermanentIngestionError(
-                    "provider_unavailable", "The embedding provider is disabled or deleted."
-                )
             try:
-                connection = await connection_for(uow, self._vault, provider)
-            except ServiceUnavailableError:
-                raise PermanentIngestionError(
-                    "secret_unavailable", "The provider key cannot be decrypted."
-                ) from None
-        try:
-            return self._gateway.embedding(connection)
-        except UnsupportedCapability:
-            raise PermanentIngestionError(
-                "capability_not_supported", "The provider has no embeddings API."
-            ) from None
+                return await embedding_provider_for(uow, self._vault, self._gateway, profile)
+            except EmbeddingSetupError as exc:
+                raise PermanentIngestionError(exc.code, exc.message) from None
 
     async def _verify(self, work: Work, chunk_set: int, profiles: Sequence[EmbeddingProfile]) -> None:
         """Stage 10: every chunk of the set has a vector for every profile."""
@@ -262,22 +246,7 @@ def _read_json(path: Path) -> Any:
 
 
 def _checked(vector: Sequence[float], profile: EmbeddingProfile) -> tuple[float, ...]:
-    """The vector size must match the profile (ADR-017 §1); ``normalize`` makes it unit length (L2)."""
-    if len(vector) != profile.dimensions:
-        raise PermanentIngestionError(
-            "embedding_dimensions_mismatch",
-            f"The provider returned {len(vector)} dimensions, the profile expects {profile.dimensions}.",
-        )
-    values = tuple(float(value) for value in vector)
-    if not all(math.isfinite(value) for value in values):
-        raise PermanentIngestionError(
-            "embedding_invalid_response", "The provider returned an invalid vector."
-        )
-    if profile.normalize:
-        norm = math.sqrt(sum(value * value for value in values))
-        if norm == 0:
-            raise PermanentIngestionError(
-                "embedding_invalid_response", "The provider returned a zero vector."
-            )
-        values = tuple(value / norm for value in values)
-    return values
+    try:
+        return checked_vector(vector, profile)
+    except InvalidVectorError as exc:
+        raise PermanentIngestionError(exc.code, exc.message) from None

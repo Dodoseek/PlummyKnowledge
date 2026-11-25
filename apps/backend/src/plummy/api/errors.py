@@ -31,6 +31,8 @@ from plummy.application.errors import (
     SetupAlreadyCompletedError,
     SetupTokenInvalidError,
     UnsupportedMediaTypeError,
+    UpstreamProviderError,
+    UpstreamTimeoutError,
 )
 from plummy.infrastructure.db.errors import DATABASE_UNAVAILABLE_ERRORS
 
@@ -145,6 +147,8 @@ _APPLICATION_STATUS: tuple[tuple[type[ApplicationError], int], ...] = (
     (InvalidInputError, 422),
     (RateLimitedError, 429),
     (ServiceUnavailableError, 503),
+    (UpstreamTimeoutError, 504),
+    (UpstreamProviderError, 502),
 )
 
 

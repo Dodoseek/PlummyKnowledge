@@ -23,6 +23,12 @@ _OPS: Final = {
     DistanceMetric.INNER_PRODUCT: "ip_ops",
     DistanceMetric.L2: "l2_ops",
 }
+# pgvector distance operators; smaller is closer for all three (``<#>`` is the negative inner product).
+_OPERATORS: Final = {
+    DistanceMetric.COSINE: "<=>",
+    DistanceMetric.INNER_PRODUCT: "<#>",
+    DistanceMetric.L2: "<->",
+}
 
 
 def index_name(profile_id: UUID) -> str:
@@ -35,6 +41,8 @@ class VectorIndexSpec:
     expression: str  # also used verbatim by the retrieval query (ADR-017 §3)
     operator_class: str
     predicate: str
+    vector_type: str  # ``vector(n)`` or ``halfvec(n)``: the cast of the query vector
+    distance_operator: str
 
     def create_sql(self) -> str:
         return (
@@ -50,11 +58,14 @@ def index_spec(profile: EmbeddingProfile) -> VectorIndexSpec:
     if not isinstance(profile_id, UUID):
         raise TypeError("profile id must be a UUID")
     kind = "vector" if dimensions <= FULL_PRECISION_LIMIT else "halfvec"
+    metric = DistanceMetric(profile.distance_metric)
     return VectorIndexSpec(
         name=index_name(profile_id),
         expression=f"embedding::{kind}({dimensions})",
-        operator_class=f"{kind}_{_OPS[DistanceMetric(profile.distance_metric)]}",
+        operator_class=f"{kind}_{_OPS[metric]}",
         predicate=f"embedding_config_id = '{profile_id}'",
+        vector_type=f"{kind}({dimensions})",
+        distance_operator=_OPERATORS[metric],
     )
 
 

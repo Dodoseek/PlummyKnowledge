@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from collections.abc import Callable, Sequence
 from datetime import datetime
 from types import TracebackType
@@ -21,6 +20,7 @@ from plummy.application.ports import (
     ActivationTokenRepository,
     AuditLog,
     ChunkRepository,
+    ChunkSearch,
     ChunkToEmbed,
     DataSourceRepository,
     DocumentQuery,
@@ -117,7 +117,8 @@ from plummy.infrastructure.db.models import (
     UserModel,
     UserRoleModel,
 )
-from plummy.infrastructure.db.types import Vector
+from plummy.infrastructure.db.retrieval import SqlChunkSearch
+from plummy.infrastructure.db.types import Vector, vector_literal
 
 INSTANCE_STATE_ID = 1
 
@@ -1545,13 +1546,6 @@ class SqlDocumentRepository:
         return previous
 
 
-def _vector_literal(vector: Sequence[float]) -> str:
-    """pgvector text input; ``repr`` keeps the full float precision. Callers reject NaN and infinity."""
-    if not all(math.isfinite(value) for value in vector):
-        raise ValueError("vector values must be finite")
-    return "[" + ",".join(repr(float(value)) for value in vector) + "]"
-
-
 class SqlChunkRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._db = session
@@ -1659,7 +1653,7 @@ class SqlChunkRepository:
                         "document_version_id": version_id,
                         "data_source_id": data_source_id,
                         "dimensions": dimensions,
-                        "embedding": cast(_vector_literal(item.vector), Vector()),
+                        "embedding": cast(vector_literal(item.vector), Vector()),
                     }
                     for item in embeddings
                 ]
@@ -1822,6 +1816,7 @@ class SqlAlchemyUnitOfWork:
     documents: DocumentRepository
     ingestion_jobs: IngestionJobRepository
     chunks: ChunkRepository
+    search: ChunkSearch
     audit: AuditLog
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
@@ -1847,6 +1842,7 @@ class SqlAlchemyUnitOfWork:
         self.documents = SqlDocumentRepository(session)
         self.ingestion_jobs = SqlIngestionJobRepository(session)
         self.chunks = SqlChunkRepository(session)
+        self.search = SqlChunkSearch(session)
         self.audit = SqlAuditLog(session)
         return self
 

@@ -11,6 +11,7 @@ from uuid import UUID
 
 from plummy.application.ingestion.chunking import ChunkDraft
 from plummy.application.pagination import Page, PageRequest
+from plummy.application.retrieval.model import ChunkHit, RetrievalScope
 from plummy.domain.ai import AIProvider, EmbeddingProfile, ModelConfig, TestStatus
 from plummy.domain.audit import AuditEntry
 from plummy.domain.documents import (
@@ -607,6 +608,22 @@ class ChunkRepository(Protocol):
         ...
 
 
+class ChunkSearch(Protocol):
+    """The two retrieval branches (ARCHITECTURE.md §9.4). Every query carries all filters of
+    DATABASE_SCHEMA.md §5.11 in SQL: the scope's sources, a live document, its current ``ready`` version and
+    the active ``chunk_set``; the vector branch also the scope's profile (ADR-017 §3)."""
+
+    async def by_vector(
+        self, scope: RetrievalScope, vector: Sequence[float], *, limit: int
+    ) -> list[ChunkHit]:
+        """Nearest chunks first; ``score`` is the similarity (higher is closer)."""
+        ...
+
+    async def by_keywords(self, scope: RetrievalScope, query: str, *, limit: int) -> list[ChunkHit] | None:
+        """Full-text matches, best first (ADR-018); ``None`` when the query has no searchable words."""
+        ...
+
+
 class VectorIndexManager(Protocol):
     """Per-profile partial HNSW indexes (ADR-017 §2). DDL is built only from the stored profile."""
 
@@ -694,6 +711,7 @@ class UnitOfWork(Protocol):
     documents: DocumentRepository
     ingestion_jobs: IngestionJobRepository
     chunks: ChunkRepository
+    search: ChunkSearch
     audit: AuditLog
 
     async def __aenter__(self) -> Self: ...

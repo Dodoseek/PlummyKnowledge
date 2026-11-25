@@ -197,3 +197,22 @@ class EndpointNotAllowedError(InvalidInputError):
 
     def __init__(self, reason: str) -> None:
         super().__init__("base_url", reason, "Endpoint is not allowed by instance network policy.")
+
+
+class UpstreamProviderError(ApplicationError):
+    """An AI provider call needed by the request failed (``502 provider_error``). ``reason`` is the typed
+    provider code for logs; the response carries no provider output."""
+
+    code = "provider_error"
+
+    def __init__(self, reason: str, message: str = "The AI provider request failed.") -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+class UpstreamTimeoutError(UpstreamProviderError):
+    code = "provider_timeout"
+
+
+class UpstreamEgressDeniedError(UpstreamProviderError):
+    code = "egress_denied"
