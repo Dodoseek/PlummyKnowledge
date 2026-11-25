@@ -157,7 +157,7 @@ security gate (проверки безопасности **внутри** фаз
   R@10 0,99 / MRR 0,81, keyword R@10 0,94 / MRR 0,70. **Отклонения от плана:** citation precision и прочие
   метрики генерации перенесены в harness Фазы 8 (нужны ответы LLM); равновесный RRF уступал vector в top-1 —
   после перебора fusion взвешена (vector 1,0, keyword 0,1): hybrid R@1 0,82 / MRR 0,90, на уровне vector; rate limit поиска — новый профиль `search`
-  **[Proposed]**.)*
+  (30/мин на пользователя, утверждён 2026-11-25).)*
 
 ### Фаза 7 — Knowledge Bases и Assistants (§13, ADR-005)
 

@@ -56,7 +56,7 @@ from plummy.domain.knowledge import KbAccessLevel, KnowledgeBase
 
 logger = logging.getLogger(__name__)
 
-SEARCHES_PER_MINUTE: Final = 30  # API_CONTRACTS.md §5 ``search`` [Proposed]: one embedding call each
+SEARCHES_PER_MINUTE: Final = 30  # API_CONTRACTS.md §5 ``search``: one embedding call each
 
 
 class EmbeddingUnavailableError(ConflictError):
