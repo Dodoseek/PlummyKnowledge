@@ -49,7 +49,9 @@ from plummy.application.ports import (
     SessionRepository,
     SessionWithUser,
     SetChange,
+    SourceCredentialRepository,
     StoredChunk,
+    SyncJobRepository,
     UniqueViolationError,
     UserQuery,
     UserRepository,
@@ -135,6 +137,7 @@ from plummy.infrastructure.db.models import (
 )
 from plummy.infrastructure.db.paging import paginate
 from plummy.infrastructure.db.retrieval import SqlChunkSearch
+from plummy.infrastructure.db.sources import SqlSourceCredentialRepository, SqlSyncJobRepository
 from plummy.infrastructure.db.types import Vector, vector_literal
 
 INSTANCE_STATE_ID = 1
@@ -1636,6 +1639,68 @@ class SqlDataSourceRepository:
         )
         return [_data_source(row) for row in rows]
 
+    async def get_for_update(self, source_id: UUID) -> DataSource | None:
+        row = await self._db.scalar(
+            select(DataSourceModel)
+            .where(DataSourceModel.id == source_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return _data_source(row) if row is not None else None
+
+    async def save(self, source: DataSource, *, at: datetime) -> None:
+        await self._db.execute(
+            update(DataSourceModel)
+            .where(DataSourceModel.id == source.id)
+            .values(
+                name=source.name,
+                status=str(source.status),
+                config=dict(source.config),
+                sync_cursor=source.sync_cursor,
+                sync_interval_minutes=source.sync_interval_minutes,
+                next_sync_at=source.next_sync_at,
+                last_sync_at=source.last_sync_at,
+                last_reconciled_at=source.last_reconciled_at,
+                last_sync_status=str(source.last_sync_status) if source.last_sync_status else None,
+                last_error=source.last_error,
+                updated_at=at,
+            )
+        )
+        source.updated_at = at
+
+    async def knowledge_base_of(self, source_ids: Sequence[UUID]) -> dict[UUID, UUID]:
+        if not source_ids:
+            return {}
+        rows = await self._db.execute(
+            select(KnowledgeBaseSourceModel.data_source_id, KnowledgeBaseSourceModel.knowledge_base_id).where(
+                KnowledgeBaseSourceModel.data_source_id.in_(list(source_ids))
+            )
+        )
+        return {row[0]: row[1] for row in rows}
+
+    async def page(self, page: PageRequest, *, visible_to: UUID | None) -> Page[DataSource]:
+        live_kbs = select(KnowledgeBaseModel.id).where(KnowledgeBaseModel.deleted_at.is_(None))
+        if visible_to is not None:
+            granted = select(KnowledgeBaseAccessModel.knowledge_base_id).where(
+                or_(
+                    KnowledgeBaseAccessModel.user_id == visible_to,
+                    KnowledgeBaseAccessModel.group_id.in_(_groups_of(visible_to)),
+                )
+            )
+            live_kbs = live_kbs.where(KnowledgeBaseModel.id.in_(granted))
+        linked = select(KnowledgeBaseSourceModel.data_source_id).where(
+            KnowledgeBaseSourceModel.knowledge_base_id.in_(live_kbs)
+        )
+        statement = select(DataSourceModel).where(
+            DataSourceModel.deleted_at.is_(None), DataSourceModel.id.in_(linked)
+        )
+        return await paginate(self._db, statement, DataSourceModel, page, _data_source)
+
+    async def detach(self, source_id: UUID) -> None:
+        await self._db.execute(
+            delete(KnowledgeBaseSourceModel).where(KnowledgeBaseSourceModel.data_source_id == source_id)
+        )
+
 
 def _document(row: DocumentModel) -> Document:
     return Document(
@@ -2274,6 +2339,8 @@ class SqlAlchemyUnitOfWork:
     messages: MessageRepository
     generation_runs: GenerationRunRepository
     data_sources: DataSourceRepository
+    source_credentials: SourceCredentialRepository
+    sync_jobs: SyncJobRepository
     documents: DocumentRepository
     ingestion_jobs: IngestionJobRepository
     chunks: ChunkRepository
@@ -2304,6 +2371,8 @@ class SqlAlchemyUnitOfWork:
         self.messages = SqlMessageRepository(session)
         self.generation_runs = SqlGenerationRunRepository(session)
         self.data_sources = SqlDataSourceRepository(session)
+        self.source_credentials = SqlSourceCredentialRepository(session)
+        self.sync_jobs = SqlSyncJobRepository(session)
         self.documents = SqlDocumentRepository(session)
         self.ingestion_jobs = SqlIngestionJobRepository(session)
         self.chunks = SqlChunkRepository(session)

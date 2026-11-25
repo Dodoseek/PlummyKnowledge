@@ -5,6 +5,7 @@ from plummy.api.v1.assistants.router import router as assistants_router
 from plummy.api.v1.auth.router import router as auth_router
 from plummy.api.v1.chat.router import router as chat_router
 from plummy.api.v1.conversations.router import router as conversations_router
+from plummy.api.v1.data_sources.router import router as data_sources_router
 from plummy.api.v1.documents.router import router as documents_router
 from plummy.api.v1.embedding_profiles.router import router as embedding_profiles_router
 from plummy.api.v1.groups.router import router as groups_router
@@ -29,6 +30,7 @@ router.include_router(providers_router)
 router.include_router(embedding_profiles_router)
 router.include_router(knowledge_bases_router)
 router.include_router(documents_router)
+router.include_router(data_sources_router)
 router.include_router(assistants_router)
 router.include_router(conversations_router)
 router.include_router(chat_router)

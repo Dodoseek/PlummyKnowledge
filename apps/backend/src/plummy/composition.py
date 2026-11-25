@@ -112,6 +112,17 @@ from plummy.application.setup.use_cases import (
     IssueBootstrapToken,
     ResetPassword,
 )
+from plummy.application.sources.ports import OAuthClient
+from plummy.application.sources.use_cases import (
+    CompleteOAuth,
+    CreateDataSource,
+    DeleteDataSource,
+    DisconnectDataSource,
+    GetDataSource,
+    ListDataSources,
+    StartOAuth,
+    UpdateDataSource,
+)
 from plummy.application.system.use_cases import (
     AllowlistEntryView,
     GetInstanceSettings,
@@ -130,11 +141,13 @@ from plummy.application.users.use_cases import (
     UpdateUser,
 )
 from plummy.core.config import ConfigurationError, Settings, SetupMode
-from plummy.core.instance_config import build_egress_policy, load_instance_config
+from plummy.core.instance_config import InstanceConfig, build_egress_policy, load_instance_config
 from plummy.core.network.addresses import IPAddress
 from plummy.core.network.policy import EgressPolicy
 from plummy.core.network.urls import parse_ip
 from plummy.domain.file_types import DocumentFormat
+from plummy.domain.knowledge import DataSourceType
+from plummy.domain.secrets import SecretValue
 from plummy.infrastructure.chunking.structured import StructuredChunker
 from plummy.infrastructure.clock import SystemClock
 from plummy.infrastructure.db import create_engine, create_session_factory
@@ -145,12 +158,15 @@ from plummy.infrastructure.db.vector_index import PgVectorIndexManager
 from plummy.infrastructure.http.egress_audit import EgressDenialAuditor
 from plummy.infrastructure.http.safe_client import SafeHttpClient
 from plummy.infrastructure.integrations.ai.factory import HttpProviderGateway
+from plummy.infrastructure.integrations.sources.google_common import GoogleEndpoints
+from plummy.infrastructure.integrations.sources.google_oauth import GoogleOAuthClient
 from plummy.infrastructure.parsing.isolated import IsolatedParser
 from plummy.infrastructure.parsing.text import PlainTextParser
 from plummy.infrastructure.queue.celery_queue import CeleryJobQueue
 from plummy.infrastructure.redis import create_redis_client
 from plummy.infrastructure.redis.checks import RedisCheck
 from plummy.infrastructure.redis.generation_control import RedisGenerationControl
+from plummy.infrastructure.redis.oauth_state import RedisOAuthStateStore
 from plummy.infrastructure.redis.rate_limiter import RedisRateLimiter
 from plummy.infrastructure.security.bootstrap_store import FileBootstrapTokenStore
 from plummy.infrastructure.security.passwords import Argon2PasswordHasher
@@ -281,6 +297,20 @@ class DocumentServices:
 
 
 @dataclass(frozen=True, slots=True)
+class SourceServices:
+    """External document sources (ADR-020); access is checked by the use cases."""
+
+    list: ListDataSources
+    get: GetDataSource
+    create: CreateDataSource
+    update: UpdateDataSource
+    delete: DeleteDataSource
+    disconnect: DisconnectDataSource
+    start_oauth: StartOAuth
+    complete_oauth: CompleteOAuth
+
+
+@dataclass(frozen=True, slots=True)
 class JobServices:
     """Background jobs (``jobs.read`` / ``jobs.manage``, checked by the use cases)."""
 
@@ -317,6 +347,7 @@ class Resources:
     conversations: ConversationServices
     chat: ChatServices
     documents: DocumentServices
+    sources: SourceServices
     job_admin: JobServices
     secrets: SecretVault
     http: SafeHttpClient
@@ -489,9 +520,33 @@ def _platform_addresses(settings: Settings) -> list[tuple[str, IPAddress]]:
     return addresses
 
 
+def load_config(settings: Settings) -> InstanceConfig:
+    """CONFIG_FILE; replacement Google endpoints are refused in production (ADR-020 §2)."""
+    config = load_instance_config(settings.config_file)
+    if settings.is_production and config.google_drive is not None:
+        raise ConfigurationError(
+            "Invalid configuration: CONFIG_FILE: [connectors.google_drive] "
+            "is not allowed when APP_ENV=production"
+        )
+    return config
+
+
+def oauth_clients(settings: Settings, http: SafeHttpClient) -> dict[DataSourceType, OAuthClient]:
+    """Configured OAuth clients of external sources; an unconfigured type is simply absent."""
+    clients: dict[DataSourceType, OAuthClient] = {}
+    if settings.google_oauth_client_id is not None and settings.google_oauth_client_secret is not None:
+        clients[DataSourceType.GOOGLE_DRIVE] = GoogleOAuthClient(
+            http,
+            client_id=settings.google_oauth_client_id,
+            client_secret=SecretValue(settings.google_oauth_client_secret.get_secret_value()),
+            endpoints=GoogleEndpoints.from_config(load_config(settings).google_drive),
+        )
+    return clients
+
+
 def load_egress_policy(settings: Settings) -> EgressPolicy:
     """The outbound network policy from CONFIG_FILE; an invalid file stops the process (ADR-007)."""
-    config = load_instance_config(settings.config_file)
+    config = load_config(settings)
     needs_platform_check = any(entry.allowed_cidrs for entry in config.allowlist)
     return build_egress_policy(config, _platform_addresses(settings) if needs_platform_check else ())
 
@@ -512,6 +567,8 @@ def instance_settings_view(
             primary_key_id=cipher.primary_key_id if cipher else None,
             keys=len(cipher.key_ids) if cipher else 0,
         ),
+        google_drive_configured=settings.google_drive_configured,
+        oauth_redirect_uri=settings.oauth_redirect_uri,
         network_allowlist=tuple(
             AllowlistEntryView(
                 name=entry.name,
@@ -562,6 +619,9 @@ def build_resources(
     gateway = HttpProviderGateway(http)
     retrieve = RetrieveChunks(uow, gateway, vault)
     generation_control = RedisGenerationControl(redis)
+    clients = oauth_clients(settings, http)
+    oauth_states = RedisOAuthStateStore(redis)
+    redirect_uri = settings.oauth_redirect_uri
     chat_timeout = settings.chat_generation_timeout_seconds
     policy = session_policy(settings)
     issuer = SessionIssuer(policy)
@@ -635,7 +695,7 @@ def build_resources(
             get=GetKnowledgeBase(uow),
             create=CreateKnowledgeBase(uow, clock, jobs),
             update=UpdateKnowledgeBase(uow, clock),
-            delete=DeleteKnowledgeBase(uow, jobs, clock),
+            delete=DeleteKnowledgeBase(uow, jobs, clock, vault, clients),
             access=GetKnowledgeBaseAccess(uow),
             replace_access=ReplaceKnowledgeBaseAccess(uow, clock),
             retrieve=retrieve,
@@ -678,6 +738,16 @@ def build_resources(
             reindex=ReindexDocument(uow, jobs, limiter, clock),
             reindex_knowledge_base=ReindexKnowledgeBase(uow, jobs, limiter, clock),
             view=ViewSource(uow),
+        ),
+        sources=SourceServices(
+            list=ListDataSources(uow),
+            get=GetDataSource(uow),
+            create=CreateDataSource(uow, clock, clients),
+            update=UpdateDataSource(uow, clock),
+            delete=DeleteDataSource(uow, jobs, clock, vault, clients),
+            disconnect=DisconnectDataSource(uow, clock, vault, clients),
+            start_oauth=StartOAuth(uow, oauth_states, clients, redirect_uri),
+            complete_oauth=CompleteOAuth(uow, clock, vault, oauth_states, clients, redirect_uri),
         ),
         job_admin=JobServices(list=ListJobs(uow), get=GetJob(uow), retry=RetryJob(uow, jobs, limiter, clock)),
         secrets=vault,

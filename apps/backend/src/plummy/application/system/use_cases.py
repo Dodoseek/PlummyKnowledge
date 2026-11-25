@@ -40,6 +40,8 @@ class InstanceSettingsView:
     api_docs_enabled: bool
     secrets: SecretsSettingsView
     network_allowlist: tuple[AllowlistEntryView, ...]
+    google_drive_configured: bool = False
+    oauth_redirect_uri: str | None = None  # what to register as the redirect URI at the provider
 
 
 class GetInstanceSettings:

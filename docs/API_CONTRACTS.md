@@ -472,7 +472,7 @@
 - Тест отвечает `200`: `{ "status", "latency_ms", "tested_at", "expected_dimensions", "actual_dimensions", "error" }`;
   несовпадение размерности — `error.code = dimension_mismatch`.
 
-### 2.9 `data-sources` (§7)
+### 2.9 `data-sources` (§7) — реализованы list, create, get, patch (имя, расписание), delete, OAuth и disconnect; `validate`, `browse` и выбор папки — шаг 9.3, `sync` — шаг 9.4
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
@@ -499,6 +499,40 @@ Document Source типа `upload` создаётся и удаляется вм�
 ещё доступ `manage` к KB (источник принадлежит одной KB); видимость источника — `data_sources.read` + доступ `read` к его
 KB, иначе `404`; без OAuth client в Instance Settings — `409 connector_not_configured`; второй sync при активном —
 `409 sync_in_progress`; callback всегда отвечает `303` на `/knowledge-bases/{kb_id}?source={id}&oauth=connected|failed`.
+
+Карточка источника (`GET`, ответы `POST`/`PATCH`, элементы списка с cursor-пагинацией
+[ADR-014](adr/0014-list-pagination.md)):
+
+```json
+{
+  "id": "…", "type": "google_drive", "name": "Отдел продаж", "status": "paused",
+  "knowledge_base_id": "…", "owner_knowledge_base_id": null,
+  "folder": null,
+  "sync": { "interval_minutes": 15, "next_sync_at": null, "last_sync_at": null, "last_reconciled_at": null,
+            "last_status": null, "last_error": null },
+  "credentials": { "status": "valid", "account_label": "Drive Bot <drive-bot@example.com>",
+                   "granted_scopes": ["https://www.googleapis.com/auth/drive.readonly"],
+                   "connected_at": "…", "last_refreshed_at": null },
+  "created_at": "…", "updated_at": "…"
+}
+```
+
+- `POST` — `{type, name, knowledge_base_id, sync_interval_minutes?}` (по умолчанию 15, `null` — только ручной
+  sync, иначе 5–1440); `PATCH` — `name`, `sync_interval_minutes` (переданные поля; `null` отключает расписание).
+  Для `upload` `PATCH`/`DELETE`/`oauth/start`/`disconnect` → `409 upload_source_managed_by_kb`.
+- `status` — `paused`, пока не выбрана папка (шаг 9.3), `active` после выбора.
+- `credentials` — `null`, пока источник не подключён; токены и ссылка на секрет не возвращаются никогда.
+- `DELETE` → `200 {"documents_deleted": n}`: документы источника удаляются с purge, credentials удаляются,
+  активные sync jobs отменяются, refresh token отзывается у провайдера после commit (best effort).
+- `oauth/start` → `200 {"authorization_url": "…"}`; `state` и `code_verifier` хранятся только в Redis (TTL 600 с,
+  одноразово), без Redis — `503`. Повторное подключение заменяет секрет и отзывает прежний token.
+- `disconnect` → `200` с карточкой: удаление credentials, отмена активных sync jobs, статус `disconnected`, revoke у
+  провайдера после commit (best effort).
+- Callback отвечает `303` с `Cache-Control: no-store` и `Referrer-Policy: no-referrer`; при неудаче
+  `oauth=failed&reason=<code>`, где `code` — `oauth_state_invalid`, `oauth_unavailable`, `oauth_session_mismatch`,
+  `oauth_forbidden`, `oauth_denied`, `oauth_provider_error`, `oauth_code_missing`, `oauth_not_configured`,
+  `oauth_exchange_failed`, `oauth_no_refresh_token`, `oauth_scope_missing`. Без действительного `state` redirect идёт
+  на `/knowledge-bases`; адрес строится сервером, параметры запроса в него не копируются.
 
 UI обязан показывать **фактические** `granted_scopes` и предупреждение, что выбор папки не ограничивает OAuth token
 (§7).
@@ -862,13 +896,18 @@ Endpoints для **изменения** Instance Settings и allowlist **не с
       { "name": "local-ollama", "url": "http://ollama:11434", "purposes": ["llm", "embedding"],
         "provider_types": ["ollama"], "allowed_cidrs": ["172.30.10.0/24"] }
     ]
+  },
+  "connectors": {
+    "google_drive": { "configured": true,
+                      "redirect_uri": "https://kb.example.test/api/v1/data-sources/oauth/callback" }
   }
 }
 ```
 
 `secrets` — состояние key ring ([ADR-016](adr/0016-secret-encryption.md)) без значений ключей; `network.allowlist` —
 записи `[[network.allowlist]]` из `CONFIG_FILE` ([ADR-007](adr/0007-network-access-and-local-llm.md)), пустой
-список по умолчанию.
+список по умолчанию. `connectors.google_drive` — задан ли OAuth client (`GOOGLE_OAUTH_CLIENT_ID` и секрет) и
+redirect URI для регистрации в Google Cloud ([ADR-020](adr/0020-google-drive-connector.md)); секрет не возвращается.
 
 Дополнительные разделы (**[Proposed]**, по мере появления лимитов, SMTP и storage):
 

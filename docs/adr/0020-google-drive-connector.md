@@ -49,7 +49,7 @@
   `POST /data-sources` с `type = google_drive` → `409 connector_not_configured`; `GET /system/settings` сообщает
   `google_drive_configured` (без значений).
 - Адреса Google фиксированы в коде. Секция `[connectors.google_drive]` в `CONFIG_FILE` может переопределить
-  `auth_url`, `token_url`, `revoke_url`, `api_url`, `upload_hosts` **только при `APP_ENV != production`** — для
+  `auth_url`, `token_url`, `revoke_url`, `api_url`, `download_hosts` **только при `APP_ENV != production`** — для
   E2E с фейковым сервером. В `production` такая секция — ошибка конфигурации при старте. Переопределённый адрес
   проходит обычную сетевую политику (внутренний адрес — только через запись allowlist с `purposes =
   ["connector"]`).

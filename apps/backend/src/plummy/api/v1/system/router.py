@@ -41,6 +41,15 @@ class NetworkSettings(BaseModel):
     allowlist: list[AllowlistEntry]
 
 
+class ConnectorSettings(BaseModel):
+    configured: bool  # the OAuth client is in Instance Settings (never its values)
+    redirect_uri: str | None
+
+
+class ConnectorsSettings(BaseModel):
+    google_drive: ConnectorSettings
+
+
 class InstanceSettingsResponse(BaseModel):
     app_env: str
     public_url: str | None
@@ -49,6 +58,7 @@ class InstanceSettingsResponse(BaseModel):
     api_docs_enabled: bool
     secrets: SecretsSettings
     network: NetworkSettings
+    connectors: ConnectorsSettings
 
 
 @router.get("/settings", response_model=InstanceSettingsResponse)
@@ -80,5 +90,10 @@ async def get_instance_settings(context: Reader, resources: ResourcesDep) -> Ins
                 )
                 for entry in view.network_allowlist
             ]
+        ),
+        connectors=ConnectorsSettings(
+            google_drive=ConnectorSettings(
+                configured=view.google_drive_configured, redirect_uri=view.oauth_redirect_uri
+            )
         ),
     )

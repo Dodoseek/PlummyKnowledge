@@ -26,7 +26,10 @@ from plummy.application.ports import (
     UnitOfWork,
     UnitOfWorkFactory,
 )
+from plummy.application.secret_storage.vault import SecretVault
 from plummy.application.security import ClientInfo, SecurityContext
+from plummy.application.sources.ports import OAuthClients
+from plummy.application.sources.use_cases import drop_credentials, revoke_token
 from plummy.core.ids import new_id
 from plummy.domain.ai import MAX_DIMENSIONS, EmbeddingProfileStatus
 from plummy.domain.audit import AuditAction, AuditEntry
@@ -46,6 +49,7 @@ from plummy.domain.knowledge import (
     normalize_kb_name,
     upload_source_name,
 )
+from plummy.domain.secrets import SecretValue
 
 logger = logging.getLogger(__name__)
 
@@ -273,22 +277,37 @@ class DeleteKnowledgeBase:
     links, its ``upload`` source and every document in it are deleted, their jobs cancelled; files, chunks
     and vectors are purged afterwards (or by the periodic sweep when the broker is down)."""
 
-    def __init__(self, uow: UnitOfWorkFactory, queue: JobQueue, clock: Clock) -> None:
+    def __init__(
+        self,
+        uow: UnitOfWorkFactory,
+        queue: JobQueue,
+        clock: Clock,
+        vault: SecretVault | None = None,
+        clients: OAuthClients | None = None,
+    ) -> None:
         self._uow, self._queue, self._clock = uow, queue, clock
+        self._vault, self._clients = vault, clients or {}
 
     async def execute(self, context: SecurityContext, client: ClientInfo, kb_id: UUID) -> DeletionResult:
         context.require(Permission.KNOWLEDGE_BASES_MANAGE)
         now = self._clock.now()
+        tokens: list[tuple[DataSource, SecretValue | None]] = []
         async with self._uow() as uow:
             kb = await uow.knowledge_bases.get_for_update(kb_id)
             if kb is None:
                 raise NotFoundError(KB_NOT_FOUND)
             documents: list[UUID] = []
-            source = await uow.data_sources.upload_source_of(kb.id)
-            if source is not None:
-                documents = await uow.documents.mark_deleted_in_source(
+            # The upload source and every external source of the knowledge base go with it (ADR-020 §6);
+            # external credentials are deleted now and revoked at the provider after the commit.
+            for source in await uow.data_sources.linked_to(kb.id):
+                documents += await uow.documents.mark_deleted_in_source(
                     source.id, DeletionReason.KB_DELETED, at=now
                 )
+                if source.is_external:
+                    if self._vault is not None:
+                        _, token = await drop_credentials(uow, self._vault, source.id)
+                        tokens.append((source, token))
+                    await uow.sync_jobs.cancel_active(source.id, error_code="kb_deleted", at=now)
                 await uow.data_sources.mark_deleted(source.id, at=now)
             cancelled = await uow.ingestion_jobs.cancel_unfinished(
                 documents, CANCELLED_BY_KB_DELETION, at=now
@@ -305,6 +324,8 @@ class DeleteKnowledgeBase:
                 )
             )
             await uow.commit()
+        for source, token in tokens:
+            await revoke_token(self._clients.get(source.type), token, source.id)
         for document_id in documents:
             try:
                 await self._queue.enqueue_purge(document_id)

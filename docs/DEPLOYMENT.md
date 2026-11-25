@@ -311,7 +311,8 @@ Allowlist по умолчанию пуст; примеры выше не явл�
 2. Создать OAuth client типа **Web application** с Authorized redirect URI ровно
    `<PUBLIC_URL>/api/v1/data-sources/oauth/callback` (в production — `https`).
 3. Передать `GOOGLE_OAUTH_CLIENT_ID` и `GOOGLE_OAUTH_CLIENT_SECRET_FILE` сервисам `backend` и `worker`, задать
-   `PUBLIC_URL`, перезапустить их. `GET /api/v1/system/settings` покажет `google_drive_configured = true`.
+   `PUBLIC_URL`, перезапустить их. `GET /api/v1/system/settings` покажет `connectors.google_drive.configured = true` и
+   `redirect_uri`.
 4. Подключать **отдельную служебную учётную запись Google**, которой расшарены только нужные папки: выбор папки в
    приложении не ограничивает токен — он читает весь Drive учётной записи.
 5. Отзыв: «Disconnect» в приложении отзывает токен у Google; дополнительно доступ можно отозвать на

@@ -70,6 +70,13 @@ class AuditAction(StrEnum):
     DOCUMENT_DELETED = "document.deleted"
     DOCUMENT_REINDEX_REQUESTED = "document.reindex.requested"
     JOB_RETRIED = "job.retried"
+    DATA_SOURCE_CREATED = "data_source.created"
+    DATA_SOURCE_UPDATED = "data_source.updated"
+    DATA_SOURCE_DELETED = "data_source.deleted"
+    DATA_SOURCE_OAUTH_STARTED = "data_source.oauth.started"
+    DATA_SOURCE_CONNECTED = "data_source.connected"
+    DATA_SOURCE_OAUTH_FAILED = "data_source.oauth.failed"
+    DATA_SOURCE_DISCONNECTED = "data_source.disconnected"
     NETWORK_EGRESS_DENIED = "network.egress.denied"
 
 

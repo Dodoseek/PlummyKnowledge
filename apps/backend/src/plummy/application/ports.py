@@ -27,6 +27,7 @@ from plummy.domain.documents import (
 from plummy.domain.identity import Group, InstanceState, SessionRevokeReason, User, UserSession, UserStatus
 from plummy.domain.knowledge import DataSource, KbAccessLevel, KbGrant, KnowledgeBase
 from plummy.domain.secrets import SecretKind, SecretValue
+from plummy.domain.sources import SourceCredentials
 
 
 class Clock(Protocol):
@@ -635,6 +636,43 @@ class DataSourceRepository(Protocol):
         """The non-deleted sources included in the knowledge base."""
         ...
 
+    async def get_for_update(self, source_id: UUID) -> DataSource | None:
+        """Locks the row: configuration changes, OAuth completion and sync checkpoints are serialized."""
+        ...
+
+    async def save(self, source: DataSource, *, at: datetime) -> None:
+        """Writes the mutable fields (name, status, config, sync state); ``updated_at = at``."""
+        ...
+
+    async def knowledge_base_of(self, source_ids: Sequence[UUID]) -> dict[UUID, UUID]:
+        """The knowledge base of each source (a source belongs to one, ADR-020 §6)."""
+        ...
+
+    async def page(self, page: PageRequest, *, visible_to: UUID | None) -> Page[DataSource]:
+        """Non-deleted sources of non-deleted knowledge bases: all of them with ``visible_to=None``,
+        otherwise those of knowledge bases granted to the user directly or through a group."""
+        ...
+
+    async def detach(self, source_id: UUID) -> None:
+        """Removes the source from its knowledge base (on deletion)."""
+        ...
+
+
+class SourceCredentialRepository(Protocol):
+    async def get(self, source_id: UUID) -> SourceCredentials | None: ...
+
+    async def add(self, credentials: SourceCredentials) -> None: ...
+
+    async def save(self, credentials: SourceCredentials) -> None: ...
+
+    async def delete(self, source_id: UUID) -> None: ...
+
+
+class SyncJobRepository(Protocol):
+    async def cancel_active(self, source_id: UUID, *, error_code: str, at: datetime) -> int:
+        """Queued or running jobs of the source become ``cancelled``; how many."""
+        ...
+
 
 @dataclass(frozen=True, slots=True)
 class DocumentQuery:
@@ -931,6 +969,8 @@ class UnitOfWork(Protocol):
     messages: MessageRepository
     generation_runs: GenerationRunRepository
     data_sources: DataSourceRepository
+    source_credentials: SourceCredentialRepository
+    sync_jobs: SyncJobRepository
     documents: DocumentRepository
     ingestion_jobs: IngestionJobRepository
     chunks: ChunkRepository

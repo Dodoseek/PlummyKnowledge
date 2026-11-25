@@ -1,7 +1,8 @@
 """Instance configuration file (``CONFIG_FILE``, TOML): settings that are too structured for environment
 variables. Like all Instance Settings it is read at startup and never changed through the API (ADR-006).
 
-Currently only the outbound network allowlist (ADR-007)::
+The outbound network allowlist (ADR-007) and, outside production only, the Google endpoints of the Drive
+connector (ADR-020 §2, for end-to-end tests with a fake server)::
 
     [[network.allowlist]]
     name           = "local-ollama"
@@ -9,6 +10,13 @@ Currently only the outbound network allowlist (ADR-007)::
     purposes       = ["llm", "embedding"]
     provider_types = ["ollama"]                 # optional
     allowed_cidrs  = ["172.30.10.0/24"]         # required unless the address is public
+
+    [connectors.google_drive]                   # rejected at startup when APP_ENV=production
+    auth_url       = "http://fake-google:8080/o/oauth2/v2/auth"
+    token_url      = "http://fake-google:8080/token"
+    revoke_url     = "http://fake-google:8080/revoke"
+    api_url        = "http://fake-google:8080"
+    download_hosts = []                         # hosts a download may redirect to (https only)
 """
 
 from __future__ import annotations
@@ -24,7 +32,7 @@ from typing import Any, Final
 from plummy.core.config import ConfigurationError
 from plummy.core.network.addresses import IPAddress, IPNetwork, is_public, overlaps_never
 from plummy.core.network.errors import EgressDeniedError
-from plummy.core.network.policy import AllowlistEntry, EgressPolicy, EgressPurpose
+from plummy.core.network.policy import AllowlistEntry, EgressPolicy, EgressPurpose, RedirectPolicy
 from plummy.core.network.urls import parse_egress_url
 from plummy.domain.ai import ProviderType
 from plummy.domain.knowledge import DataSourceType
@@ -35,8 +43,20 @@ _ENTRY_KEYS: Final = frozenset({"name", "url", "purposes", "provider_types", "al
 
 
 @dataclass(frozen=True, slots=True)
+class GoogleDriveEndpoints:
+    """Replacement Google endpoints (test environments only); every URL still passes the network policy."""
+
+    auth_url: str
+    token_url: str
+    revoke_url: str
+    api_url: str
+    download_hosts: frozenset[str]
+
+
+@dataclass(frozen=True, slots=True)
 class InstanceConfig:
     allowlist: tuple[AllowlistEntry, ...] = ()
+    google_drive: GoogleDriveEndpoints | None = None
 
 
 def _fail(message: str) -> ConfigurationError:
@@ -112,12 +132,37 @@ def _parse_entry(raw: Any, index: int) -> AllowlistEntry:
     )
 
 
+_GOOGLE_KEYS: Final = ("auth_url", "token_url", "revoke_url", "api_url", "download_hosts")
+
+
+def _parse_google_drive(raw: Any) -> GoogleDriveEndpoints:
+    where = "connectors.google_drive"
+    if not isinstance(raw, dict) or set(raw) != set(_GOOGLE_KEYS):
+        raise _fail(f"[{where}] must have exactly: {', '.join(_GOOGLE_KEYS)}")
+    urls: dict[str, str] = {}
+    for key in _GOOGLE_KEYS[:4]:
+        value = raw[key]
+        if not isinstance(value, str):
+            raise _fail(f"{where}.{key} must be a string")
+        try:
+            parse_egress_url(value)
+        except EgressDeniedError:
+            raise _fail(f"{where}.{key} is not a valid http(s) URL") from None
+        urls[key] = value
+    hosts = frozenset(_string_list(raw["download_hosts"], f"{where}.download_hosts"))
+    try:
+        RedirectPolicy(hosts=hosts)
+    except ValueError:
+        raise _fail(f"{where}.download_hosts must be host names or *.suffix patterns") from None
+    return GoogleDriveEndpoints(download_hosts=hosts, **urls)
+
+
 def parse_instance_config(data: bytes) -> InstanceConfig:
     try:
         document = tomllib.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
         raise _fail(f"not valid TOML ({exc})") from None
-    unknown = set(document) - {"network"}
+    unknown = set(document) - {"network", "connectors"}
     if unknown:
         raise _fail(f"unknown sections: {', '.join(sorted(unknown))}")
     network = document.get("network", {})
@@ -130,7 +175,11 @@ def parse_instance_config(data: bytes) -> InstanceConfig:
     names = [entry.name for entry in entries]
     if len(set(names)) != len(names):
         raise _fail("network.allowlist names must be unique")
-    return InstanceConfig(allowlist=entries)
+    connectors = document.get("connectors", {})
+    if not isinstance(connectors, dict) or set(connectors) - {"google_drive"}:
+        raise _fail("[connectors] may contain only 'google_drive'")
+    google_drive = _parse_google_drive(connectors["google_drive"]) if "google_drive" in connectors else None
+    return InstanceConfig(allowlist=entries, google_drive=google_drive)
 
 
 def load_instance_config(path: Path | None) -> InstanceConfig:

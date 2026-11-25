@@ -43,7 +43,12 @@ MIN_QUARANTINE_TTL = timedelta(minutes=10)
 MAX_QUARANTINE_TTL = timedelta(days=7)
 
 # Secret fields that may also be provided as ``<NAME>_FILE`` (path to a file with the value).
-FILE_SECRET_FIELDS: tuple[str, ...] = ("database_url", "redis_url", "secret_key")
+FILE_SECRET_FIELDS: tuple[str, ...] = (
+    "database_url",
+    "redis_url",
+    "secret_key",
+    "google_oauth_client_secret",
+)
 
 
 class ConfigurationError(Exception):
@@ -175,6 +180,11 @@ class Settings(BaseSettings):
     # Hard limit of one answer, retrieval included (ADR-019 §2); a slower answer ends with provider_timeout.
     chat_generation_timeout_seconds: int = Field(default=120, ge=10, le=600)
 
+    # OAuth client of the Google Drive connector (ADR-020 §2): both or neither. The redirect URI is
+    # PUBLIC_URL + /api/v1/data-sources/oauth/callback; without PUBLIC_URL the connector is not configured.
+    google_oauth_client_id: str | None = Field(default=None, max_length=256)
+    google_oauth_client_secret: SecretStr | None = None
+
     _secret_key_generated: bool = PrivateAttr(default=False)
 
     @classmethod
@@ -287,6 +297,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _check_environment_policy(self) -> Self:
+        if (self.google_oauth_client_id is None) != (self.google_oauth_client_secret is None):
+            raise ValueError("GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET must be set together")
         if self.session_absolute_ttl < self.session_idle_ttl:
             raise ValueError("SESSION_ABSOLUTE_TTL must not be shorter than SESSION_IDLE_TTL")
         if self.app_env is AppEnv.PRODUCTION:
@@ -321,6 +333,17 @@ class Settings(BaseSettings):
         return self._secret_key_generated
 
     @property
+    def google_drive_configured(self) -> bool:
+        return self.google_oauth_client_id is not None and self.public_url is not None
+
+    @property
+    def oauth_redirect_uri(self) -> str | None:
+        """The exact redirect URI registered with the provider (ADR-020 §1)."""
+        if self.public_url is None:
+            return None
+        return self.public_url.rstrip("/") + "/api/v1/data-sources/oauth/callback"
+
+    @property
     def trusted_origins(self) -> frozenset[str]:
         """Origins allowed to send state-changing requests: PUBLIC_URL and CORS_ORIGINS (ADR-013)."""
         origins = set(self.cors_origins)
@@ -349,6 +372,7 @@ class Settings(BaseSettings):
             "storage_backend": self.storage_backend.value,
             "quarantine_ttl_seconds": int(self.quarantine_ttl.total_seconds()),
             "upload_max_bytes": self.upload_max_bytes,
+            "google_drive_configured": self.google_drive_configured,
         }
 
 
