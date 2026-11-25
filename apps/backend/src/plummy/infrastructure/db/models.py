@@ -828,3 +828,144 @@ class IngestionJobModel(Base):
     finished_at: Mapped[datetime | None] = _ts()
     # Last change of the row (set by the repository): the beat sweep finds queued jobs left unpublished.
     updated_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
+
+
+class ConversationModel(Base):
+    """A user's conversation with an assistant (DATABASE_SCHEMA.md §6.1). Private to its owner; soft-deleted."""
+
+    __tablename__ = "conversations"
+    __table_args__ = (
+        CheckConstraint("char_length(title) BETWEEN 1 AND 200", name="title_length"),
+        Index(
+            "ix_conversations_user_id_last_message_at",
+            "user_id",
+            text("last_message_at DESC"),
+            text("id DESC"),
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index("ix_conversations_assistant_id", "assistant_id"),
+        Index("ix_conversations_deleted_at", "deleted_at", postgresql_where=text("deleted_at IS NOT NULL")),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    assistant_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("assistants.id", ondelete="RESTRICT"), nullable=False
+    )
+    title: Mapped[str] = mapped_column(Text(), nullable=False)
+    created_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
+    updated_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
+    last_message_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
+    deleted_at: Mapped[datetime | None] = _ts()
+
+
+class MessageModel(Base):
+    """A message of a conversation (DATABASE_SCHEMA.md §6.2); ``client_message_id`` makes sending idempotent."""
+
+    __tablename__ = "messages"
+    __table_args__ = (
+        CheckConstraint("sequence >= 1", name="sequence"),
+        CheckConstraint("role IN ('user', 'assistant')", name="role"),
+        CheckConstraint("status IN ('completed', 'streaming', 'stopped', 'failed')", name="status"),
+        CheckConstraint("char_length(content) <= 200000", name="content_length"),
+        CheckConstraint("(role = 'user') = (client_message_id IS NOT NULL)", name="client_message_id"),
+        UniqueConstraint("conversation_id", "sequence"),
+        UniqueConstraint("conversation_id", "client_message_id"),
+        Index("ix_messages_streaming", "created_at", postgresql_where=text("status = 'streaming'")),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    conversation_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False
+    )
+    sequence: Mapped[int] = mapped_column(Integer(), nullable=False)
+    role: Mapped[str] = mapped_column(Text(), nullable=False)
+    content: Mapped[str] = mapped_column(Text(), nullable=False, server_default=text("''"))
+    status: Mapped[str] = mapped_column(Text(), nullable=False)
+    client_message_id: Mapped[UUID | None] = mapped_column(PG_UUID(as_uuid=True), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    created_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
+    completed_at: Mapped[datetime | None] = _ts()
+
+
+class MessageCitationModel(Base):
+    """A validated citation of an answer, as a snapshot (DATABASE_SCHEMA.md §6.3). No foreign keys to the
+    document: history stays readable after a purge, and opening a citation checks access again."""
+
+    __tablename__ = "message_citations"
+    __table_args__ = (
+        CheckConstraint("citation_key ~ '^c[0-9]{1,4}$'", name="citation_key"),
+        CheckConstraint("ordinal >= 1", name="ordinal"),
+        UniqueConstraint("message_id", "ordinal"),
+    )
+
+    message_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("messages.id", ondelete="CASCADE"), primary_key=True
+    )
+    citation_key: Mapped[str] = mapped_column(Text(), primary_key=True)
+    ordinal: Mapped[int] = mapped_column(Integer(), nullable=False)
+    document_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    document_version_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    chunk_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    filename: Mapped[str] = mapped_column(Text(), nullable=False)
+    page: Mapped[int | None] = mapped_column(Integer(), nullable=True)
+    section: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    sheet: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    row_index: Mapped[int | None] = mapped_column(Integer(), nullable=True)
+    snippet: Mapped[str] = mapped_column(Text(), nullable=False)
+    viewer_route: Mapped[str] = mapped_column(Text(), nullable=False)
+
+
+class GenerationRunModel(Base):
+    """One answer generation: configuration used, outcome and metrics (DATABASE_SCHEMA.md §6.4, ADR-019).
+    No prompt and no retrieved text: only the chunk IDs."""
+
+    __tablename__ = "generation_runs"
+    __table_args__ = (
+        CheckConstraint("status IN ('running', 'completed', 'stopped', 'failed')", name="status"),
+        CheckConstraint(
+            "finish_reason IS NULL OR finish_reason IN ('stop', 'length', 'user_cancelled', 'error')",
+            name="finish_reason",
+        ),
+        CheckConstraint("rejected_citation_count >= 0", name="counters"),
+        UniqueConstraint("message_id"),
+        Index("ix_generation_runs_conversation_id", "conversation_id"),
+        Index("ix_generation_runs_assistant_id", "assistant_id"),
+        Index("ix_generation_runs_model_config_id", "model_config_id"),
+        Index("ix_generation_runs_embedding_config_id", "embedding_config_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    conversation_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False
+    )
+    message_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("messages.id", ondelete="CASCADE"), nullable=False
+    )
+    assistant_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("assistants.id", ondelete="RESTRICT"), nullable=False
+    )
+    model_config_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("model_configs.id", ondelete="SET NULL"), nullable=True
+    )
+    embedding_config_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("embedding_provider_configs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    status: Mapped[str] = mapped_column(Text(), nullable=False)
+    finish_reason: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    retrieved_chunk_ids: Mapped[list[UUID]] = mapped_column(
+        ARRAY(PG_UUID(as_uuid=True)), nullable=False, server_default=text("'{}'::uuid[]")
+    )
+    rejected_citation_count: Mapped[int] = mapped_column(Integer(), nullable=False, server_default=text("0"))
+    prompt_tokens: Mapped[int | None] = mapped_column(Integer(), nullable=True)
+    completion_tokens: Mapped[int | None] = mapped_column(Integer(), nullable=True)
+    retrieval_ms: Mapped[int | None] = mapped_column(Integer(), nullable=True)
+    time_to_first_token_ms: Mapped[int | None] = mapped_column(Integer(), nullable=True)
+    total_ms: Mapped[int | None] = mapped_column(Integer(), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    started_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
+    finished_at: Mapped[datetime | None] = _ts()

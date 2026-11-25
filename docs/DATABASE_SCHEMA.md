@@ -536,55 +536,62 @@ Level Security по доступным KB как второй рубеж (нуж
 
 ---
 
-## 6. Chat (§5)
+## 6. Chat (§5) — реализовано, `0014` ([ADR-019](adr/0019-answer-generation-in-api-process.md))
 
 ### 6.1 `conversations`
 
 | Колонка | Тип | Описание |
 |---|---|---|
-| `user_id` | `uuid` | Владелец; диалоги приватны для пользователя |
-| `assistant_id` | `uuid` | |
-| `title` | `text` | |
-| `last_message_at` | `timestamptz` | |
-| `deleted_at` | `timestamptz` | |
+| `user_id` | `uuid` | Владелец, FK `CASCADE`; диалоги приватны для пользователя |
+| `assistant_id` | `uuid` | FK `RESTRICT` (ассистенты удаляются только мягко) |
+| `title` | `text` | 1–200 символов; по умолчанию — начало первого вопроса |
+| `created_at`, `updated_at`, `last_message_at` | `timestamptz` | |
+| `deleted_at` | `timestamptz` | Мягкое удаление: диалог сразу скрыт, сообщения удаляет purge |
 
-Индексы: `(user_id, last_message_at DESC)`.
+Индексы: `(user_id, last_message_at DESC, id DESC) WHERE deleted_at IS NULL`; `assistant_id`;
+`deleted_at WHERE deleted_at IS NOT NULL` (purge).
 
 ### 6.2 `messages`
 
 | Колонка | Тип | Описание |
 |---|---|---|
-| `conversation_id` | `uuid` | FK |
-| `sequence` | `integer` | `UNIQUE (conversation_id, sequence)` |
+| `conversation_id` | `uuid` | FK `CASCADE` |
+| `sequence` | `integer` | ≥ 1, `UNIQUE (conversation_id, sequence)` |
 | `role` | `text` | `user` \| `assistant` |
-| `content` | `text` | |
+| `content` | `text` | ≤ 200 000 символов (длину вопроса ограничивает use case) |
 | `status` | `text` | `completed` \| `streaming` \| `stopped` \| `failed` |
-| `client_message_id` | `uuid` | Idempotency отправки; `UNIQUE (conversation_id, client_message_id)` **[Proposed]** |
+| `client_message_id` | `uuid` | Idempotency отправки; есть ровно у сообщений `user` (CHECK); `UNIQUE (conversation_id, client_message_id)` |
+| `error_code` | `text` | Для `failed`/`stopped`: `provider_timeout`, `client_disconnected`, `interrupted`, … |
+| `created_at`, `completed_at` | `timestamptz` | |
+
+Индекс `created_at WHERE status = 'streaming'` — задача очистки переводит зависшие ответы в `failed` (ADR-019).
 
 ### 6.3 `message_citations` (§6)
 
-Snapshot metadata на момент ответа, чтобы история оставалась читаемой.
+Snapshot metadata на момент ответа, чтобы история оставалась читаемой. Внешних ключей на документ, версию и chunk
+нет: purge документа не трогает историю.
 
 | Колонка | Тип | Описание |
 |---|---|---|
-| `message_id` | `uuid` | FK |
-| `citation_key` | `text` | Временный citation ID, выданный backend в этой генерации |
-| `ordinal` | `integer` | Порядок отображения |
+| `message_id` | `uuid` | FK `CASCADE` |
+| `citation_key` | `text` | Временный citation ID этой генерации (`^c[0-9]{1,4}$`) |
+| `ordinal` | `integer` | Порядок отображения, `UNIQUE (message_id, ordinal)` |
 | `document_id`, `document_version_id`, `chunk_id` | `uuid` | |
 | `filename` | `text` | |
-| `page`, `section`, `sheet`, `row` | — | `integer` / `text` / `text` / `integer` |
+| `page`, `section`, `sheet`, `row_index` | — | `integer` / `text` / `text` / `integer` |
 | `snippet` | `text` | |
 | `viewer_route` | `text` | Internal viewer route (§6) |
 
-`UNIQUE (message_id, citation_key)`. Открытие цитаты из истории **повторно проверяет** доступ и то, что документ не
-удалён (см. SECURITY_MODEL.md); snapshot не даёт прав.
+`PRIMARY KEY (message_id, citation_key)`. Открытие цитаты из истории **повторно проверяет** доступ и то, что документ
+не удалён (см. SECURITY_MODEL.md); snapshot не даёт прав.
 
 ### 6.4 `generation_runs` (§9, §11)
 
 | Колонка | Тип | Описание |
 |---|---|---|
-| `conversation_id`, `message_id` | `uuid` | |
-| `assistant_id`, `model_config_id`, `embedding_config_id` | `uuid` | Конфигурация на момент генерации |
+| `conversation_id`, `message_id` | `uuid` | FK `CASCADE`; `message_id` уникален (один run на ответ) |
+| `assistant_id` | `uuid` | FK `RESTRICT` |
+| `model_config_id`, `embedding_config_id` | `uuid` | Конфигурация на момент генерации; FK `SET NULL` — история не блокирует удаление |
 | `status` | `text` | `running` \| `completed` \| `stopped` \| `failed` |
 | `finish_reason` | `text` | `stop` \| `length` \| `user_cancelled` \| `error` |
 | `retrieved_chunk_ids` | `uuid[]` | Для диагностики и аудита; без текста |

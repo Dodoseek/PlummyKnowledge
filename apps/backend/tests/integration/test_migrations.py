@@ -105,12 +105,14 @@ async def test_identity_tables_are_created(migrator: Migrator, database_url: str
         "assistant_knowledge_bases",
         "assistants",
         "audit_logs",
+        "conversations",
         "data_sources",
         "document_chunks",
         "document_versions",
         "documents",
         "embedding_provider_configs",
         "embeddings",
+        "generation_runs",
         "group_roles",
         "groups",
         "ingestion_jobs",
@@ -118,6 +120,8 @@ async def test_identity_tables_are_created(migrator: Migrator, database_url: str
         "knowledge_base_access",
         "knowledge_base_sources",
         "knowledge_bases",
+        "message_citations",
+        "messages",
         "model_configs",
         "permissions",
         "role_permissions",
@@ -275,6 +279,43 @@ async def test_assistant_tables_downgrade_and_upgrade_again(migrator: Migrator, 
     exists = (
         "SELECT to_regclass('assistants') IS NOT NULL OR to_regclass('assistant_knowledge_bases') IS NOT NULL"
     )
+    assert await _query(database_url, exists) == [False]
+    await migrator.upgrade()
+    assert await _query(database_url, exists) == [True]
+
+
+async def test_chat_tables_keep_history_apart_from_documents(migrator: Migrator, database_url: str) -> None:
+    # DATABASE_SCHEMA.md §6: conversations go with their user, history never blocks deleting a model or a
+    # profile, and citations do not reference documents (a purge leaves the snapshot).
+    await migrator.upgrade()
+    actions = await _query(
+        database_url,
+        "SELECT conname::text || ':' || confdeltype::text FROM pg_constraint WHERE contype = 'f' AND conrelid IN "
+        "('conversations'::regclass, 'messages'::regclass, 'message_citations'::regclass, "
+        "'generation_runs'::regclass) ORDER BY conname",
+    )
+    assert actions == [
+        "fk_conversations_assistant_id_assistants:r",
+        "fk_conversations_user_id_users:c",
+        "fk_generation_runs_assistant_id_assistants:r",
+        "fk_generation_runs_conversation_id_conversations:c",
+        "fk_generation_runs_embedding_config_id_embedding_provid_c1b8:n",  # shortened to 63 characters
+        "fk_generation_runs_message_id_messages:c",
+        "fk_generation_runs_model_config_id_model_configs:n",
+        "fk_message_citations_message_id_messages:c",
+        "fk_messages_conversation_id_conversations:c",
+    ]
+    assert await _query(
+        database_url,
+        "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+        "WHERE conname = 'uq_messages_conversation_id_client_message_id'",
+    ) == ["UNIQUE (conversation_id, client_message_id)"]
+
+
+async def test_chat_tables_downgrade_and_upgrade_again(migrator: Migrator, database_url: str) -> None:
+    await migrator.upgrade()
+    await migrator.downgrade("0013")
+    exists = "SELECT to_regclass('conversations') IS NOT NULL OR to_regclass('generation_runs') IS NOT NULL"
     assert await _query(database_url, exists) == [False]
     await migrator.upgrade()
     assert await _query(database_url, exists) == [True]
