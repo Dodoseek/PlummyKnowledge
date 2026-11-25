@@ -518,6 +518,67 @@ class KnowledgeBaseSourceModel(Base):
     created_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
 
 
+class AssistantModel(Base):
+    """Assistants (DATABASE_SCHEMA.md §5.3, ADR-005). Soft-deleted; the name is unique among live ones."""
+
+    __tablename__ = "assistants"
+    __table_args__ = (
+        CheckConstraint("char_length(name) BETWEEN 1 AND 200", name="name_length"),
+        CheckConstraint("description IS NULL OR char_length(description) <= 2000", name="description_length"),
+        CheckConstraint("char_length(instructions) <= 20000", name="instructions_length"),
+        CheckConstraint("jsonb_typeof(retrieval_settings) = 'object'", name="retrieval_settings_object"),
+        CheckConstraint("max_context_tokens BETWEEN 256 AND 128000", name="max_context_tokens"),
+        CheckConstraint("max_history_messages BETWEEN 0 AND 100", name="max_history_messages"),
+        CheckConstraint("max_output_tokens BETWEEN 1 AND 128000", name="max_output_tokens"),
+        CheckConstraint("status IN ('active', 'disabled')", name="status"),
+        Index("uq_assistants_name_active", "name", unique=True, postgresql_where=text("deleted_at IS NULL")),
+        Index("ix_assistants_created_at_id", "created_at", "id"),
+        Index("ix_assistants_model_config_id", "model_config_id"),
+        Index("ix_assistants_embedding_config_id", "embedding_config_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    name: Mapped[str] = mapped_column(CITEXT(), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    instructions: Mapped[str] = mapped_column(Text(), nullable=False, server_default=text("''"))
+    model_config_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("model_configs.id", ondelete="RESTRICT"), nullable=False
+    )
+    embedding_config_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("embedding_provider_configs.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    retrieval_settings: Mapped[dict[str, Any]] = mapped_column(
+        JSONB(), nullable=False, server_default=text("'{}'::jsonb")
+    )
+    max_context_tokens: Mapped[int] = mapped_column(Integer(), nullable=False, server_default=text("8000"))
+    max_history_messages: Mapped[int] = mapped_column(Integer(), nullable=False, server_default=text("10"))
+    max_output_tokens: Mapped[int] = mapped_column(Integer(), nullable=False, server_default=text("1024"))
+    status: Mapped[str] = mapped_column(Text(), nullable=False, server_default=text("'active'"))
+    created_by: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
+    updated_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
+    deleted_at: Mapped[datetime | None] = _ts()
+
+
+class AssistantKnowledgeBaseModel(Base):
+    """Knowledge bases of an assistant (DATABASE_SCHEMA.md §5.3)."""
+
+    __tablename__ = "assistant_knowledge_bases"
+    __table_args__ = (Index("ix_assistant_knowledge_bases_knowledge_base_id", "knowledge_base_id"),)
+
+    assistant_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("assistants.id", ondelete="CASCADE"), primary_key=True
+    )
+    knowledge_base_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("knowledge_bases.id", ondelete="CASCADE"), primary_key=True
+    )
+    created_at: Mapped[datetime] = _ts(nullable=False, default_now=True)
+
+
 class DocumentModel(Base):
     """Documents (DATABASE_SCHEMA.md §5.7). ``filename`` is for display only, never a storage path."""
 

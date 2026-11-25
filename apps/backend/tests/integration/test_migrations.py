@@ -102,6 +102,8 @@ async def test_identity_tables_are_created(migrator: Migrator, database_url: str
     assert tables == [
         "ai_providers",
         "alembic_version",
+        "assistant_knowledge_bases",
+        "assistants",
         "audit_logs",
         "data_sources",
         "document_chunks",
@@ -241,3 +243,37 @@ async def test_chunk_search_vector_downgrade_and_upgrade_again(migrator: Migrato
     assert await _query(database_url, index_exists) == [False]
     await migrator.upgrade()
     assert await _query(database_url, index_exists) == [True]
+
+
+async def test_assistant_tables_link_and_protect(migrator: Migrator, database_url: str) -> None:
+    # DATABASE_SCHEMA.md §5.3: a model or profile in use cannot be deleted; links go with either side.
+    await migrator.upgrade()
+    actions = await _query(
+        database_url,
+        "SELECT conname::text || ':' || confdeltype::text FROM pg_constraint "
+        "WHERE contype = 'f' AND conrelid IN ('assistants'::regclass, 'assistant_knowledge_bases'::regclass) "
+        "ORDER BY conname",
+    )
+    assert actions == [
+        "fk_assistant_knowledge_bases_assistant_id_assistants:c",
+        "fk_assistant_knowledge_bases_knowledge_base_id_knowledge_bases:c",
+        "fk_assistants_created_by_users:n",
+        "fk_assistants_embedding_config_id_embedding_provider_configs:r",
+        "fk_assistants_model_config_id_model_configs:r",
+    ]
+    assert await _query(
+        database_url,
+        "SELECT indexdef LIKE '%WHERE (deleted_at IS NULL)%' FROM pg_indexes "
+        "WHERE indexname = 'uq_assistants_name_active'",
+    ) == [True]
+
+
+async def test_assistant_tables_downgrade_and_upgrade_again(migrator: Migrator, database_url: str) -> None:
+    await migrator.upgrade()
+    await migrator.downgrade("0012")
+    exists = (
+        "SELECT to_regclass('assistants') IS NOT NULL OR to_regclass('assistant_knowledge_bases') IS NOT NULL"
+    )
+    assert await _query(database_url, exists) == [False]
+    await migrator.upgrade()
+    assert await _query(database_url, exists) == [True]

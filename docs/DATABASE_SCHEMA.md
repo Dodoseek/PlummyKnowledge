@@ -327,26 +327,26 @@ associated data AEAD — `plummy-secret-v1|<id>|<kind>`, поэтому шифр
 
 MVP: доступ только на уровне KB; document-level ACL отсутствует (§8).
 
-### 5.3 `assistants`, `assistant_knowledge_bases` (§5)
+### 5.3 `assistants`, `assistant_knowledge_bases` (§5) — реализовано, `0013`
 
 `assistants`:
 
 | Колонка | Тип | Описание |
 |---|---|---|
-| `name`, `description` | `text` | |
-| `instructions` | `text` | System instructions; не должны содержать секретов (§8) |
-| `model_config_id` | `uuid` | LLM |
-| `embedding_config_id` | `uuid` | Embedding profile; должен совпадать с `embedding_config_id` каждой привязанной KB (проверка в use case) **[Proposed]** |
-| `retrieval_settings` | `jsonb` | top-k (vector/FTS/итоговый), RRF k, dedup, min score |
-| `max_context_tokens` | `integer` | Context budget (§6) |
-| `max_history_messages` | `integer` | Context limits (§5) |
-| `max_output_tokens` | `integer` | |
-| `status` | `text` | `active` \| `disabled` |
+| `name`, `description` | `citext`, `text` | Имя 1–200 символов, `UNIQUE (lower(name)) WHERE deleted_at IS NULL`; описание ≤ 2000 |
+| `instructions` | `text` | System instructions, ≤ 20 000 символов (по умолчанию `''`); не должны содержать секретов (§8) |
+| `model_config_id` | `uuid` | LLM; FK `ON DELETE RESTRICT` — используемую модель нельзя удалить |
+| `embedding_config_id` | `uuid` | Embedding profile; совпадает с `embedding_config_id` каждой привязанной KB (проверка в use case, утверждено 2026-11-25); FK `RESTRICT` |
+| `retrieval_settings` | `jsonb` | Объект: top-k (vector/FTS/итоговый), RRF k, веса веток fusion |
+| `max_context_tokens` | `integer` | Context budget (§6), 256–128 000, по умолчанию 8000 |
+| `max_history_messages` | `integer` | Context limits (§5), 0–100, по умолчанию 10 |
+| `max_output_tokens` | `integer` | 1–128 000, по умолчанию 1024 |
+| `status` | `text` | `active` \| `disabled` (CHECK) |
 | `created_by` | `uuid` | |
 | `deleted_at` | `timestamptz` | |
 
-`assistant_knowledge_bases`: `assistant_id`, `knowledge_base_id`; PK
-`(assistant_id, knowledge_base_id)`.
+`assistant_knowledge_bases`: `assistant_id`, `knowledge_base_id`, `created_at`; PK
+`(assistant_id, knowledge_base_id)`, индекс по `knowledge_base_id`; обе FK `ON DELETE CASCADE`.
 
 **Доступ к ассистенту — [ADR-005](adr/0005-assistant-access-model.md).** Отдельной таблицы доступа нет: доступ
 наследуется от KB ассистента.
