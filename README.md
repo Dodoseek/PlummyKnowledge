@@ -10,10 +10,12 @@ Open-source **self-hosted** платформа корпоративной баз
 - **Ответы с проверенными цитатами.** Модель может сослаться только на фрагменты, которые backend выдал ей сам.
 - **Минимум привилегий.** Сотрудник видит только те базы знаний, документы и ассистентов, к которым у него есть доступ.
 
-> **Статус: ранняя разработка (`0.1.0-dev`).** Готов технический фундамент (Этап 1): backend, frontend,
-> PostgreSQL + pgvector, Redis, миграции и среда разработки в Docker Compose. Пользовательских функций (вход,
-> загрузка документов, чат) пока нет — план работ описан в [roadmap](docs/DEVELOPMENT_ROADMAP.md). Не используйте
-> проект в production.
+> **Статус: 0.1.0 — первый релиз для оценки и пилотов.** Работает весь базовый сценарий: первоначальная настройка,
+> вход и сессии, пользователи, группы и роли, подключение LLM-провайдеров (облачных и локальных), базы знаний с
+> доступом по пользователям и группам, загрузка документов (гарантированно PDF и DOCX; также TXT, Markdown, CSV,
+> XLSX) с асинхронной индексацией, hybrid-поиск, ассистенты, чат с потоковым ответом, остановкой и историей,
+> проверенные цитаты и защищённый просмотр источника. Production-профиля (Nginx, TLS, CSP, MinIO) пока нет —
+> он запланирован в Фазе 11 ([roadmap](docs/DEVELOPMENT_ROADMAP.md)); не выставляйте инсталляцию в интернет.
 
 ## Быстрый старт (разработка)
 
@@ -28,7 +30,7 @@ docker compose up --build
 
 | Что | Адрес |
 |---|---|
-| Web-интерфейс (технический экран статуса) | <http://localhost:5173> |
+| Web-интерфейс | <http://localhost:5173> |
 | API | <http://localhost:8000/api/v1> |
 | Документация API (Swagger UI; в `production` выключена, см. `API_DOCS_ENABLED`) | <http://localhost:8000/api/v1/docs> |
 | OpenAPI-схема | <http://localhost:8000/api/v1/openapi.json> |
@@ -45,6 +47,27 @@ docker compose up --build
 
 Остановить стек: `docker compose down`. Удалить данные (БД, Redis): `docker compose down -v`.
 
+### Первые шаги
+
+1. Прочитайте одноразовый setup token и откройте <http://localhost:5173> — откроется мастер `/setup`, где создаётся
+   первый администратор ([ADR-006](docs/adr/0006-initial-setup-and-system-configuration.md)):
+
+   ```bash
+   docker compose run --rm migrate cat /var/lib/plummy/bootstrap/setup-token
+   ```
+
+2. **AI providers** → добавьте провайдера (OpenAI, Anthropic, Ollama или OpenAI-compatible), проверьте соединение,
+   добавьте chat-модель. Ключи шифруются и никогда не возвращаются API. Локальная модель (например, Ollama) доступна
+   только после записи в allowlist конфигурационного файла — [DEPLOYMENT.md §7.3](docs/DEPLOYMENT.md).
+3. **AI providers → Embedding profiles** → профиль на модели embeddings (облачной или локальной).
+4. **Knowledge bases** → создайте базу знаний, загрузите документы и дождитесь статуса `indexed`; выдайте доступ
+   пользователям или группам.
+5. **Manage assistants** → ассистент с моделью, embedding profile и базами знаний. Пользователь видит ассистента,
+   только если у него есть доступ ко **всем** его базам ([ADR-005](docs/adr/0005-assistant-access-model.md)).
+6. **Users** → пригласите сотрудников: ссылка активации показывается один раз
+   ([ADR-015](docs/adr/0015-user-activation-links.md)).
+7. **Chat** → задайте вопрос: ответ приходит потоком, номера в квадратных скобках ведут к цитируемому фрагменту.
+
 ## Архитектура вкратце
 
 Модульный монолит ([ADR-002](docs/adr/0002-modular-monolith-and-layering.md)): один backend-артефакт со слоями
@@ -59,12 +82,15 @@ docker compose up --build
 | Развёртывание | Docker, Docker Compose (Nginx и production-профиль — Фаза 11) |
 
 ```text
-apps/backend/     FastAPI-приложение, Alembic-миграции, тесты
-apps/frontend/    React SPA
-docs/             спецификации и ADR
-scripts/          служебные скрипты (версионирование)
-deploy/postgres/  SQL расширений и init-скрипт dev-БД
-compose.yaml      среда разработки
+apps/backend/      FastAPI-приложение, Celery workers, Alembic-миграции, тесты
+apps/frontend/     React SPA
+apps/e2e/          end-to-end тесты (Playwright)
+docs/              спецификации и ADR
+scripts/           служебные скрипты (версионирование, secret scan)
+deploy/postgres/   SQL расширений и init-скрипт dev-БД
+deploy/e2e/        фейковый OpenAI-compatible провайдер и конфигурация E2E-стека
+compose.yaml       среда разработки
+compose.e2e.yaml   E2E-стек поверх compose.yaml
 ```
 
 ## Разработка
@@ -85,8 +111,11 @@ npm ci
 npm test && npm run lint && npm run typecheck && npm run build
 ```
 
-Изменения в `apps/backend/src` и `apps/frontend/src` подхватываются без перезапуска: работают uvicorn reload и
-Vite HMR. После изменения зависимостей (`pyproject.toml`/`uv.lock`, `package.json`/`package-lock.json`) выполните
+E2E-тесты (Playwright) — в отдельном Compose-проекте рядом с dev-стеком, команды —
+[DEPLOYMENT.md](docs/DEPLOYMENT.md) («E2E-стек»).
+
+Изменения в `apps/backend/src` и `apps/frontend/src` подхватываются API и frontend без перезапуска: работают uvicorn
+reload и Vite HMR. Workers и scheduler нужно перезапустить: `docker compose restart worker worker-ingestion scheduler`. После изменения зависимостей (`pyproject.toml`/`uv.lock`, `package.json`/`package-lock.json`) выполните
 `docker compose up --build`.
 
 Frontend требует npm 11: версия зафиксирована в `package.json` (`packageManager`, `engines`), а `.npmrc`
@@ -118,9 +147,15 @@ Backend настраивается переменными окружения, и
 
 ## Версионирование
 
-Версия хранится в файле [`VERSION`](VERSION) и автоматически повышается при каждом коммите (`0.1.0-dev.N`). Backend,
+Версия хранится в файле [`VERSION`](VERSION) и автоматически повышается при каждом коммите (`X.Y.Z-dev.N`); релизы
+помечаются тегами `vX.Y.Z`. Backend,
 frontend и Docker-образы берут её из этого файла. Подробнее — [ADR-009](docs/adr/0009-automatic-versioning.md).
+
+## Участие и безопасность
+
+Как предложить изменение — [CONTRIBUTING.md](CONTRIBUTING.md). Об уязвимостях сообщайте приватно —
+[SECURITY.md](SECURITY.md).
 
 ## Лицензия
 
-[Apache License 2.0](LICENSE).
+[Apache License 2.0](LICENSE), см. также [NOTICE](NOTICE).

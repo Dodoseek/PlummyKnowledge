@@ -1,0 +1,7 @@
+PlummyKnowledge
+Copyright 2026 Андрей Глушнев
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Third-party dependencies are distributed under their own licenses; they are listed in
+apps/backend/uv.lock, apps/frontend/package-lock.json and apps/e2e/package-lock.json.

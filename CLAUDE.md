@@ -13,7 +13,7 @@ PlummyKnowledge — open-source **self-hosted** платформа корпор�
 
 **Текущее состояние:** Фазы 1–8 roadmap завершены (Foundation, Bootstrap & Authentication, Users & RBAC, AI providers
 & network policy, Local document ingestion, Retrieval & RAG evaluation, Knowledge Bases & Assistants, Chat UI &
-streaming); релиз 0.1.0 — по решению владельца. Backend:
+streaming); выпущен релиз 0.1.0 (тег `v0.1.0`). Backend:
 FastAPI, Pydantic Settings, SQLAlchemy async, Alembic (`vector`/`citext`, users, activation tokens, groups,
 RBAC-каталог и назначения ролей, sessions, audit_logs), Redis (rate limit, брокер Celery), health live/ready; Celery
 worker с диагностической задачей; первоначальная настройка по bootstrap token и CLI `python -m plummy.cli`;
