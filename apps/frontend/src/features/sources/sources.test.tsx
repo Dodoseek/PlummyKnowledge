@@ -203,7 +203,7 @@ describe('external sources of a knowledge base', () => {
       }),
       'GET /jobs': page([]),
     });
-    await user.type(await screen.findByRole('textbox', { name: /New Google Drive source/ }), ' Team drive ');
+    await user.type(await screen.findByRole('textbox', { name: 'Source name' }), ' Team drive ');
     await user.click(screen.getByRole('button', { name: 'Add source' }));
     await waitFor(() => {
       expect(requests(fetchMock, 'POST', '/data-sources')).toHaveLength(1);
@@ -259,9 +259,7 @@ describe('external sources of a knowledge base', () => {
 
   it('falls back to a generic message for an unknown OAuth reason', async () => {
     renderKb(MANAGER, {}, '?oauth=failed&reason=%3Cscript%3E');
-    expect(await screen.findByTestId('oauth-notice')).toHaveTextContent(
-      'Connecting the Google account failed.',
-    );
+    expect(await screen.findByTestId('oauth-notice')).toHaveTextContent('Connecting the account failed.');
   });
 
   it('chooses a folder in the picker, through shared drives and pages', async () => {
@@ -366,6 +364,7 @@ describe('external sources of a knowledge base', () => {
       expect(requests(fetchMock, 'DELETE', `/data-sources/${SOURCE_ID}`)).toHaveLength(1);
     });
     expect(requests(fetchMock, 'POST', '/disconnect')).toHaveLength(1);
+    expect(card.queryByTestId('revoke-hint')).not.toBeInTheDocument(); // Google revokes the token itself
   });
 
   it('follows a running sync and reloads the documents when it ends', async () => {
@@ -395,5 +394,153 @@ describe('external sources of a knowledge base', () => {
   it('shows why the sources cannot be loaded', async () => {
     renderKb(MANAGER, { 'GET /data-sources': problem(503, 'service_unavailable') });
     expect(await screen.findByText('Cannot load sources')).toBeInTheDocument();
+  });
+});
+
+const GRAPH = 'https://graph.microsoft.com/';
+
+function microsoft(overrides: Record<string, unknown> = {}) {
+  return drive({
+    type: 'microsoft_365',
+    name: 'Legal SharePoint',
+    folder: { id: 'item:b!drive:01ROOT', name: 'Documents' },
+    credentials: {
+      ...drive().credentials,
+      account_label: 'Graph Bot <graph-bot@contoso.example>',
+      granted_scopes: [`${GRAPH}Files.Read.All`, `${GRAPH}Sites.Read.All`, `${GRAPH}User.Read`],
+    },
+    ...overrides,
+  });
+}
+
+describe('a Microsoft 365 source', () => {
+  it('is added with its provider and connected to a Microsoft account', async () => {
+    const user = userEvent.setup();
+    const assign = vi.spyOn(browser, 'assign').mockImplementation(() => undefined);
+    const fresh = microsoft({ status: 'paused', folder: null, credentials: null });
+    const authorize =
+      'https://login.microsoftonline.com/contoso.onmicrosoft.com/oauth2/v2.0/authorize?state=s';
+    const { fetchMock } = renderKb(MANAGER, {
+      'GET /data-sources': page([fresh]),
+      'POST /data-sources': jsonResponse(fresh, 201),
+      [`POST /data-sources/${SOURCE_ID}/oauth/start`]: jsonResponse({ authorization_url: authorize }),
+      'GET /jobs': page([]),
+    });
+    await user.selectOptions(await screen.findByRole('combobox', { name: 'Provider' }), 'Microsoft 365');
+    await user.type(screen.getByRole('textbox', { name: 'Source name' }), 'Legal SharePoint');
+    await user.click(screen.getByRole('button', { name: 'Add source' }));
+    await waitFor(() => {
+      expect(requests(fetchMock, 'POST', '/data-sources')).toHaveLength(1);
+    });
+    const [created] = requests(fetchMock, 'POST', '/data-sources');
+    expect(await created?.json()).toEqual({
+      type: 'microsoft_365',
+      name: 'Legal SharePoint',
+      knowledge_base_id: KB_ID,
+    });
+    const card = await sourceCard();
+    expect(card.getByText('Not connected to a Microsoft account.')).toBeInTheDocument();
+    await user.click(card.getByRole('button', { name: 'Connect Microsoft account' }));
+    await waitFor(() => {
+      expect(assign).toHaveBeenCalledWith(authorize);
+    });
+  });
+
+  it('explains a missing provider configuration in its own words', async () => {
+    const user = userEvent.setup();
+    renderKb(MANAGER, { 'POST /data-sources': problem(409, 'connector_not_configured') });
+    await user.selectOptions(await screen.findByRole('combobox', { name: 'Provider' }), 'Microsoft 365');
+    await user.type(screen.getByRole('textbox', { name: 'Source name' }), 'Legal');
+    await user.click(screen.getByRole('button', { name: 'Add source' }));
+    expect(await screen.findByText(/Microsoft 365 is not configured on this server/)).toBeInTheDocument();
+  });
+
+  it('shows the actual Graph permissions, a warning on their breadth and provider errors', async () => {
+    const source = microsoft({
+      sync: { ...drive().sync, last_status: 'failed', last_error: 'connector_unavailable' },
+    });
+    renderKb(MANAGER, { 'GET /data-sources': page([UPLOAD, source]) });
+    const card = await sourceCard();
+    expect(card.getByText('Microsoft 365')).toBeInTheDocument();
+    expect(card.getByText('Access granted by Microsoft:')).toBeInTheDocument();
+    expect(
+      within(card.getByTestId('granted-scopes')).getByText(`${GRAPH}Files.Read.All`),
+    ).toBeInTheDocument();
+    expect(card.getByText(/every file and SharePoint site this account can read/)).toBeInTheDocument();
+    expect(card.getByText('Folder: Documents')).toBeInTheDocument();
+    expect(card.getByTestId('last-sync-error')).toHaveTextContent(
+      'Microsoft 365 is not reachable right now.',
+    );
+  });
+
+  it('opens sites, chooses a library or a folder, and never offers a site as the folder', async () => {
+    const user = userEvent.setup();
+    const { fetchMock } = renderKb(MANAGER, {
+      'GET /data-sources': page([microsoft()]),
+      [`GET /data-sources/${SOURCE_ID}/browse`]: (_init, request) => {
+        const parent = new URL(request.url).searchParams.get('parent_id');
+        if (parent === 'site:contoso.sharepoint.com,1,2') {
+          return page([{ id: 'drive:b!lib', name: 'Documents', kind: 'drive' }]);
+        }
+        if (parent === 'drive:b!lib') {
+          return page([{ id: 'item:b!lib:01CONTRACTS', name: 'Contracts', kind: 'folder' }]);
+        }
+        return page([
+          { id: 'drive:b!own', name: 'OneDrive', kind: 'drive' },
+          { id: 'site:contoso.sharepoint.com,1,2', name: 'Legal', kind: 'site' },
+        ]);
+      },
+      [`PATCH /data-sources/${SOURCE_ID}`]: jsonResponse(microsoft()),
+    });
+    const card = await sourceCard();
+    await user.click(card.getByRole('button', { name: 'Change folder' }));
+    const picker = within(await card.findByTestId('folder-picker'));
+    expect(await picker.findByRole('button', { name: 'Library: OneDrive' })).toBeInTheDocument();
+    expect(picker.getByRole('button', { name: 'Choose OneDrive' })).toBeInTheDocument();
+    expect(picker.queryByRole('button', { name: 'Choose Legal' })).not.toBeInTheDocument();
+    expect(picker.getByRole('button', { name: 'OneDrive and SharePoint sites' })).toBeInTheDocument();
+
+    await user.click(picker.getByRole('button', { name: 'Site: Legal' }));
+    expect(await picker.findByRole('button', { name: 'Library: Documents' })).toBeInTheDocument();
+    expect(picker.queryByRole('button', { name: /^Sync “Legal”/ })).not.toBeInTheDocument();
+    await user.click(picker.getByRole('button', { name: 'Library: Documents' }));
+    expect(await picker.findByRole('button', { name: 'Choose Contracts' })).toBeInTheDocument();
+    await user.click(picker.getByRole('button', { name: 'Sync “Documents”' }));
+
+    await waitFor(() => {
+      expect(requests(fetchMock, 'PATCH', `/data-sources/${SOURCE_ID}`)).toHaveLength(1);
+    });
+    const [patch] = requests(fetchMock, 'PATCH', `/data-sources/${SOURCE_ID}`);
+    expect(await patch?.json()).toEqual({ folder_id: 'drive:b!lib' });
+  });
+
+  it('says how to withdraw the consent after a disconnect', async () => {
+    const user = userEvent.setup();
+    renderKb(MANAGER, {
+      'GET /data-sources': page([microsoft()]),
+      [`POST /data-sources/${SOURCE_ID}/disconnect`]: jsonResponse(microsoft({ credentials: null })),
+    });
+    const card = await sourceCard();
+    await user.click(card.getByRole('button', { name: 'Disconnect' }));
+    await user.click(card.getByRole('button', { name: 'Disconnect account' }));
+    expect(await card.findByTestId('revoke-hint')).toHaveTextContent(
+      'Microsoft has no way to revoke a single token',
+    );
+  });
+
+  it('explains a missing permission in the OAuth redirect', async () => {
+    renderKb(
+      MANAGER,
+      { 'GET /data-sources': page([microsoft()]) },
+      `?source=${SOURCE_ID}&oauth=failed&reason=oauth_scope_missing`,
+    );
+    expect(await screen.findByTestId('oauth-notice')).toHaveTextContent('Files.Read.All, Sites.Read.All');
+  });
+
+  it('explains a failed redirect that names no source without naming a provider', async () => {
+    renderKb(MANAGER, {}, '?oauth=failed&reason=oauth_denied');
+    expect(await screen.findByTestId('oauth-notice')).toHaveTextContent(
+      'Access was not granted in the provider.',
+    );
   });
 });

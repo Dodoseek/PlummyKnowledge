@@ -115,12 +115,15 @@ backend/worker достигают его только через запись al
 сети работает `fake-google` (`deploy/e2e/fake_google.py`, только stdlib): OAuth с проверкой client secret,
 redirect URI и PKCE и Drive v3 с фиксированным деревом; backend и worker получают тестовый OAuth client
 (`GOOGLE_OAUTH_CLIENT_ID`/`GOOGLE_OAUTH_CLIENT_SECRET` — значения фейка) и адреса Google из секции
-`[connectors.google_drive]` тестового `CONFIG_FILE`, браузер открывает страницу согласия фейка по имени сервиса. Всё
-это — тестовая инфраструктура, в production не используется.
+`[connectors.google_drive]` тестового `CONFIG_FILE`, браузер открывает страницу согласия фейка по имени сервиса. С
+Фазы 10 рядом работает `fake-microsoft` (`deploy/e2e/fake_microsoft.py`, только stdlib): Entra ID одного tenant
+(PKCE, client secret, ротация refresh token) и Microsoft Graph с сайтом, библиотекой и delta; backend и worker
+получают `MICROSOFT_OAUTH_*` фейка и адреса из секции `[connectors.microsoft_365]`. Всё это — тестовая
+инфраструктура, в production не используется.
 
 ```bash
 export COMPOSE_PROJECT_NAME=plummy-e2e COMPOSE_FILE=compose.yaml:compose.e2e.yaml COMPOSE_PROFILES=e2e
-docker compose up --build --detach --wait backend worker worker-ingestion scheduler frontend fake-llm fake-google
+docker compose up --build --detach --wait backend worker worker-ingestion scheduler frontend fake-llm fake-google fake-microsoft
 docker compose run --rm -T e2e
 docker compose down --volumes
 ```

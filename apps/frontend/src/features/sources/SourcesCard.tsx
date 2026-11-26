@@ -41,8 +41,12 @@ import {
   isWebUrl,
   browser,
   oauthFailureMessage,
+  providerOf,
+  PROVIDERS,
   sourceApiMessage,
   sourceErrorMessage,
+  type ExternalType,
+  type Provider,
 } from './format';
 import {
   isActiveJob,
@@ -67,11 +71,28 @@ import {
 
 type RequestError = FetchBaseQueryError | SerializedError | undefined;
 
-function ErrorNotice({ error, title = 'Not done' }: { error: RequestError; title?: string }) {
+function ErrorNotice({
+  error,
+  provider,
+  title = 'Not done',
+}: {
+  error: RequestError;
+  provider: Provider;
+  title?: string;
+}) {
   if (error === undefined) return null;
   const apiError = toApiError(error);
-  return <ApiErrorAlert error={{ ...apiError, message: sourceApiMessage(apiError) }} title={title} />;
+  return (
+    <ApiErrorAlert error={{ ...apiError, message: sourceApiMessage(apiError, provider) }} title={title} />
+  );
 }
+
+const ENTRY_PREFIXES: Record<BrowseEntry['kind'], string> = {
+  folder: '',
+  shared_drive: 'Shared drive: ',
+  site: 'Site: ',
+  drive: 'Library: ',
+};
 
 const STATUS_COLORS: Record<SourceStatus, string> = {
   active: 'green',
@@ -108,7 +129,8 @@ function OAuthNotice({ sources }: { sources: DataSource[] }) {
   }, [params, setParams]);
 
   if (notice.oauth !== 'connected' && notice.oauth !== 'failed') return null;
-  const name = sources.find((source) => source.id === notice.source)?.name;
+  const source = sources.find((item) => item.id === notice.source);
+  const name = source?.name;
   if (notice.oauth === 'connected') {
     return (
       <Alert status="success" borderRadius="md" data-testid="oauth-notice">
@@ -123,7 +145,9 @@ function OAuthNotice({ sources }: { sources: DataSource[] }) {
   return (
     <Alert status="error" borderRadius="md" data-testid="oauth-notice">
       <AlertIcon />
-      <AlertDescription>{oauthFailureMessage(notice.reason)}</AlertDescription>
+      <AlertDescription>
+        {oauthFailureMessage(notice.reason, source !== undefined ? providerOf(source.type) : undefined)}
+      </AlertDescription>
     </Alert>
   );
 }
@@ -131,10 +155,11 @@ function OAuthNotice({ sources }: { sources: DataSource[] }) {
 function AddSourceForm({ kbId }: { kbId: string }) {
   const [createSource, state] = useCreateSourceMutation();
   const [name, setName] = useState('');
+  const [type, setType] = useState<ExternalType>('google_drive');
   const onSubmit = async (event: FormEvent) => {
     event.preventDefault();
     try {
-      await createSource({ kbId, name: name.trim() }).unwrap();
+      await createSource({ kbId, name: name.trim(), type }).unwrap();
       setName('');
     } catch {
       // Shown from the mutation state.
@@ -143,9 +168,24 @@ function AddSourceForm({ kbId }: { kbId: string }) {
   return (
     <form onSubmit={(event) => void onSubmit(event)} noValidate>
       <Stack spacing={3}>
-        <HStack align="flex-end">
-          <FormControl>
-            <FormLabel>New Google Drive source</FormLabel>
+        <HStack align="flex-end" wrap="wrap">
+          <FormControl width="auto">
+            <FormLabel>Provider</FormLabel>
+            <Select
+              value={type}
+              onChange={(event) => {
+                setType(event.target.value as ExternalType);
+              }}
+            >
+              {Object.values(PROVIDERS).map((provider) => (
+                <option key={provider.type} value={provider.type}>
+                  {provider.service}
+                </option>
+              ))}
+            </Select>
+          </FormControl>
+          <FormControl flex="1" minW="12rem">
+            <FormLabel>Source name</FormLabel>
             <Input
               value={name}
               maxLength={200}
@@ -159,7 +199,7 @@ function AddSourceForm({ kbId }: { kbId: string }) {
             Add source
           </Button>
         </HStack>
-        <ErrorNotice error={state.error} title="Source not added" />
+        <ErrorNotice error={state.error} provider={PROVIDERS[type]} title="Source not added" />
       </Stack>
     </form>
   );
@@ -184,6 +224,7 @@ function FolderPage({
   onChoose: (entry: BrowseEntry) => void;
   isChoosing: boolean;
 }) {
+  const provider = providerOf(source.type);
   const page = useBrowseSourceQuery(
     {
       id: source.id,
@@ -193,7 +234,7 @@ function FolderPage({
     { refetchOnMountOrArgChange: true },
   );
   if (page.isFetching && page.data === undefined) return <PageSpinner />;
-  if (page.isError) return <ErrorNotice error={page.error} title="Cannot list folders" />;
+  if (page.isError) return <ErrorNotice error={page.error} provider={provider} title="Cannot list folders" />;
   const items = page.data?.items ?? [];
   const next = page.data?.next_cursor ?? null;
   return (
@@ -214,20 +255,22 @@ function FolderPage({
                   onOpen(entry);
                 }}
               >
-                {entry.kind === 'shared_drive' ? 'Shared drive: ' : ''}
+                {ENTRY_PREFIXES[entry.kind]}
                 {entry.name}
               </Button>
-              <Button
-                size="xs"
-                variant="outline"
-                aria-label={`Choose ${entry.name}`}
-                isLoading={isChoosing}
-                onClick={() => {
-                  onChoose(entry);
-                }}
-              >
-                Choose
-              </Button>
+              {entry.kind !== 'site' && (
+                <Button
+                  size="xs"
+                  variant="outline"
+                  aria-label={`Choose ${entry.name}`}
+                  isLoading={isChoosing}
+                  onClick={() => {
+                    onChoose(entry);
+                  }}
+                >
+                  Choose
+                </Button>
+              )}
             </HStack>
           </ListItem>
         ))}
@@ -250,6 +293,7 @@ function FolderPage({
 
 function FolderPicker({ source, onChosen }: { source: DataSource; onChosen: () => void }) {
   const [updateSource, updateState] = useUpdateSourceMutation();
+  const provider = providerOf(source.type);
   // The folders opened so far and the extra pages of the open one ("More"): changing folder resets the pages.
   const [path, setPath] = useState<BrowseEntry[]>([]);
   const [cursors, setCursors] = useState<string[]>([]);
@@ -280,7 +324,7 @@ function FolderPicker({ source, onChosen }: { source: DataSource; onChosen: () =
               goTo([]);
             }}
           >
-            My Drive and shared drives
+            {provider.root}
           </Button>
           {path.map((entry, index) => (
             <HStack key={entry.id} spacing={1}>
@@ -297,7 +341,7 @@ function FolderPicker({ source, onChosen }: { source: DataSource; onChosen: () =
             </HStack>
           ))}
         </Wrap>
-        {parent !== undefined && (
+        {parent !== undefined && parent.kind !== 'site' && (
           <Button
             size="sm"
             colorScheme="brand"
@@ -308,7 +352,7 @@ function FolderPicker({ source, onChosen }: { source: DataSource; onChosen: () =
             Sync “{parent.name}”
           </Button>
         )}
-        <ErrorNotice error={updateState.error} title="Folder not saved" />
+        <ErrorNotice error={updateState.error} provider={provider} title="Folder not saved" />
         {pages.map((cursor, index) => (
           <FolderPage
             key={`${parent?.id ?? 'root'}:${cursor ?? ''}`}
@@ -331,7 +375,7 @@ function FolderPicker({ source, onChosen }: { source: DataSource; onChosen: () =
   );
 }
 
-function JobLine({ job }: { job: SyncJob }) {
+function JobLine({ job, provider }: { job: SyncJob; provider: Provider }) {
   const counts = Object.entries(job.stats).filter(([, value]) => value > 0);
   return (
     <HStack spacing={2} fontSize="sm" wrap="wrap" data-testid="latest-sync-job">
@@ -340,7 +384,7 @@ function JobLine({ job }: { job: SyncJob }) {
       {counts.length > 0 && (
         <Text color="gray.600">{counts.map(([key, value]) => `${String(value)} ${key}`).join(', ')}</Text>
       )}
-      {job.error !== null && <Text color="red.600">{sourceErrorMessage(job.error.code)}</Text>}
+      {job.error !== null && <Text color="red.600">{sourceErrorMessage(job.error.code, provider)}</Text>}
     </HStack>
   );
 }
@@ -370,7 +414,7 @@ function useLatestJob(source: DataSource, enabled: boolean) {
   return { job, refetch };
 }
 
-function ValidationNotice({ result }: { result: Validation }) {
+function ValidationNotice({ result, provider }: { result: Validation; provider: Provider }) {
   const ok = result.status === 'ok';
   return (
     <Alert status={ok ? 'success' : 'error'} borderRadius="md" data-testid="validation-result">
@@ -378,7 +422,7 @@ function ValidationNotice({ result }: { result: Validation }) {
       <AlertDescription>
         {ok
           ? `Connection works${result.folder_accessible === false ? ', but the folder is not accessible' : ''}.`
-          : `Connection check failed: ${sourceErrorMessage(result.error_code ?? 'connector_error')}`}
+          : `Connection check failed: ${sourceErrorMessage(result.error_code ?? 'connector_error', provider)}`}
       </AlertDescription>
     </Alert>
   );
@@ -396,6 +440,7 @@ function SourceItem({
   canReadJobs: boolean;
 }) {
   const kbId = source.knowledge_base_id;
+  const provider = providerOf(source.type);
   const [startOAuth, oauthState] = useStartOAuthMutation();
   const [syncSource, syncState] = useSyncSourceMutation();
   const [validateSource, validateState] = useValidateSourceMutation();
@@ -429,13 +474,13 @@ function SourceItem({
     <Stack spacing={3} data-testid={`source-${source.id}`}>
       <HStack spacing={3} wrap="wrap">
         <Heading size="sm">{source.name}</Heading>
-        <Badge>Google Drive</Badge>
+        <Badge>{provider.service}</Badge>
         <Badge colorScheme={STATUS_COLORS[source.status]}>{source.status}</Badge>
       </HStack>
 
       {credentials === null ? (
         <Text fontSize="sm" color="gray.600">
-          Not connected to a Google account.
+          Not connected to a {provider.account}.
         </Text>
       ) : (
         <Stack spacing={2} fontSize="sm">
@@ -444,7 +489,7 @@ function SourceItem({
             {credentials.status !== 'valid' && <Badge colorScheme="red">{credentials.status}</Badge>}
           </Text>
           <Box>
-            <Text>Access granted by Google:</Text>
+            <Text>Access granted by {provider.company}:</Text>
             <List data-testid="granted-scopes">
               {credentials.granted_scopes.map((scope) => (
                 <ListItem key={scope}>
@@ -458,8 +503,8 @@ function SourceItem({
           <Alert status="warning" borderRadius="md" fontSize="sm">
             <AlertIcon />
             <AlertDescription>
-              Choosing a folder does not limit this access: the server can read everything this account can
-              read in Google Drive. Connect an account that sees only the folders this knowledge base needs.
+              Choosing a folder does not limit this access: the server can read {provider.reach}. Connect an
+              account that sees only the folders this knowledge base needs.
             </AlertDescription>
           </Alert>
         </Stack>
@@ -481,18 +526,18 @@ function SourceItem({
             )}
             {source.sync.last_error !== null && (
               <Text color="red.600" data-testid="last-sync-error">
-                {sourceErrorMessage(source.sync.last_error)}
+                {sourceErrorMessage(source.sync.last_error, provider)}
               </Text>
             )}
           </>
         )}
-        {job !== undefined && <JobLine job={job} />}
+        {job !== undefined && <JobLine job={job} provider={provider} />}
       </Stack>
 
       <Wrap spacing={2}>
         {canManage && (
           <Button size="sm" variant="outline" isLoading={oauthState.isLoading} onClick={() => void connect()}>
-            {credentials === null ? 'Connect Google account' : 'Reconnect'}
+            {credentials === null ? `Connect ${provider.account}` : 'Reconnect'}
           </Button>
         )}
         {canManage && connected && (
@@ -588,19 +633,31 @@ function SourceItem({
           }}
         />
       )}
-      {validateState.data !== undefined && <ValidationNotice result={validateState.data} />}
-      <ErrorNotice error={oauthState.error} />
-      <ErrorNotice error={syncState.error} title="Sync not started" />
-      <ErrorNotice error={validateState.error} />
-      <ErrorNotice error={updateState.error} />
-      <ErrorNotice error={disconnectState.error} />
-      <ErrorNotice error={deleteState.error} />
+      {validateState.data !== undefined && (
+        <ValidationNotice result={validateState.data} provider={provider} />
+      )}
+      {disconnectState.isSuccess && provider.type === 'microsoft_365' && (
+        <Alert status="info" borderRadius="md" fontSize="sm" data-testid="revoke-hint">
+          <AlertIcon />
+          <AlertDescription>
+            The stored token was deleted. Microsoft has no way to revoke a single token, so the consent stays
+            until it is removed: in the account’s My Apps page, or by an Entra administrator for the whole
+            organization.
+          </AlertDescription>
+        </Alert>
+      )}
+      <ErrorNotice error={oauthState.error} provider={provider} />
+      <ErrorNotice error={syncState.error} provider={provider} title="Sync not started" />
+      <ErrorNotice error={validateState.error} provider={provider} />
+      <ErrorNotice error={updateState.error} provider={provider} />
+      <ErrorNotice error={disconnectState.error} provider={provider} />
+      <ErrorNotice error={deleteState.error} provider={provider} />
     </Stack>
   );
 }
 
 /**
- * External sources of a knowledge base (ADR-020). Controls are shown by permission and KB access only for
+ * External sources of a knowledge base (ADR-020, ADR-021). Controls are shown by permission and KB access only for
  * convenience: the backend checks both on every request.
  */
 export function SourcesCard({ kbId, canManageKb }: { kbId: string; canManageKb: boolean }) {
@@ -617,9 +674,16 @@ export function SourcesCard({ kbId, canManageKb }: { kbId: string; canManageKb: 
       </CardHeader>
       <CardBody>
         <Stack spacing={4}>
-          <OAuthNotice sources={external} />
+          {/* After the list: the notice names the source and its provider. */}
+          {!sources.isLoading && <OAuthNotice sources={external} />}
           {sources.isLoading && <PageSpinner />}
-          {sources.isError && <ErrorNotice error={sources.error} title="Cannot load sources" />}
+          {sources.isError && (
+            <ErrorNotice
+              error={sources.error}
+              provider={PROVIDERS.google_drive}
+              title="Cannot load sources"
+            />
+          )}
           {sources.data !== undefined && external.length === 0 && (
             <Text color="gray.500">No external sources yet.</Text>
           )}

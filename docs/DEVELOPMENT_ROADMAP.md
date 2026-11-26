@@ -238,8 +238,13 @@ security gate (проверки безопасности **внутри** фаз
 - Решения — [ADR-021](adr/0021-microsoft-365-connector.md): delegated `Files.Read.All` + `Sites.Read.All`, один
   tenant, без SDK; отзыв у провайдера невозможен — disconnect локальный. Шаги: 10.0 ADR и спецификации; 10.1
   Instance Settings, OAuth Entra, обобщение портов и API; 10.2 адаптер Graph; 10.3 синхронизация через Delta Query;
-  10.4 UI, E2E и security gate. Выполнены 10.0–10.3.
-- **Security gate:** как в Фазе 9; предупреждение о широте `Files.Read.All`.
+  10.4 UI, E2E и security gate. Выполнены 10.0–10.4.
+- **Security gate:** как в Фазе 9; предупреждение о широте `Files.Read.All`. *(Пройден: tenant-only authority, PKCE
+  и `state`; отказ без обязательных scopes; ротация refresh token; dead grant останавливает расписание; Graph-ссылки
+  только в пределах `api_url` — `test_microsoft_oauth.py`, `test_microsoft_graph.py`, `test_microsoft_sources_api.py`,
+  `test_microsoft_sync.py`; предупреждение о широте и подсказка об отзыве согласия — UI и `sources.test.tsx`; E2E
+  `microsoft.spec.ts` (OAuth → сайт → библиотека → папка → sync → поиск → удаление → sync → disconnect), токены не
+  попадают в браузер. **Отложено:** app-only `Sites.Selected` — отдельный ADR при потребности.)*
 - **Выход:** **релиз 0.4.0**.
 
 ### Фаза 11 — Production deployment (§13)

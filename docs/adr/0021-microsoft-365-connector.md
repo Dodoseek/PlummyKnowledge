@@ -215,6 +215,12 @@ token между заданиями, `invalid_grant`/`interaction_required` → 
 удаления файла. Удалённая выбранная папка: задание `failed` с `connector_not_found`, документы не удаляются
 массово, `validate` показывает `folder_not_found` — как у Google.
 
+10.4 (выполнен): карточка «External sources» выбирает провайдера при создании источника; тексты, ошибки и причины
+OAuth зависят от провайдера; picker показывает сайты (только открыть) и библиотеки (открыть или выбрать как корень);
+предупреждение о широте токена называет все файлы и сайты SharePoint учётной записи; после disconnect UI объясняет,
+что отдельный токен у Microsoft не отзывается, и где отозвать согласие. E2E `apps/e2e/tests/microsoft.spec.ts`
+против `deploy/e2e/fake_microsoft.py`. Security gate — [SECURITY_MODEL.md §15](../SECURITY_MODEL.md).
+
 ## Related documents
 
 [ADR-020](0020-google-drive-connector.md) · [ADR-006](0006-initial-setup-and-system-configuration.md) ·

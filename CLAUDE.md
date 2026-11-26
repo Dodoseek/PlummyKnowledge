@@ -11,9 +11,9 @@ PlummyKnowledge — open-source **self-hosted** платформа корпор�
 Лицензия — Apache License 2.0. Одна инсталляция принадлежит **одной** организации и работает на её серверах или в её
 облаке: multi-tenancy, сущности Organization и `organization_id` нет ([ADR-012](docs/adr/0012-single-organization-deployment.md)).
 
-**Текущее состояние:** Фазы 1–9 roadmap завершены (Foundation, Bootstrap & Authentication, Users & RBAC, AI providers
+**Текущее состояние:** Фазы 1–10 roadmap завершены (Foundation, Bootstrap & Authentication, Users & RBAC, AI providers
 & network policy, Local document ingestion, Retrieval & RAG evaluation, Knowledge Bases & Assistants, Chat UI &
-streaming, Google Drive); выпущен релиз 0.1.0 (тег `v0.1.0`). Backend:
+streaming, Google Drive, Microsoft 365); выпущен релиз 0.1.0 (тег `v0.1.0`). Backend:
 FastAPI, Pydantic Settings, SQLAlchemy async, Alembic (`vector`/`citext`, users, activation tokens, groups,
 RBAC-каталог и назначения ролей, sessions, audit_logs), Redis (rate limit, брокер Celery), health live/ready; Celery
 worker с диагностической задачей; первоначальная настройка по bootstrap token и CLI `python -m plummy.cli`;
@@ -44,7 +44,11 @@ Playwright (`apps/e2e`, `compose.e2e.yaml`). Фаза 9 ([ADR-020](docs/adr/0020
 Drive — миграции `0015`/`0016`, OAuth (state + PKCE, refresh token в vault), API `data-sources` (browse, validate,
 sync, disconnect), адаптер Drive v3 за `DataSourceConnector`, sync engine (initial, incremental по Changes API,
 reconciliation) в очереди `connectors`, scheduler, sync jobs в `/jobs?type=sync`, карточка «External sources» на
-странице KB, E2E с фейковым Google (`deploy/e2e/fake_google.py`). Application Settings, Nginx/CSP и prod-compose ещё нет
+странице KB, E2E с фейковым Google (`deploy/e2e/fake_google.py`). Фаза 10
+([ADR-021](docs/adr/0021-microsoft-365-connector.md)): Microsoft 365 — OAuth Entra ID одного tenant (PKCE, ротация
+refresh token, отзыв только локальный), адаптер Graph за тем же `DataSourceConnector` (сайты, библиотеки, папки,
+Delta Query), общий транспорт `connector_http.py`, выбор провайдера в «External sources», E2E с
+`deploy/e2e/fake_microsoft.py`. Application Settings, Nginx/CSP и prod-compose ещё нет
 ([DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md)).
 Не начинать Google OAuth, Microsoft Graph и сложный RAG до стабильного запуска каркаса.
 
@@ -290,7 +294,7 @@ E2E (Playwright, `apps/e2e`): отдельный Compose-проект без о�
 
 ```bash
 export COMPOSE_PROJECT_NAME=plummy-e2e COMPOSE_FILE=compose.yaml:compose.e2e.yaml COMPOSE_PROFILES=e2e
-docker compose up --build --detach --wait backend worker worker-ingestion scheduler frontend fake-llm fake-google
+docker compose up --build --detach --wait backend worker worker-ingestion scheduler frontend fake-llm fake-google fake-microsoft
 docker compose run --rm -T e2e                                  # tsc + playwright test (Chromium)
 docker compose down --volumes
 ```

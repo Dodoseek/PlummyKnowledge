@@ -8,6 +8,7 @@ import {
   ADMIN_SESSION_FILE,
   Api,
   FAKE_GOOGLE_URL,
+  FAKE_MICROSOFT_URL,
   FAKE_LLM_URL,
   MEMBER_PASSWORD,
   MEMBER_SESSION_FILE,
@@ -83,6 +84,8 @@ export default async function globalSetup(): Promise<void> {
   if (!fakeLlm.ok) throw new Error('The fake LLM is not reachable from the test runner.');
   const fakeGoogle = await fetch(`${FAKE_GOOGLE_URL}/health`);
   if (!fakeGoogle.ok) throw new Error('The fake Google is not reachable from the test runner.');
+  const fakeMicrosoft = await fetch(`${FAKE_MICROSOFT_URL}/health`);
+  if (!fakeMicrosoft.ok) throw new Error('The fake Microsoft is not reachable from the test runner.');
 
   const runId = Date.now().toString(36);
   const api = await adminSession();
@@ -123,6 +126,11 @@ export default async function globalSetup(): Promise<void> {
     const driveName = `Drive ${runId}`;
     const drive = await api.send<Id>('POST', '/knowledge-bases', {
       name: driveName,
+      embedding_profile_id: profile.id,
+    });
+    const microsoftName = `SharePoint ${runId}`;
+    const microsoft = await api.send<Id>('POST', '/knowledge-bases', {
+      name: microsoftName,
       embedding_profile_id: profile.id,
     });
     const handbook = await api.upload(hr.id, 'handbook.md', HANDBOOK);
@@ -178,6 +186,7 @@ export default async function globalSetup(): Promise<void> {
       hrKnowledgeBase: { id: hr.id, name: hrName },
       financeKnowledgeBase: { id: finance.id, name: financeName },
       driveKnowledgeBase: { id: drive.id, name: driveName },
+      microsoftKnowledgeBase: { id: microsoft.id, name: microsoftName },
       financeChunk: {
         documentId: chunk.document_id,
         versionId: chunk.document_version_id,

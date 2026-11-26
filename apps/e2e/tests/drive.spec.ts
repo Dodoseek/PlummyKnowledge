@@ -41,7 +41,8 @@ test.describe('administrator', () => {
     await openSignedIn(page, `/knowledge-bases/${kb.id}`);
     await expect(page.getByRole('heading', { name: kb.name })).toBeVisible();
 
-    await page.getByRole('textbox', { name: /New Google Drive source/ }).fill('Sales drive');
+    await page.getByRole('combobox', { name: 'Provider' }).selectOption('google_drive');
+    await page.getByRole('textbox', { name: 'Source name' }).fill('Sales drive');
     await page.getByRole('button', { name: 'Add source' }).click();
     await page.getByRole('button', { name: 'Connect Google account' }).click();
 

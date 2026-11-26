@@ -1,5 +1,5 @@
 # Instance configuration of the end-to-end stack (compose.e2e.yaml): the fake OpenAI-compatible provider and the
-# fake Google are the only internal addresses the backend may reach (ADR-007). Test infrastructure only.
+# fake Google and Microsoft are the only internal addresses the backend may reach (ADR-007). Test infrastructure only.
 
 [[network.allowlist]]
 name           = "e2e-fake-llm"
@@ -22,4 +22,18 @@ auth_url       = "http://fake-google:8080/o/oauth2/v2/auth"
 token_url      = "http://fake-google:8080/token"
 revoke_url     = "http://fake-google:8080/revoke"
 api_url        = "http://fake-google:8080"
+download_hosts = []
+
+# The fake Microsoft identity platform and Graph (deploy/e2e/fake_microsoft.py), likewise (ADR-021 §2).
+[[network.allowlist]]
+name           = "e2e-fake-microsoft"
+url            = "http://fake-microsoft:8080"
+purposes       = ["connector"]
+provider_types = ["microsoft_365"]
+allowed_cidrs  = ["10.213.17.0/24"]
+
+[connectors.microsoft_365]
+auth_url       = "http://fake-microsoft:8080/e2e.onmicrosoft.com/oauth2/v2.0/authorize"
+token_url      = "http://fake-microsoft:8080/e2e.onmicrosoft.com/oauth2/v2.0/token"
+api_url        = "http://fake-microsoft:8080/v1.0"
 download_hosts = []

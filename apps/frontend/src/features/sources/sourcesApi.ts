@@ -1,7 +1,10 @@
 import { baseApi, DATA_SOURCES_TAG, DOCUMENTS_TAG, KNOWLEDGE_BASES_TAG } from '../../shared/api/baseApi';
 import type { Page } from '../admin/adminApi';
 
-/** DTOs of API_CONTRACTS.md §2.9 and §2.15 (ADR-020). Tokens and secret references are never part of them. */
+/**
+ * DTOs of API_CONTRACTS.md §2.9 and §2.15 (ADR-020, ADR-021). Tokens and secret references are never part of
+ * them.
+ */
 export type SourceType = 'upload' | 'google_drive' | 'microsoft_365';
 export type SourceStatus = 'active' | 'paused' | 'error' | 'disconnected';
 export type CredentialStatus = 'valid' | 'expired' | 'revoked';
@@ -40,7 +43,8 @@ export interface BrowseEntry {
   id: string;
   /** Display only. */
   name: string;
-  kind: 'folder' | 'shared_drive';
+  /** `site` is opened to list its libraries and never chosen; a `drive` (a library) is chosen as its root. */
+  kind: 'folder' | 'shared_drive' | 'site' | 'drive';
 }
 
 export interface SyncJob {
@@ -93,11 +97,14 @@ export const sourcesApi = baseApi.injectEndpoints({
       }),
       providesTags: (_result, _error, { kbId }) => [listTag(kbId)],
     }),
-    createSource: build.mutation<DataSource, { kbId: string; name: string }>({
-      query: ({ kbId, name }) => ({
+    createSource: build.mutation<
+      DataSource,
+      { kbId: string; name: string; type: Exclude<SourceType, 'upload'> }
+    >({
+      query: ({ kbId, name, type }) => ({
         url: '/data-sources',
         method: 'POST',
-        body: { type: 'google_drive', name, knowledge_base_id: kbId },
+        body: { type, name, knowledge_base_id: kbId },
       }),
       invalidatesTags: (_result, _error, { kbId }) => [listTag(kbId)],
     }),

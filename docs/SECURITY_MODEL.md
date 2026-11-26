@@ -500,6 +500,18 @@ OpenAI/Anthropic). Полный алгоритм — в ADR-007; здесь — 
   фейковым Google токенами); документы из Drive проходят тот же pipeline и ту же сборку контекста, что и загрузки:
   враждебные имя файла и текст остаются экранированными данными внутри блока `<documents>` (SC-08,
   `test_source_sync.py`); удалённый в Drive файл после sync не находится поиском (`test_source_sync.py`, E2E).
+- **Реализовано для Microsoft 365 (Фаза 10, [ADR-021](adr/0021-microsoft-365-connector.md)):** authority одного
+  tenant (`common`/`organizations`/`consumers` отклоняются конфигурацией), PKCE и одноразовый `state` — общий код с
+  Google; подключение без `Files.Read.All` или `Sites.Read.All` отклоняется и ничего не сохраняет
+  (`test_microsoft_sources_api.py`); ротируемый refresh token заменяет сохранённый; `invalid_grant` /
+  `interaction_required` помечают источник отозванным и останавливают расписание (`test_microsoft_sync.py`).
+  UI показывает фактические scopes и предупреждение о широте: токен читает **все** файлы и сайты SharePoint,
+  доступные учётной записи, выбор папки этого не ограничивает. Disconnect удаляет токен локально без сетевого
+  вызова и показывает, где отозвать согласие в Microsoft. Адреса `@odata.nextLink`/`deltaLink` принимаются только
+  в пределах `api_url`, подделанный cursor ведёт к reconciliation, а не к запросу на чужой хост
+  (`test_microsoft_graph.py`, `test_microsoft_sync.py`). E2E `microsoft.spec.ts` против `deploy/e2e/fake_microsoft.py`:
+  OAuth в браузере → сайт → библиотека → папка → sync → поиск → удаление в SharePoint → sync → disconnect; файл
+  вне папки не индексируется, ни один выданный токен не попадает в страницу и ответы API.
 
 ## 16. Retention, удаление и backup (§8)
 
@@ -561,7 +573,8 @@ OpenAI/Anthropic). Полный алгоритм — в ADR-007; здесь — 
 - [x] malicious filenames не выходят из storage (Фаза 5: `test_local_storage.py`, `test_file_inspection.py`);
 - [x] повторные jobs не дублируют chunks (Фаза 5: SC-09, `test_indexing.py`);
 - [x] deleted docs не находятся (Фаза 5–6: `test_retrieval.py`, viewer; Фаза 9 — удаление в Google Drive:
-  `test_source_sync.py`, E2E `drive.spec.ts`);
+  `test_source_sync.py`, E2E `drive.spec.ts`; Фаза 10 — удаление в SharePoint: `test_microsoft_sync.py`, E2E
+  `microsoft.spec.ts`);
 - [x] выдуманные citation IDs отклоняются (Фазы 6, 8: потоковый фильтр, `test_chat_stream.py`, E2E).
 
 Security gate Фазы 8 — `test_chat_security_gate.py`: CSRF-токен и доверенный `Origin` на каждом изменяющем запросе
