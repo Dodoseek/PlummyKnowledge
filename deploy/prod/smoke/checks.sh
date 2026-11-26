@@ -1,7 +1,7 @@
 #!/bin/sh
 # Checks of the running production stack that the HTTP smoke test cannot see (CI job "Production stack").
-# Uses the COMPOSE_* environment of the caller. Prints no secret values. Reading root-owned secret files needs
-# root: run with sudo -E when init-secrets.sh ran as root.
+# Uses the COMPOSE_* environment of the caller. Prints no secret values. Secret files owned by the services'
+# users (init-secrets.sh run as root) are read with `sudo -n cat`.
 set -eu
 cd "$(dirname -- "$0")/../../.."
 SECRETS=deploy/prod/secrets
@@ -17,7 +17,7 @@ fi
 echo "- secret values are not in the container configuration (docker inspect)"
 inspect=$(docker inspect $(docker compose ps -aq))
 for file in "$SECRETS"/*; do
-  value=$(cat "$file")
+  if [ -r "$file" ]; then value=$(cat "$file"); else value=$(sudo -n cat "$file"); fi
   case "$(basename "$file")" in
     redis_conf) continue ;;  # its password is checked as redis_password
   esac

@@ -184,7 +184,7 @@ jobs:
           python3 deploy/prod/smoke/smoke.py --base-url https://localhost:8443 --http-url http://localhost:8080 \
             --ca-file "$RUNNER_TEMP/fullchain.pem" --setup-token-file "$RUNNER_TEMP/setup-token"
       - name: Stack checks (published ports, secrets not in docker inspect, read-only, internal networks)
-        run: sudo -E sh deploy/prod/smoke/checks.sh
+        run: sh deploy/prod/smoke/checks.sh
       - name: Service logs
         if: failure()
         run: docker compose logs --no-color --tail 200
