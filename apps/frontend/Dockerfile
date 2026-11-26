@@ -18,13 +18,16 @@ RUN --mount=type=cache,target=/root/.npm \
     && chown node:node /app
 USER node
 RUN --mount=type=cache,target=/home/node/.npm,uid=1000,gid=1000 \
-    npm ci --no-audit --no-fund
+    npm ci --no-audit --no-fund \
+    && cp package-lock.json node_modules/.image-package-lock.json
 
 FROM deps AS dev
 COPY --chown=node:node apps/frontend/ ./
 COPY VERSION /VERSION
 EXPOSE 5173
-CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
+# compose.yaml mounts the repository's package-lock.json: with dependencies newer than this image, the dev server
+# would fail on the first import of a new package. Stop with the fix instead.
+CMD ["sh", "-c", "if ! cmp -s package-lock.json node_modules/.image-package-lock.json; then echo 'apps/frontend/package-lock.json changed after this image was built: run docker compose up --build frontend' >&2; exit 1; fi; exec npm run dev -- --host 0.0.0.0"]
 
 FROM deps AS build
 COPY --chown=node:node apps/frontend/ ./

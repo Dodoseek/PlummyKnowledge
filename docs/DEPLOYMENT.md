@@ -99,6 +99,11 @@ docker compose run --rm migrate cat /var/lib/plummy/bootstrap/setup-token
 Повторные `up` действующий токен не меняют; после настройки `init-token` ничего не выпускает и удаляет файл.
 Полный сброс локальной инсталляции — `docker compose down -v` (удаляет все данные разработки).
 
+**Зависимости frontend в dev.** Контейнер `frontend` монтирует `src/`, а `node_modules` берёт из образа. При
+старте он сравнивает смонтированный `apps/frontend/package-lock.json` с тем, из которого собран образ; если они
+различаются, контейнер останавливается с подсказкой `docker compose up --build frontend` (без проверки Vite падал бы
+на импорте нового пакета).
+
 **E2E-стек (Playwright, Фаза 8).** `compose.e2e.yaml` накладывается на `compose.yaml` в отдельном проекте
 `plummy-e2e`: порты не публикуются (стек работает рядом с dev-стеком), фейковый OpenAI-compatible провайдер
 `fake-llm` (`deploy/e2e/fake_llm.py`, только stdlib) живёт во внутренней сети `llm` с фиксированной подсетью, и

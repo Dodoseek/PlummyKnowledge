@@ -254,6 +254,7 @@ Worker и проверки репозитория:
 ```bash
 docker compose exec worker python -m plummy.cli worker check   # задача до worker и обратно
 docker compose restart worker worker-ingestion scheduler       # после изменения кода (нет auto-reload)
+docker compose up -d --build frontend                          # после изменения package-lock.json
 docker compose build worker-ingestion                          # образ с Docling и моделями (~4 ГБ)
 docker compose run --rm --no-deps worker-ingestion pytest -p no:cacheprovider tests/ingestion tests/unit/test_isolated_parser.py
 python3 scripts/check_secrets.py                               # secret scan всех tracked-файлов

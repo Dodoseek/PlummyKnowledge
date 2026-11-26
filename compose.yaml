@@ -265,6 +265,8 @@ services:
       - ./apps/frontend/src:/app/src:ro
       - ./apps/frontend/public:/app/public:ro
       - ./apps/frontend/index.html:/app/index.html:ro
+      # Compared at start with the lock file the image was built from (stale dependencies stop the container).
+      - ./apps/frontend/package-lock.json:/app/package-lock.json:ro
       - ./VERSION:/VERSION:ro
     ports:
       - "127.0.0.1:5173:5173"
