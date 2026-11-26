@@ -12,6 +12,7 @@ import { ActivatePage } from '../features/auth/ActivatePage';
 import { LoginPage } from '../features/auth/LoginPage';
 import { RequireAuth } from '../features/auth/RequireAuth';
 import { ChatPage } from '../features/chat/ChatPage';
+import { JobsPage } from '../features/jobs/JobsPage';
 import { KnowledgeBasePage } from '../features/knowledge/KnowledgeBasePage';
 import { KnowledgeBasesPage } from '../features/knowledge/KnowledgeBasesPage';
 import { EmbeddingProfilesPage } from '../features/providers/EmbeddingProfilesPage';
@@ -59,6 +60,7 @@ export const routes: RouteObject[] = [
           { path: 'admin/embedding-profiles', element: <EmbeddingProfilesPage /> },
           { path: 'admin/assistants', element: <AssistantsAdminPage /> },
           { path: 'admin/assistants/:assistantId', element: <AssistantDetailPage /> },
+          { path: 'admin/jobs', element: <JobsPage /> },
         ],
       },
       { path: '*', element: <NotFoundPage /> },

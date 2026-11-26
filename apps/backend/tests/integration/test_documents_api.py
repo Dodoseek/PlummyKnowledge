@@ -481,6 +481,117 @@ async def test_retry_is_refused_for_a_deleted_document(env: Env) -> None:
     assert (await job_row(env, job_id))[0] == "failed"
 
 
+# --- cancel -------------------------------------------------------------------------------------------------
+
+
+async def document_state(env: Env, document_id: str) -> tuple[str, str | None, str | None]:
+    """Document status, the latest version's status and error code."""
+    [row] = await env.harness.sql(
+        "SELECT d.processing_status, v.status, v.error_code FROM documents d "
+        "JOIN document_versions v ON v.document_id = d.id WHERE d.id = :id "
+        "ORDER BY v.version_number DESC LIMIT 1",
+        id=document_id,
+    )
+    return row[0], row[1], row[2]
+
+
+async def test_cancel_a_queued_job_then_retry_it(env: Env) -> None:
+    job_id, document_id = await uploaded(env, "policy.md", MARKDOWN)
+    response = await env.admin.post(f"{JOBS}/ingestion/{job_id}/cancel")
+    assert response.status_code == 200, response.text
+    job = response.json()
+    assert (job["status"], job["error"]["code"]) == ("cancelled", "cancelled_by_admin")
+    assert job["finished_at"] is not None
+    assert await document_state(env, document_id) == ("failed", "failed", "cancelled_by_admin")
+    assert "job.cancelled" in await audit_actions(env.harness)
+    [(details,)] = await env.harness.sql(
+        "SELECT details FROM audit_logs WHERE action = 'job.cancelled' AND target_id = :id", id=job_id
+    )
+    assert details == {"document_id": document_id, "previous_status": "queued"}
+    assert await run(env, job_id) is RunOutcome.SKIPPED  # the queued message finds a finished job
+    problem(await env.admin.post(f"{JOBS}/ingestion/{job_id}/cancel"), 409, "job_not_cancellable")
+
+    retried = await env.admin.post(f"{JOBS}/ingestion/{job_id}/retry")
+    assert retried.status_code == 202, retried.text
+    assert (retried.json()["status"], retried.json()["error"]) == ("queued", None)
+    assert await document_state(env, document_id) == ("pending", "pending", None)
+    assert await run(env, job_id) is RunOutcome.HANDED_OFF
+    assert await index(env, job_id, FakeEmbedder()) is RunOutcome.SUCCEEDED
+    assert (await env.admin.get(f"{DOCS}/{document_id}")).json()["processing_status"] == "indexed"
+    problem(await env.admin.post(f"{JOBS}/ingestion/{job_id}/cancel"), 409, "job_not_cancellable")  # done
+
+
+class CancellingEmbedder(FakeEmbedder):
+    """Cancels the job through the API while the provider call is in flight."""
+
+    def __init__(self, client: httpx.AsyncClient, job_id: str) -> None:
+        super().__init__(max_batch=1)
+        self.client, self.job_id = client, job_id
+
+    async def embed(
+        self, texts: Sequence[str], *, model_id: str, cancel: CancellationToken
+    ) -> list[list[float]]:
+        if not self.calls:
+            response = await self.client.post(f"{JOBS}/ingestion/{self.job_id}/cancel")
+            assert response.status_code == 200, response.text
+            assert response.json()["status"] == "cancelled"
+        return await super().embed(texts, model_id=model_id, cancel=cancel)
+
+
+async def test_cancel_during_indexing_stops_the_worker_and_activates_nothing(env: Env) -> None:
+    job_id, document_id = await extracted(env)
+    embedder = CancellingEmbedder(env.admin, job_id)
+    assert await index(env, job_id, embedder) is RunOutcome.CANCELLED
+    assert len(embedder.calls) == 1  # stopped at the first write after the cancellation
+    assert await counts(env, document_id) == (3, 0)  # an inactive chunk set without vectors
+    [(current,)] = await env.harness.sql(
+        "SELECT current_version_id FROM documents WHERE id = :id", id=document_id
+    )
+    assert current is None
+    found = await env.admin.post(
+        f"/api/v1/knowledge-bases/{env.kb_id}/search", json={"query": "policy", "mode": "keyword"}
+    )
+    assert found.status_code == 200, found.text
+    assert found.json()["items"] == []
+    # A retry resumes from the stored text and reuses the chunks without duplicating them.
+    assert (await env.admin.post(f"{JOBS}/ingestion/{job_id}/retry")).status_code == 202
+    assert await index(env, job_id, FakeEmbedder()) is RunOutcome.SUCCEEDED
+    assert await counts(env, document_id) == (3, 3)
+
+
+async def test_cancel_a_reindex_keeps_the_current_version(env: Env) -> None:
+    _, document_id = await indexed(env)
+    reindex = await env.admin.post(f"/api/v1/knowledge-bases/{env.kb_id}/reindex")
+    [job_id] = reindex.json()["job_ids"]
+    assert (await env.admin.post(f"{JOBS}/ingestion/{job_id}/cancel")).status_code == 200
+    assert await document_state(env, document_id) == ("indexed", "ready", None)
+    found = await env.admin.post(
+        f"/api/v1/knowledge-bases/{env.kb_id}/search", json={"query": "policy", "mode": "keyword"}
+    )
+    assert {hit["document_id"] for hit in found.json()["items"]} == {document_id}
+
+
+async def test_cancel_needs_jobs_manage(env: Env) -> None:
+    job_id, _ = await uploaded(env, "policy.md", MARKDOWN)
+    member, _ = await signed_in(env, "member@example.com", ["member"])
+    async with aclosing(member):
+        problem(await member.post(f"{JOBS}/ingestion/{job_id}/cancel"), 403, "permission_denied")
+    assert (await job_row(env, job_id))[0] == "queued"
+    problem(await env.admin.post(f"{JOBS}/ingestion/{MISSING}/cancel"), 404, "not_found")
+    problem(await env.admin.post(f"{JOBS}/sync/{job_id}/cancel"), 404, "not_found")
+    problem(await env.admin.post(f"{JOBS}/other/{job_id}/cancel"), 422, "validation_error")
+    manager, _ = await signed_in(env, "km@example.com", ["knowledge_manager"])
+    async with aclosing(manager):
+        assert (await manager.post(f"{JOBS}/ingestion/{job_id}/cancel")).status_code == 200
+
+
+async def test_jobs_cancelled_by_a_deletion_are_not_retried(env: Env) -> None:
+    job_id, document_id = await uploaded(env, "policy.md", MARKDOWN)
+    assert (await env.admin.delete(f"{DOCS}/{document_id}")).status_code == 204
+    problem(await env.admin.post(f"{JOBS}/ingestion/{job_id}/retry"), 409, "job_not_retryable")
+    problem(await env.admin.post(f"{JOBS}/ingestion/{job_id}/cancel"), 409, "job_not_cancellable")
+
+
 # --- maintenance sweeps ------------------------------------------------------------------------------------
 
 

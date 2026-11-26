@@ -112,7 +112,8 @@
 | 409 | `knowledge_base_name_taken` | Имя базы знаний (без учёта регистра) уже занято |
 | 409 | `source_unavailable` | Upload: источник `upload` базы знаний отсутствует или не активен |
 | 409 | `no_version` | Reindex: у документа нет версии, которую можно обработать |
-| 409 | `job_not_retryable` | Retry: job не в `failed`/`dead`, документ удалён, у документа уже есть активный job или версия удалена |
+| 409 | `job_not_retryable` | Retry: job не в `failed`/`dead` и не отменён администратором (`cancelled_by_admin`), документ удалён, у документа уже есть активный job или версия удалена; sync jobs не повторяются |
+| 409 | `job_not_cancellable` | Cancel: job уже завершён (`succeeded`, `failed`, `dead`, `cancelled`) |
 | 409 | `message_already_sent` | Chat: сообщение с этим `client_message_id` уже отправлено; в теле — `user_message_id` и `assistant_message_id` ([ADR-019](adr/0019-answer-generation-in-api-process.md)) |
 | 409 | `model_unavailable` | Chat: чат-модель ассистента или её провайдер отключены или удалены |
 | 409 | `invalid_state` | Действие невозможно в текущем состоянии ресурса (например, вернуть `retired` profile в `active`) |
@@ -875,21 +876,31 @@ assistant_unavailable`; `404 not_found` (чужой или несуществу�
 
 `POST /chat/runs/{id}/stop` → `202` без тела; чужой или несуществующий run → `404`; Redis недоступен → `503`.
 
-### 2.15 `jobs` (§11, §13 Фаза 11) — реализованы list и get для `ingestion` и `sync`, retry для `ingestion`
+### 2.15 `jobs` (§11, §13 Фаза 11) — реализованы list, get и cancel для `ingestion` и `sync`, retry для `ingestion`
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
 | GET | `/api/v1/jobs` | Ingestion и sync jobs (`type`, `status`, `knowledge_base_id`, `data_source_id`); `sort`: `-queued_at` (по умолчанию), `queued_at` | `jobs.read` | auth | — | — | — |
 | GET | `/api/v1/jobs/{type}/{id}` | Детали, stage, attempts, redacted error | `jobs.read` | auth | — | — | — |
-| POST | `/api/v1/jobs/{type}/{id}/retry` | Повтор `failed`/`dead` job | `jobs.manage` | auth | Idem | `job.retried` | expensive |
+| POST | `/api/v1/jobs/{type}/{id}/retry` | Повтор `failed`/`dead` или отменённого администратором ingestion job | `jobs.manage` | auth | Idem | `job.retried` | expensive |
 | POST | `/api/v1/jobs/{type}/{id}/cancel` | Отмена `queued`/`running` | `jobs.manage` | auth | — | `job.cancelled` | — |
 
 `{type}`: `ingestion` \| `sync`. Список без `type` содержит ingestion jobs; `type=sync` — sync jobs (DTO как в ответе
 `POST /data-sources/{id}/sync`, §2.9), фильтры `status`, `knowledge_base_id`, `data_source_id` и сортировка те же: у
 каждого типа своя keyset-пагинация, смешанного списка нет. `GET /jobs/sync/{id}` — карточка sync job. Sync jobs не
 повторяются через `/retry` (`409 job_not_retryable`, неизвестный ID — `404`): синхронизация запускается снова
-расписанием или `POST /data-sources/{id}/sync`. `cancel` и `Idempotency-Key` для retry не реализованы (jobs
-отменяются удалением документа или источника). Retry невозможен → `409 job_not_retryable`.
+расписанием или `POST /data-sources/{id}/sync`. Retry невозможен → `409 job_not_retryable`; `Idempotency-Key` для
+retry не реализован (повтор того же запроса получает `409`, потому что job уже `queued`).
+
+**Cancel** (шаг 11.4): `queued` или `running` job получает `status = cancelled` и `error.code = cancelled_by_admin`,
+ответ `200` — DTO job; завершённый → `409 job_not_cancellable`. Worker останавливается на следующей защищённой
+записи (pipeline и sync engine блокируют job и проверяют его статус перед каждой записью), сообщение из очереди
+находит завершённый job и ничего не делает. Ingestion: версия, которую строил job, становится `failed` (кроме уже
+`ready`, которую переиндексировали); документ остаётся `indexed`, если у него есть текущая версия, иначе `failed`;
+неактивированный набор chunks retrieval не видит. Такой job можно повторить через `/retry`. Jobs, отменённые
+удалением документа или источника (`document_deleted`, `source_deleted` и т. п.), не повторяются. Sync: документы,
+уже переданные в ingestion, продолжают свои jobs; следующий sync продолжает с сохранённого cursor. Audit
+`job.cancelled` (details: `document_id` или `data_source_id`, `previous_status`).
 
 **Job DTO:**
 

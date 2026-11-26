@@ -30,7 +30,8 @@ local storage с quarantine, KB с источником `upload`, upload док�
 `worker-ingestion` с Docling без сети и секретов, стадии 8–12 — `worker`: chunking, embeddings, атомарное
 переключение версии), API `knowledge-bases`, `documents`, `jobs`, удаление с purge, Celery beat `scheduler`.
 Frontend: React 18, Chakra UI, RTK Query, страницы `/setup`, `/login`, `/activate`, `/account`, `/admin/users`,
-`/admin/groups`, `/admin/providers`, `/admin/embedding-profiles`, `/admin/assistants`, `/assistants`, `/knowledge-bases`,
+`/admin/groups`, `/admin/providers`, `/admin/embedding-profiles`, `/admin/assistants`, `/admin/jobs`, `/assistants`,
+`/knowledge-bases`,
 `/knowledge-bases/:id`, `/chat`, `/viewer`, guard, выход.
 CI (GitHub Actions), pre-commit (secret scan, lint), Dependabot. Фаза 6: FTS ([ADR-018](docs/adr/0018-full-text-search-configuration.md), миграции `0011`/`0012`),
 hybrid retrieval (`application/retrieval`: vector + FTS, RRF, dedup, бюджет), context assembly и citation IDs
@@ -53,7 +54,8 @@ Delta Query), общий транспорт `connector_http.py`, выбор пр
 [ADR-023](docs/adr/0023-production-deployment.md)): S3 storage (SigV4 на httpx, versitygw), `compose.prod.yaml` с
 Nginx/TLS/CSP, секретами файлами (`deploy/prod/init-secrets.sh`), `PROCESS_ROLE` и CI-smoke
 (`deploy/prod/smoke/`); backup/restore (`deploy/scripts/`, CLI `maintenance`: объекты через `StorageProvider`,
-повторное применение удалений после backup), restore drill и upgrade path с `v0.4.0` в CI. Application Settings ещё нет ([DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md)).
+повторное применение удалений после backup), restore drill и upgrade path с `v0.4.0` в CI; отмена jobs и
+страница `/admin/jobs`. Application Settings ещё нет ([DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md)).
 Не начинать Google OAuth, Microsoft Graph и сложный RAG до стабильного запуска каркаса.
 
 ## Приоритет источников

@@ -742,6 +742,54 @@ async def test_sync_jobs_in_the_jobs_api(env: Env) -> None:
         problem(await member.get(f"/api/v1/jobs/sync/{first_id}"), 403, "permission_denied")
 
 
+async def test_cancel_a_sync_job(env: Env) -> None:
+    tree = build_tree(env.google)
+    source_id = await connected_source(env, tree.folder)
+    job_id = await active_job(env, source_id)
+    await active_user(env.harness, env.admin, "member@example.com", ["member"])
+    async with env.harness.new_client() as member:
+        assert (await login(member, "member@example.com")).status_code == 200
+        problem(await member.post(f"/api/v1/jobs/sync/{job_id}/cancel"), 403, "permission_denied")
+
+    response = await env.admin.post(f"/api/v1/jobs/sync/{job_id}/cancel")
+    assert response.status_code == 200, response.text
+    assert (response.json()["type"], response.json()["status"]) == ("sync", "cancelled")
+    assert response.json()["error"]["code"] == "cancelled_by_admin"
+    assert (await run_sync(env, job_id)).outcome is SyncRunOutcome.SKIPPED
+    assert await documents(env, source_id) == {}
+    problem(await env.admin.post(f"/api/v1/jobs/sync/{job_id}/cancel"), 409, "job_not_cancellable")
+    problem(await env.admin.post(f"/api/v1/jobs/ingestion/{job_id}/cancel"), 404, "not_found")
+    [(details,)] = await env.harness.sql(
+        "SELECT details FROM audit_logs WHERE action = 'job.cancelled' AND target_id = CAST(:id AS uuid)",
+        id=job_id,
+    )
+    assert details == {"data_source_id": source_id, "previous_status": "queued"}
+    # Sync jobs are never retried; the next sync starts anew.
+    problem(await env.admin.post(f"/api/v1/jobs/sync/{job_id}/retry"), 409, "job_not_retryable")
+    assert (
+        await env.admin.post(f"{URL}/{source_id}/sync", json={"mode": "reconciliation"})
+    ).status_code == 202
+
+
+async def test_a_running_sync_job_can_be_cancelled(env: Env) -> None:
+    """The worker holding a running job sees ``cancelled`` at its next checkpoint (the same guard as a
+    disconnect); a redelivered message does nothing."""
+    tree = build_tree(env.google)
+    source_id = await connected_source(env, tree.folder)
+    job_id = await active_job(env, source_id)
+    await env.harness.sql(
+        "UPDATE sync_jobs SET status = 'running', attempt = 1, started_at = now() "
+        "WHERE id = CAST(:id AS uuid)",
+        id=job_id,
+    )
+    response = await env.admin.post(f"/api/v1/jobs/sync/{job_id}/cancel")
+    assert response.status_code == 200, response.text
+    assert (await run_sync(env, job_id)).outcome is SyncRunOutcome.SKIPPED
+    rows = {str(row[0]): (row[3], row[4]) for row in await jobs_of(env, source_id)}
+    assert rows[job_id] == ("cancelled", "cancelled_by_admin")
+    assert await documents(env, source_id) == {}
+
+
 async def test_the_source_list_filters_by_knowledge_base(env: Env) -> None:
     source_id = await connected_source(env, None)
     kb = (await env.admin.get(f"/api/v1/knowledge-bases/{env.kb_id}")).json()

@@ -424,7 +424,7 @@ OpenAI/Anthropic). Полный алгоритм — в ADR-007; здесь — 
 Журнал append-only (DATABASE_SCHEMA.md §7.3); не содержит секретов, токенов и содержимого документов.
 
 Реализованы события setup, аутентификации, пользователей, групп, ролей, провайдеров, моделей, embedding profiles,
-`secrets.rotated` и `network.egress.denied`; остальные — **[Proposed]**. В audit провайдеров нет значений ключей:
+`secrets.rotated`, `network.egress.denied`, `job.retried`, `job.cancelled` и `maintenance.*`; остальные — **[Proposed]**. В audit провайдеров нет значений ключей:
 `provider.secret.rotated` содержит только `change = added | replaced | removed`.
 
 **Критичные действия:**

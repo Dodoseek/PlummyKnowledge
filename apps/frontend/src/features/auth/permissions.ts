@@ -23,6 +23,7 @@ export const PERMISSIONS = {
   dataSourcesManage: 'data_sources.manage',
   dataSourcesSync: 'data_sources.sync',
   jobsRead: 'jobs.read',
+  jobsManage: 'jobs.manage',
   assistantsManage: 'assistants.manage',
   chatUse: 'chat.use',
 } as const;

@@ -500,4 +500,12 @@ import-objects` (существующие объекты не перезапис
 | `setup_token_invalid` | Токен истёк или погашен → `python -m plummy.cli setup init-token --rotate` (§6) |
 | Провайдер: `endpoint_not_allowed` / `egress_denied` | Запись allowlist: URL, `purposes`, `allowed_cidrs`; фактический IP сервиса |
 | Ответ чата приходит одним куском | Буферизация SSE в Nginx |
-| Документы зависли в `processing` | Jobs/Sync: очередь, состояние worker, лимиты ресурсов |
+| Документы зависли в `processing` | Страница `/admin/jobs`: статус, stage, attempts. `queued` долго — `docker compose ps` (worker, `worker-ingestion`, `scheduler` healthy?), лимиты ресурсов; `scheduler` периодически переотправляет `queued` jobs, которые брокер не принял (для sync — и зависшие `running`). Ненужный job — «Stop», затем «Retry» |
+| Job `failed`: `provider_auth_failed`, `provider_model_not_found` | Ключ или модель embedding-провайдера: `/admin/providers` → Test; после исправления — «Retry» |
+| Job `dead`: `attempts_exhausted` (`provider_timeout`, `provider_rate_limited`, `provider_unavailable`, `transient_error` до этого) | Доступность провайдера и квоты; allowlist (`egress_denied` в логах worker); «Retry» после восстановления |
+| Job `failed`: `unsupported_media_type`, `archive_limits_exceeded`, `no_text`, `extraction_invalid` | Файл отклонён и не хранится: повтор даст тот же результат; конвертировать файл или проверить лимиты (`UPLOAD_MAX_BYTES`, лимиты архивов) |
+| Job `failed`: `embedding_dimensions_mismatch` | Размерность профиля не совпадает с моделью → новый профиль с верной размерностью и reindex KB |
+| Job `cancelled`: `cancelled_by_admin` / `document_deleted`, `source_*`, `superseded_by_sync`, `resource_unavailable` | Остановлен администратором (можно «Retry») / документ или источник удалён, изменён или заменён новой версией — повтор не нужен |
+| Sync `failed`: `connector_auth_revoked` | Доступ к Google/Microsoft отозван: источник в `error`, переподключить в «External sources» карточки KB |
+| Restore: `refusing: the database is not empty` | Restore только на пустые volumes: `docker compose down --volumes` или новый хост (§10) |
+| После restore провайдеры не работают (`secrets` в readiness) | Не тот key ring: восстановить `deploy/prod/secrets/keyring.json` исходной инсталляции или ввести секреты заново (§4, §10) |

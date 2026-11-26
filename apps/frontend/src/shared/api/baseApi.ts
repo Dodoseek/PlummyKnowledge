@@ -29,6 +29,7 @@ export const ASSISTANTS_TAG = 'Assistants';
 export const CONVERSATIONS_TAG = 'Conversations';
 export const MESSAGES_TAG = 'Messages';
 export const DATA_SOURCES_TAG = 'DataSources';
+export const JOBS_TAG = 'Jobs';
 
 const rawBaseQuery = fetchBaseQuery({
   baseUrl: config.apiBaseUrl,
@@ -88,6 +89,7 @@ export const baseApi = createApi({
     CONVERSATIONS_TAG,
     MESSAGES_TAG,
     DATA_SOURCES_TAG,
+    JOBS_TAG,
   ],
   endpoints: () => ({}),
 });

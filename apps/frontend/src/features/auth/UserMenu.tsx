@@ -60,6 +60,11 @@ export function UserMenu() {
           Manage assistants
         </Link>
       )}
+      {can(PERMISSIONS.jobsRead) && (
+        <Link as={RouterLink} to="/admin/jobs" fontSize="sm">
+          Jobs
+        </Link>
+      )}
       <Link as={RouterLink} to="/account" fontSize="sm" data-testid="current-user">
         {session.user.display_name}
       </Link>

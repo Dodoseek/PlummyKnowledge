@@ -71,6 +71,7 @@ class AuditAction(StrEnum):
     DOCUMENT_DELETED = "document.deleted"
     DOCUMENT_REINDEX_REQUESTED = "document.reindex.requested"
     JOB_RETRIED = "job.retried"
+    JOB_CANCELLED = "job.cancelled"
     DATA_SOURCE_CREATED = "data_source.created"
     DATA_SOURCE_UPDATED = "data_source.updated"
     DATA_SOURCE_DELETED = "data_source.deleted"

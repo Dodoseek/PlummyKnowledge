@@ -71,7 +71,15 @@ from plummy.application.ingestion.maintenance import (
 )
 from plummy.application.ingestion.parsing import ParserRegistry
 from plummy.application.ingestion.pipeline import RunIngestionJob
-from plummy.application.jobs.use_cases import GetJob, GetSyncJob, ListJobs, ListSyncJobs, RetryJob
+from plummy.application.jobs.use_cases import (
+    CancelJob,
+    CancelSyncJob,
+    GetJob,
+    GetSyncJob,
+    ListJobs,
+    ListSyncJobs,
+    RetryJob,
+)
 from plummy.application.knowledge.use_cases import (
     CreateKnowledgeBase,
     DeleteKnowledgeBase,
@@ -338,6 +346,8 @@ class JobServices:
     retry: RetryJob
     list_sync: ListSyncJobs
     get_sync: GetSyncJob
+    cancel: CancelJob
+    cancel_sync: CancelSyncJob
 
 
 @dataclass(frozen=True, slots=True)
@@ -895,6 +905,8 @@ def build_resources(
             retry=RetryJob(uow, jobs, limiter, clock),
             list_sync=ListSyncJobs(uow),
             get_sync=GetSyncJob(uow),
+            cancel=CancelJob(uow, clock),
+            cancel_sync=CancelSyncJob(uow, clock),
         ),
         secrets=vault,
         http=http,

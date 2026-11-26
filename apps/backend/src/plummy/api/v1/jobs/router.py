@@ -1,6 +1,7 @@
 """``/api/v1/jobs`` (API_CONTRACTS.md §2.15). ``{type}`` is ``ingestion`` or ``sync``; without ``type``
 the list holds ingestion jobs (each type is its own keyset). Sync jobs are not retried here: a sync runs
-again on its schedule or by ``POST /data-sources/{id}/sync``. Cancel is not implemented yet."""
+again on its schedule or by ``POST /data-sources/{id}/sync``. Both types are cancelled while ``queued`` or
+``running``; an administrator-cancelled ingestion job can be retried."""
 
 from __future__ import annotations
 
@@ -91,3 +92,13 @@ async def retry_job(
         raise JobNotRetryableError("Sync jobs are not retried; start a sync of the source instead.")
     job = await resources.job_admin.retry.execute(context, client_info(request), job_id)
     return JobResponse.build(job)
+
+
+@router.post("/{job_type}/{job_id}/cancel", response_model=JobResponse | SyncJobResponse)
+async def cancel_job(
+    job_type: JobType, job_id: UUID, request: Request, context: Manager, resources: ResourcesDep
+) -> JobResponse | SyncJobResponse:
+    if job_type == "sync":
+        cancelled = await resources.job_admin.cancel_sync.execute(context, client_info(request), job_id)
+        return SyncJobResponse.build(cancelled)
+    return JobResponse.build(await resources.job_admin.cancel.execute(context, client_info(request), job_id))

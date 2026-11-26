@@ -260,7 +260,8 @@ security gate (проверки безопасности **внутри** фаз
   S3-сервер — versitygw вместо MinIO, чьи community-образы больше не публикуются; `compose.prod.yaml`, Nginx с CSP,
   секреты файлами, `PROCESS_ROLE`, CI-job «Production stack» со smoke через Nginx) и 11.3 (`deploy/scripts/backup.sh`
   и `restore.sh`, CLI `maintenance export-deletions`/`reapply-deletions`/`export-objects`/`import-objects`, restore
-  drill и upgrade path с `v0.4.0` в CI).
+  drill и upgrade path с `v0.4.0` в CI), 11.4 (`POST /jobs/{type}/{id}/cancel`, retry отменённых администратором
+  ingestion jobs, страница `/admin/jobs`, troubleshooting в DEPLOYMENT §11).
 - **Security gate:** backup/restore drill; проверка lifecycle удаления; ключ шифрования хранится отдельно от backup.
 
 ### Фаза 12 — Security hardening (§13)
