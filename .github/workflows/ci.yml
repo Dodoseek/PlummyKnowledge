@@ -53,7 +53,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Start the dev stack (postgres, redis, migrate, backend, worker, scheduler)
-        run: docker compose up --detach --build --wait --wait-timeout 300 backend worker scheduler
+        run: docker compose up --detach --build --wait --wait-timeout 300 backend worker scheduler s3
       - name: Tests (unit + API + integration)
         run: docker compose exec -T backend pytest -p no:cacheprovider
       - name: Ruff

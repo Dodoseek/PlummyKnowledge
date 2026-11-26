@@ -144,10 +144,11 @@ from plummy.application.users.use_cases import (
     SetUserRoles,
     UpdateUser,
 )
-from plummy.core.config import ConfigurationError, Settings, SetupMode
+from plummy.core.config import ConfigurationError, Settings, SetupMode, StorageBackend
 from plummy.core.instance_config import InstanceConfig, build_egress_policy, load_instance_config
 from plummy.core.network.addresses import IPAddress
-from plummy.core.network.policy import EgressPolicy
+from plummy.core.network.errors import EgressDeniedError
+from plummy.core.network.policy import EgressPolicy, EgressPurpose
 from plummy.core.network.urls import parse_ip
 from plummy.domain.file_types import DocumentFormat
 from plummy.domain.knowledge import DataSourceType
@@ -180,6 +181,8 @@ from plummy.infrastructure.security.bootstrap_store import FileBootstrapTokenSto
 from plummy.infrastructure.security.passwords import Argon2PasswordHasher
 from plummy.infrastructure.security.secret_cipher import AesGcmSecretCipher, KeyRingError, load_keyring
 from plummy.infrastructure.storage.local import LocalFileStorage, StorageCheck
+from plummy.infrastructure.storage.s3 import S3Storage, S3StorageCheck
+from plummy.infrastructure.storage.sigv4 import Credentials
 from plummy.workers.app import DEFAULT_NAMESPACE
 
 logger = logging.getLogger(__name__)
@@ -366,7 +369,7 @@ class Resources:
     job_admin: JobServices
     secrets: SecretVault
     http: SafeHttpClient
-    storage: LocalFileStorage
+    storage: DocumentStorage
     jobs: CeleryJobQueue
 
     async def aclose(self) -> None:
@@ -379,6 +382,10 @@ class Resources:
             await self.http.aclose()
         except Exception:
             logger.exception("failed to close outbound http client")
+        try:
+            await self.storage.aclose()
+        except Exception:
+            logger.exception("failed to close document storage")
         try:
             await self.redis.aclose()
         except Exception:
@@ -409,16 +416,18 @@ async def ingestion_runner(settings: Settings) -> AsyncIterator[RunIngestionJob]
     event loop of the run. Needs no secrets and no outbound network."""
     engine = create_engine(settings, application_name="plummy-worker-ingestion")
     jobs = CeleryJobQueue(settings)
+    storage = create_storage(settings)
     try:
         yield RunIngestionJob(
             SqlAlchemyUnitOfWorkFactory(create_session_factory(engine)),
-            create_storage(settings),
+            storage,
             SystemClock(),
             create_parsers(),
             jobs,
         )
     finally:
         jobs.close()
+        await storage.aclose()
         await engine.dispose()
 
 
@@ -432,10 +441,11 @@ async def indexing_runner(settings: Settings) -> AsyncIterator[RunIndexingJob]:
     uow = SqlAlchemyUnitOfWorkFactory(create_session_factory(engine))
     http = SafeHttpClient(policy, on_denied=EgressDenialAuditor(uow))
     jobs = CeleryJobQueue(settings)
+    storage = create_storage(settings)
     try:
         yield RunIndexingJob(
             uow,
-            create_storage(settings),
+            storage,
             clock,
             chunker=StructuredChunker(),
             gateway=HttpProviderGateway(http),
@@ -445,6 +455,7 @@ async def indexing_runner(settings: Settings) -> AsyncIterator[RunIndexingJob]:
         )
     finally:
         jobs.close()
+        await storage.aclose()
         await http.aclose()
         await engine.dispose()
 
@@ -471,10 +482,11 @@ async def sync_runner(settings: Settings) -> AsyncIterator[RunSyncJob]:
     uow = SqlAlchemyUnitOfWorkFactory(create_session_factory(engine))
     http = SafeHttpClient(policy, on_denied=EgressDenialAuditor(uow))
     jobs = CeleryJobQueue(settings)
+    storage = create_storage(settings)
     try:
         yield RunSyncJob(
             uow,
-            create_storage(settings),
+            storage,
             clock,
             vault,
             oauth_clients(settings, http),
@@ -484,6 +496,7 @@ async def sync_runner(settings: Settings) -> AsyncIterator[RunSyncJob]:
         )
     finally:
         jobs.close()
+        await storage.aclose()
         await http.aclose()
         await engine.dispose()
 
@@ -517,12 +530,53 @@ async def maintenance_runner(settings: Settings) -> AsyncIterator[MaintenanceSer
         )
     finally:
         jobs.close()
+        await storage.aclose()
         await engine.dispose()
 
 
-def create_storage(settings: Settings) -> LocalFileStorage:
-    """Document storage (ARCHITECTURE.md §8.5); only the local backend exists before Phase 11."""
-    return LocalFileStorage(settings.storage_path)
+DocumentStorage = LocalFileStorage | S3Storage
+
+
+def create_storage(settings: Settings) -> DocumentStorage:
+    """Document storage (ARCHITECTURE.md §8.5): a local directory or an S3-compatible bucket (ADR-022)."""
+    if settings.storage_backend is not StorageBackend.S3:
+        return LocalFileStorage(settings.storage_path)
+    policy = load_egress_policy(settings)
+    endpoint, bucket, credentials = _s3_settings(settings, policy)
+    return S3Storage(
+        SafeHttpClient(policy),
+        endpoint_url=endpoint,
+        bucket=bucket,
+        region=settings.s3_region,
+        prefix=settings.s3_prefix,
+        credentials=credentials,
+    )
+
+
+def check_storage_configuration(settings: Settings) -> None:
+    """Startup check (``python -m plummy.check_config``): the S3 endpoint passes the egress policy."""
+    if settings.storage_backend is StorageBackend.S3:
+        _s3_settings(settings, load_egress_policy(settings))
+
+
+def _s3_settings(settings: Settings, policy: EgressPolicy) -> tuple[str, str, Credentials]:
+    """The S3 endpoint must pass the egress policy (purpose ``storage``); otherwise the process stops."""
+    endpoint, bucket = settings.s3_endpoint_url, settings.s3_bucket
+    access_key, secret = settings.s3_access_key_id, settings.s3_secret_access_key
+    if endpoint is None or bucket is None or access_key is None or secret is None:  # Settings checks them
+        raise ConfigurationError("STORAGE_BACKEND=s3 requires the S3_* settings")
+    try:
+        policy.check_url(endpoint, EgressPurpose.STORAGE, None)
+    except EgressDeniedError as exc:
+        raise ConfigurationError(
+            f"S3_ENDPOINT_URL is not reachable under the network policy ({exc.reason.value}): plain http and "
+            'internal addresses need a [[network.allowlist]] entry with purposes = ["storage"]'
+        ) from None
+    return endpoint, bucket, Credentials(access_key, secret.get_secret_value())
+
+
+def storage_check(storage: DocumentStorage) -> StorageCheck | S3StorageCheck:
+    return S3StorageCheck(storage) if isinstance(storage, S3Storage) else StorageCheck(storage)
 
 
 def session_policy(settings: Settings) -> SessionPolicy:
@@ -684,7 +738,7 @@ def build_resources(
             MigrationsCheck(engine, expected_heads),
             RedisCheck(redis),
             SecretsCheck(engine, cipher.key_ids if cipher else frozenset()),
-            StorageCheck(storage),
+            storage_check(storage),
         ]
     )
     session_factory = create_session_factory(engine)

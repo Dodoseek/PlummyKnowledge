@@ -21,6 +21,7 @@ class EgressPurpose(StrEnum):
     LLM = "llm"
     EMBEDDING = "embedding"
     CONNECTOR = "connector"  # document sources: OAuth, listing and downloads (ADR-020)
+    STORAGE = "storage"  # S3-compatible document storage (ADR-022)
 
 
 @dataclass(frozen=True, slots=True)

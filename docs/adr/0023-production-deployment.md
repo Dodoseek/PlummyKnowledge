@@ -25,11 +25,11 @@ Chakra UI/emotion; §16.2 — как повторно применить уда�
   монтируется; файловые системы приложений — `read_only` с `tmpfs` для `/tmp`.
 - `APP_ENV=production`; `migrate` — одноразовый шаг (`alembic upgrade head`, `setup init-token`), без
   `secrets init-keyring` (key ring создаёт администратор, §3).
-- Profile `minio` включает встроенный MinIO и `minio-init` (бакет, пользователь приложения с политикой только на
-  этот бакет); без него используется внешний S3 ([ADR-022](0022-s3-compatible-storage.md)). PostgreSQL и Redis входят
+- Profile `s3` включает встроенный S3-сервер (versitygw, [ADR-022](0022-s3-compatible-storage.md) Implementation
+  notes) и его init-шаг (бакет, учётная запись приложения только с этим бакетом); без него используется внешний S3 ([ADR-022](0022-s3-compatible-storage.md)). PostgreSQL и Redis входят
   в стек; внешний управляемый PostgreSQL — через override-файл (DEPLOYMENT).
 - Resource limits (`cpus`, `mem_limit`, `pids_limit`) у каждого сервиса; значения по умолчанию задаются переменными.
-- Healthchecks у всех долгоживущих сервисов; `restart: unless-stopped`, кроме `migrate` и `minio-init`.
+- Healthchecks у всех долгоживущих сервисов; `restart: unless-stopped`, кроме `migrate` и init-шага S3-сервера.
 - Масштабирование: `backend` и `worker` — любое число реплик, `worker-ingestion` — по памяти, `scheduler` — ровно один.
 
 ### 2. Сети
@@ -38,10 +38,10 @@ Chakra UI/emotion; §16.2 — как повторно применить уда�
 |---|---|---|
 | `public` | нет | `nginx` (единственный сервис с опубликованными портами 80/443) |
 | `app` | да, фиксированная подсеть | `nginx`, `backend` |
-| `data` | да, фиксированная подсеть | `backend`, `worker`, `worker-ingestion`, `scheduler`, `migrate`, `postgres`, `redis`, `minio` |
+| `data` | да, фиксированная подсеть | `backend`, `worker`, `worker-ingestion`, `scheduler`, `migrate`, `postgres`, `redis`, `s3` |
 | `egress` | нет | `backend`, `worker` (LLM, embeddings, коннекторы — через `SafeHttpClient`) |
 
-`worker-ingestion`, `scheduler`, `postgres`, `redis` и `minio` выхода в интернет не имеют. Локальная модель
+`worker-ingestion`, `scheduler`, `postgres`, `redis` и `s3` выхода в интернет не имеют. Локальная модель
 подключается сетью `llm` по DEPLOYMENT §7.3. Фильтрация metadata endpoints на хосте (`DOCKER-USER`) остаётся
 обязанностью администратора (DEPLOYMENT §7.2).
 
@@ -49,7 +49,7 @@ Chakra UI/emotion; §16.2 — как повторно применить уда�
 
 - Все секреты — Docker secrets (файлы `0400` в `deploy/prod/secrets/`, каталог в `.gitignore`): `SECRET_KEY_FILE`,
   `DATABASE_URL_FILE`, `REDIS_URL_FILE`, `SECRETS_KEYRING_FILE`, `S3_*_FILE`, OAuth client secrets, пароли
-  `postgres`, роли приложения, Redis и MinIO.
+  `postgres`, роли приложения, Redis и ключи S3-сервера.
 - Скрипт `deploy/prod/init-secrets.sh` один раз генерирует случайные значения (не перезаписывает существующие файлы)
   и key ring; значения не печатаются.
 - Redis требует пароль (`requirepass` из секрета); PostgreSQL — роли по [ADR-011](0011-database-roles-and-extensions.md).
@@ -87,7 +87,7 @@ OAuth-провайдеры открываются переходом верхн�
 
 ### 6. Backup, restore и повторное применение удалений
 
-- `deploy/scripts/backup.sh`: `pg_dump --format=custom` под ролью приложения, затем зеркало бакета (`mc mirror`) в
+- `deploy/scripts/backup.sh`: `pg_dump --format=custom` под ролью приложения, затем зеркало бакета в
   каталог с меткой времени UTC и манифестом (версия приложения, ревизия Alembic, время начала дампа). Key ring и
   bootstrap token в backup **не** попадают — скрипт отказывается работать, если они оказались в целевом каталоге.
   Шифрование и вынос копии — обязанность администратора (DEPLOYMENT описывает `age`/`gpg`).

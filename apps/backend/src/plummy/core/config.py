@@ -46,6 +46,9 @@ MAX_QUARANTINE_TTL = timedelta(days=7)
 # Secret fields that may also be provided as ``<NAME>_FILE`` (path to a file with the value).
 _MULTI_TENANT_ALIASES: Final = frozenset({"common", "organizations", "consumers"})
 _TENANT_GUID: Final = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+_S3_BUCKET: Final = re.compile(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]")
+_S3_REGION: Final = re.compile(r"[a-z0-9-]{1,32}")
+_S3_PREFIX: Final = re.compile(r"(?:[a-z0-9][a-z0-9-]{0,62}/){0,8}")
 _TENANT_DOMAIN: Final = re.compile(r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}")
 
 FILE_SECRET_FIELDS: tuple[str, ...] = (
@@ -54,6 +57,8 @@ FILE_SECRET_FIELDS: tuple[str, ...] = (
     "secret_key",
     "google_oauth_client_secret",
     "microsoft_oauth_client_secret",
+    "s3_access_key_id",
+    "s3_secret_access_key",
 )
 
 
@@ -75,7 +80,8 @@ class SetupMode(StrEnum):
 
 
 class StorageBackend(StrEnum):
-    LOCAL = "local"  # S3-compatible storage arrives with the production profile (roadmap Phase 11)
+    LOCAL = "local"  # one host: a directory (volume)
+    S3 = "s3"  # S3-compatible object storage (ADR-022)
 
 
 class LogLevel(StrEnum):
@@ -181,6 +187,14 @@ class Settings(BaseSettings):
     storage_backend: StorageBackend = StorageBackend.LOCAL
     storage_path: Path = DEFAULT_STORAGE_PATH
     quarantine_ttl: timedelta = timedelta(hours=24)
+    # S3-compatible storage (ADR-022), for STORAGE_BACKEND=s3. Plain http only with a network allowlist entry
+    # of purpose "storage" (checked at startup, ADR-007). The bucket is created by the administrator.
+    s3_endpoint_url: str | None = Field(default=None, max_length=256)
+    s3_bucket: str | None = None
+    s3_region: str = "us-east-1"
+    s3_prefix: str = ""
+    s3_access_key_id: str | None = Field(default=None, max_length=256)
+    s3_secret_access_key: SecretStr | None = None
     # Largest accepted upload, checked while the file streams in (SECURITY_MODEL.md §9).
     upload_max_bytes: int = Field(default=50 * 1024 * 1024, ge=1024, le=2 * 1024 * 1024 * 1024)
     # Hard limit of one answer, retrieval included (ADR-019 §2); a slower answer ends with provider_timeout.
@@ -299,6 +313,39 @@ class Settings(BaseSettings):
             raise ValueError("must be an absolute path")
         return value
 
+    @field_validator("s3_endpoint_url")
+    @classmethod
+    def _check_s3_endpoint(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        parts = urlsplit(value)
+        if parts.scheme not in {"http", "https"} or not parts.hostname:
+            raise ValueError("expected http(s)://host[:port]")
+        if parts.username or parts.password or parts.query or parts.fragment or parts.path not in {"", "/"}:
+            raise ValueError("path, query and credentials are not allowed")
+        return f"{parts.scheme}://{parts.netloc}".lower()
+
+    @field_validator("s3_bucket")
+    @classmethod
+    def _check_s3_bucket(cls, value: str | None) -> str | None:
+        if value is not None and (not _S3_BUCKET.fullmatch(value) or ".." in value):
+            raise ValueError("must be a valid bucket name: 3-63 characters of a-z, 0-9, '.' and '-'")
+        return value
+
+    @field_validator("s3_region")
+    @classmethod
+    def _check_s3_region(cls, value: str) -> str:
+        if not _S3_REGION.fullmatch(value):
+            raise ValueError("must be 1-32 characters of a-z, 0-9 and '-'")
+        return value
+
+    @field_validator("s3_prefix")
+    @classmethod
+    def _check_s3_prefix(cls, value: str) -> str:
+        if not _S3_PREFIX.fullmatch(value):
+            raise ValueError("must be empty or lowercase segments of a-z, 0-9 and '-', each ending with '/'")
+        return value
+
     @field_validator("bootstrap_token_ttl")
     @classmethod
     def _check_bootstrap_token_ttl(cls, value: timedelta) -> timedelta:
@@ -334,6 +381,16 @@ class Settings(BaseSettings):
                 "MICROSOFT_OAUTH_TENANT_ID, MICROSOFT_OAUTH_CLIENT_ID and MICROSOFT_OAUTH_CLIENT_SECRET "
                 "must be set together"
             )
+        if self.storage_backend is StorageBackend.S3:
+            required = {
+                "S3_ENDPOINT_URL": self.s3_endpoint_url,
+                "S3_BUCKET": self.s3_bucket,
+                "S3_ACCESS_KEY_ID": self.s3_access_key_id,
+                "S3_SECRET_ACCESS_KEY": self.s3_secret_access_key,
+            }
+            missing = [name for name, value in required.items() if value is None]
+            if missing:
+                raise ValueError(f"STORAGE_BACKEND=s3 requires {', '.join(missing)}")
         if self.session_absolute_ttl < self.session_idle_ttl:
             raise ValueError("SESSION_ABSOLUTE_TTL must not be shorter than SESSION_IDLE_TTL")
         if self.app_env is AppEnv.PRODUCTION:
@@ -409,6 +466,8 @@ class Settings(BaseSettings):
             "secrets_keyring_configured": self.secrets_keyring_file is not None,
             "config_file_configured": self.config_file is not None,
             "storage_backend": self.storage_backend.value,
+            "s3_endpoint_url": self.s3_endpoint_url if self.storage_backend is StorageBackend.S3 else None,
+            "s3_bucket": self.s3_bucket if self.storage_backend is StorageBackend.S3 else None,
             "quarantine_ttl_seconds": int(self.quarantine_ttl.total_seconds()),
             "upload_max_bytes": self.upload_max_bytes,
             "google_drive_configured": self.google_drive_configured,

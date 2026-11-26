@@ -349,7 +349,7 @@ class StorageProvider(Protocol):
 
 `StorageArea`: `quarantine` (временная, ограниченные права, cleanup, §8 п.8) и `documents`. Ключи генерирует
 сервер (UUID-based); имя файла пользователя **никогда** не используется как путь (§12: malicious filenames не
-выходят из storage). Реализации: local filesystem (`STORAGE_BACKEND=local`, реализована), S3-compatible (MinIO, AWS S3) — Фаза 11
+выходят из storage). Реализации: local filesystem (`STORAGE_BACKEND=local`) и S3-compatible (`STORAGE_BACKEND=s3`, versitygw, AWS S3, MinIO и др.) — реализованы
 ([ADR-022](adr/0022-s3-compatible-storage.md): подпись SigV4 на `httpx` через `SafeHttpClient`, `If-None-Match: *`
 против перезаписи, загрузка через временный файл, `local_path` — скачивание во временный файл).
 

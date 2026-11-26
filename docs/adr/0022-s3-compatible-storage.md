@@ -38,9 +38,12 @@ Production-профилю Фазы 11 нужно объектное хранил
   удаляется в любом случае), прерывая запись при превышении `max_bytes` (`StorageLimitExceededError`), считает
   SHA-256 и размер, затем один `PutObject` с `Content-Length` и подписанным `x-amz-content-sha256`. Объект появляется
   в бакете атомарно и целиком.
-- **`move`:** `CopyObject` в целевую область с `If-None-Match: *`, затем `DeleteObject` источника. Сбой между шагами
-  оставляет копию в quarantine — её удалит cleanup по TTL; повтор `move` после успешного копирования видит целевой
-  объект и только удаляет источник.
+- **`move`:** `HEAD` целевого объекта, затем `CopyObject` в целевую область с `If-None-Match: *`, затем
+  `DeleteObject` источника. Существующий целевой объект → `StorageObjectExistsError`, источник не трогается — как у
+  local; pipeline трактует это как «перенесено прошлой попыткой» и удаляет источник. `HEAD` нужен потому, что часть
+  серверов игнорирует условие на `CopyObject` (так ведёт себя MinIO); гонка двух `move` одного случайного ключа
+  возможна только при повторной доставке задания и копирует те же байты. Сбой между копией и удалением оставляет
+  копию в quarantine — её удалит повтор или cleanup по TTL.
 - **`local_path`:** объект скачивается во временный файл (`0600`, каталог `0700`), который удаляется при выходе из
   контекста; парсер по-прежнему получает путь и не знает о S3.
 - **`purge_expired`:** `ListObjectsV2` по префиксу области и `DeleteObject` объектов с `LastModified` старше границы.
@@ -55,8 +58,8 @@ Production-профилю Фазы 11 нужно объектное хранил
   `PLUMMY_S3_*` из DEPLOYMENT.md. Без любого обязательного значения при `STORAGE_BACKEND=s3` — отказ старта.
 - В `production` `S3_ENDPOINT_URL` — только `https`, кроме адреса, разрешённого записью allowlist (внутренний MinIO в
   сети `data`, §4).
-- Бакет создаёт администратор (в production-compose — одноразовый `minio-init`); приложение бакеты не создаёт и не
-  меняет их политику. Учётная запись приложения в MinIO получает доступ только к своему бакету.
+- Бакет создаёт администратор (в production-compose — одноразовый init-шаг встроенного S3-сервера); приложение бакеты не создаёт и не
+  меняет их политику. Учётная запись приложения на S3-сервере получает доступ только к своему бакету.
 - Readiness проверяет storage `HeadBucket`-запросом (без записи); ошибка → `storage: fail`.
 
 ### 4. Сеть ([ADR-007](0007-network-access-and-local-llm.md))
@@ -94,8 +97,9 @@ volume сейчас. `scheduler` и `migrate` их не получают. Отд
 
 ## Security considerations
 
-- Секретный ключ — только файл (`S3_SECRET_ACCESS_KEY_FILE`), не попадает в логи, ошибки и `GET /system/settings`
-  (там — `backend`, `bucket`, `endpoint` и `configured`).
+- Секретный ключ — файлом (`S3_SECRET_ACCESS_KEY_FILE`), не попадает в логи, ошибки и ответы API; стартовая
+  диагностика (`safe_summary`) показывает только backend, endpoint и бакет. Раздел storage в `GET /system/settings`
+  остаётся [Proposed] (API_CONTRACTS.md).
 - Подпись запроса не логируется; ошибки S3 сводятся к typed storage errors без тела ответа.
 - Шифрование at rest — средствами хранилища (SSE MinIO/KMS, SSE-S3); приложение его не настраивает, DEPLOYMENT
   описывает рекомендацию.
@@ -104,8 +108,20 @@ volume сейчас. `scheduler` и `migrate` их не получают. Отд
 
 ## Implementation notes
 
-Шаг 11.1. Тесты: общий contract-набор `StorageProvider` для local и S3 (MinIO в CI), unit-тесты SigV4 на примерах
-AWS, лимит размера, обрыв потока, `412` при повторном ключе, повтор `move`, `purge_expired`, отказ конфигурации.
+**Встроенный S3-сервер — versitygw, а не MinIO** (решение владельца при реализации 11.1): community-образы MinIO
+больше не публикуются (Docker Hub и quay.io отказывают в доступе), остаётся Chainguard MinIO только с тегом
+`latest`. Проверены MinIO (Chainguard), RustFS, versitygw и SeaweedFS: условную запись `PutObject` соблюдают все,
+`CopyObject` с `If-None-Match: *` — все, кроме MinIO. Выбран `versity/versitygw` (Apache 2.0, регулярные релизы,
+один процесс; backend `posix` хранит бакеты и объекты обычными каталогами и файлами volume). Адаптер от сервера не
+зависит: внешний S3 (AWS, MinIO, Ceph) подключается настройками. В dev-стеке сервис `s3` (versitygw) нужен только
+integration-тестам; сам dev-стек остаётся на local storage.
+
+Сопутствующее исправление: логгеры `httpx`/`httpcore` подняты до `WARNING` — на `INFO` `httpx` писал URL каждого
+запроса (ключи объектов, page tokens и идентификаторы файлов коннекторов).
+
+Шаг 11.1. Тесты: общий contract-набор `StorageProvider` для local и S3 (`tests/integration/test_storage_contract.py`, versitygw в CI), unit-тесты SigV4 на примерах
+AWS, лимит размера, обрыв потока, `412` при повторном ключе, `move` без перезаписи, `purge_expired` со страницами
+и без чужих объектов, readiness, неверные ключи доступа, отказ конфигурации и egress (`tests/unit/test_s3_storage.py`).
 
 ## Related documents
 

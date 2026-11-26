@@ -15,7 +15,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from plummy.api.errors import REQUEST_ID_HEADER, register_exception_handlers
 from plummy.api.middleware import RequestContextMiddleware
 from plummy.api.router import api_router
-from plummy.composition import Resources, build_resources, load_egress_policy, load_secret_cipher
+from plummy.composition import (
+    Resources,
+    build_resources,
+    check_storage_configuration,
+    load_egress_policy,
+    load_secret_cipher,
+)
 from plummy.core.config import ConfigurationError, Settings, get_settings
 from plummy.core.logging import configure_logging
 from plummy.core.version import get_version
@@ -49,6 +55,7 @@ def check_configuration() -> int:
         settings = get_settings()
         load_secret_cipher(settings)
         load_egress_policy(settings)
+        check_storage_configuration(settings)
     except ConfigurationError as exc:
         report_configuration_error(exc)
         return 1

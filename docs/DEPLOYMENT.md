@@ -23,6 +23,7 @@
 | `worker` | `apps/backend/Dockerfile` (`dev`) | Celery worker, очереди `default`, `embeddings`, `maintenance`, `connectors` (стадии 8–12 ingestion, purge, cleanup, синхронизация внешних источников — ADR-020); healthcheck = `celery inspect ping`. Вызывает embedding-провайдеров и Google Drive, поэтому в сети `edge` (каждое соединение — через `SafeHttpClient`, ADR-007). Изменения кода — `docker compose restart worker` (без auto-reload) | — | `data`, `edge` |
 | `worker-ingestion` | `apps/backend/Dockerfile` (`ingestion-dev`: образ с Docling и его моделями, ~4 ГБ) | Celery worker, только очередь `ingestion` (стадии 2–7: проверки, тип, безопасность файла, storage, parsing), concurrency 1; parser — в дочернем процессе с timeout и rlimits; `mem_limit` = `INGESTION_MEMORY_LIMIT` (по умолчанию `4g`). Без key ring, секретов провайдеров и setup token. `docker compose restart worker-ingestion` после изменения кода | — | `data` |
 | `scheduler` | `apps/backend/Dockerfile` (`dev`) | Celery beat, ровно один экземпляр: cleanup quarantine (1 ч), повторная публикация `queued` jobs, не дошедших до брокера (5 мин), sweep удалённых документов для purge (10 мин), sweep чата — зависшие `streaming`-ответы и удалённые диалоги (5 мин), планировщик синхронизации источников (1 мин: sync jobs по `next_sync_at`, раз в сутки reconciliation, повтор потерянных и зависших jobs) — в очередь `maintenance`. Только Redis; файл состояния расписания временный (`/tmp`) | — | `data` |
+| `s3` | `versity/versitygw:v1.11.0` | S3-совместимый сервер (backend `posix` на volume `s3-data`) только для integration-тестов S3-адаптера (`S3_TEST_URL` у `backend`); dev-стек хранит документы локально | — | `data` |
 | `frontend` | `apps/frontend/Dockerfile` (`dev`) | Vite dev server; `/api` проксируется на `backend` (same-origin, без CORS) | `127.0.0.1:5173` | `edge` |
 
 - Сеть `data` — `internal: true`; порты PostgreSQL и Redis не публикуются. Учётные данные БД в `compose.yaml` —
@@ -80,7 +81,10 @@
 | `CONFIG_FILE` | — (пустой allowlist) | TOML-файл Instance Settings со структурой, сейчас `[[network.allowlist]]` ([ADR-007](adr/0007-network-access-and-local-llm.md), §7.3); ≤ 256 КБ, невалидный файл → отказ старта |
 | `WORKER_CONCURRENCY` | `2` (dev compose) | Число процессов Celery worker (флаг `--concurrency` в команде сервиса, не настройка приложения) |
 | `INGESTION_MEMORY_LIMIT` | `4g` (dev compose) | `mem_limit` контейнера `worker-ingestion` (Compose, не настройка приложения) |
-| `STORAGE_BACKEND` | `local` | `local`; `s3` — с шага 11.1 ([ADR-022](adr/0022-s3-compatible-storage.md): `S3_ENDPOINT_URL`, `S3_BUCKET`, `S3_REGION`, `S3_PREFIX`, `S3_ACCESS_KEY_ID[_FILE]`, `S3_SECRET_ACCESS_KEY[_FILE]`) |
+| `STORAGE_BACKEND` | `local` | `local` (каталог `STORAGE_PATH`) или `s3` ([ADR-022](adr/0022-s3-compatible-storage.md)) |
+| `S3_ENDPOINT_URL`, `S3_BUCKET` | — (обязательны при `s3`) | `http(s)://host[:port]` без пути; бакет создаёт администратор. Plain `http` и внутренние адреса — только с записью allowlist `purposes = ["storage"]` (проверяется при старте; CIDR — адрес S3-сервера `/32`, чтобы не включить PostgreSQL и Redis) |
+| `S3_ACCESS_KEY_ID` / `_FILE`, `S3_SECRET_ACCESS_KEY` / `_FILE` | — (обязательны при `s3`) | Ключи учётной записи с доступом только к бакету; секрет — файлом |
+| `S3_REGION`, `S3_PREFIX` | `us-east-1`, пусто | Регион подписи SigV4; префикс ключей (`a-z0-9-` сегменты, каждый с `/`), чтобы делить бакет |
 | `STORAGE_PATH` | `/var/lib/plummy/storage` | Корень storage (области `quarantine` и `documents`); заменяет черновые `PLUMMY_STORAGE_PATH`, `PLUMMY_QUARANTINE_PATH` |
 | `QUARANTINE_TTL` | `86400` (24 ч) | Срок хранения файлов в quarantine до cleanup; от 10 мин до 7 дней |
 | `UPLOAD_MAX_BYTES` | `52428800` (50 МБ) | Наибольший принимаемый upload (проверяется при потоковой записи); от 1 КБ до 2 ГБ; заменяет черновое `PLUMMY_UPLOAD_MAX_BYTES` |

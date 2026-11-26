@@ -256,7 +256,8 @@ security gate (проверки безопасности **внутри** фаз
   [ADR-023](adr/0023-production-deployment.md) (`compose.prod.yaml`, Nginx, CSP со `style-src 'unsafe-inline'`,
   backup и повторное применение удалений; retention audit logs — Фаза 12). Шаги: 11.0 ADR и спецификации; 11.1
   S3 StorageProvider; 11.2 production-стек и smoke в CI; 11.3 backup/restore, upgrade path, drill; 11.4 отмена jobs
-  и страница `/admin/jobs`; 11.5 retention версий, масштабирование, security gate. Выполнен 11.0.
+  и страница `/admin/jobs`; 11.5 retention версий, масштабирование, security gate. Выполнены 11.0–11.1 (встроенный
+  S3-сервер — versitygw вместо MinIO, чьи community-образы больше не публикуются).
 - **Security gate:** backup/restore drill; проверка lifecycle удаления; ключ шифрования хранится отдельно от backup.
 
 ### Фаза 12 — Security hardening (§13)

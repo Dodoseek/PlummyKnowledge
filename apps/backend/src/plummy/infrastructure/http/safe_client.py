@@ -20,7 +20,7 @@ import asyncio
 import logging
 import socket
 import ssl
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
+from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Iterable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Final, Protocol
@@ -361,7 +361,7 @@ class SafeHttpClient:
         provider_type: str | None,
         headers: Mapping[str, str] | None,
         json: Any,
-        content: bytes | None,
+        content: bytes | AsyncIterable[bytes] | None,
         params: Mapping[str, str] | None,
         timeout: httpx.Timeout | None,
         max_response_bytes: int,
@@ -389,7 +389,7 @@ class SafeHttpClient:
         provider_type: str | None = None,
         headers: Mapping[str, str] | None = None,
         json: Any = None,
-        content: bytes | None = None,
+        content: bytes | AsyncIterable[bytes] | None = None,
         params: Mapping[str, str] | None = None,
         timeout: httpx.Timeout | None = None,  # noqa: ASYNC109 - per-phase httpx timeouts
         max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
@@ -428,7 +428,7 @@ class SafeHttpClient:
         provider_type: str | None = None,
         headers: Mapping[str, str] | None = None,
         json: Any = None,
-        content: bytes | None = None,
+        content: bytes | AsyncIterable[bytes] | None = None,
         params: Mapping[str, str] | None = None,
         timeout: httpx.Timeout | None = None,  # noqa: ASYNC109 - per-phase httpx timeouts
         max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,

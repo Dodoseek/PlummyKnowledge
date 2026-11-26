@@ -67,6 +67,10 @@ def configure_logging(level: str, *, quiet_loggers: tuple[str, ...] = ()) -> Non
                 "uvicorn.access": {"level": "WARNING", "handlers": [], "propagate": False},
                 # SQL echo would leak query parameters; keep SQLAlchemy quiet regardless of LOG_LEVEL.
                 "sqlalchemy": {"level": "WARNING", "handlers": [], "propagate": True},
+                # httpx logs every request URL at INFO (object keys, page tokens, file IDs): adapters log
+                # their own redacted outcome instead.
+                "httpx": {"level": "WARNING", "handlers": [], "propagate": True},
+                "httpcore": {"level": "WARNING", "handlers": [], "propagate": True},
                 **quiet,
             },
         }

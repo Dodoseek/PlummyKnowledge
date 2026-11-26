@@ -68,6 +68,13 @@ class StorageObjectExistsError(StorageError):
         super().__init__("storage object already exists")
 
 
+class StorageUnavailableError(StorageError):
+    """The storage service cannot be reached or refused the request (network, credentials, server error)."""
+
+    def __init__(self) -> None:
+        super().__init__("storage is unavailable")
+
+
 class StorageLimitExceededError(StorageError):
     """The stream was longer than ``max_bytes``; nothing was stored."""
 

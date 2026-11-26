@@ -174,6 +174,9 @@ class LocalFileStorage:
                     removed += 1
         return removed
 
+    async def aclose(self) -> None:
+        """Nothing to release; present so both storage backends close the same way."""
+
 
 class StorageCheck:
     """Readiness: the storage root exists and is writable (a probe file is created and removed)."""
