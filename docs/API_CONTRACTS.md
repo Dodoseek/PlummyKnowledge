@@ -561,6 +561,14 @@ KB, иначе `404`; без OAuth client в Instance Settings — `409 connecto
   `oauth_exchange_failed`, `oauth_no_refresh_token`, `oauth_scope_missing`. Без действительного `state` redirect идёт
   на `/knowledge-bases`; адрес строится сервером, параметры запроса в него не копируются.
 
+Уточнения [ADR-021](adr/0021-microsoft-365-connector.md) для `type = microsoft_365` (с шага 10.1): без
+`MICROSOFT_OAUTH_*` — `409 connector_not_configured`; `browse` без `parent_id` возвращает OneDrive учётной записи
+(`kind = drive`) и сайты (`kind = site`, первые 100), `parent_id` сайта — его библиотеки (`drive`), библиотеки или
+папки — вложенные папки (`folder`); ID записей непрозрачны (`site:…`, `drive:…`, `item:…`). `PATCH {"folder_id"}`
+принимает ID записи `drive` или `folder` (сайт — `422 not_a_folder`); `folder` в карточке —
+`{id, name}` выбранной папки, `config` хранит ещё `drive_id` и имена сайта и библиотеки. `disconnect` и `DELETE`
+не отзывают токен у Microsoft (такого endpoint нет): секрет удаляется локально.
+
 UI обязан показывать **фактические** `granted_scopes` и предупреждение, что выбор папки не ограничивает OAuth token
 (§7). Реализовано на странице KB (карточка «External sources», шаг 9.5): список источников KB
 (`?knowledge_base_id=`), подключение через `authorization_url`, разбор `?source=&oauth=&reason=` после callback

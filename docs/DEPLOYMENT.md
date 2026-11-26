@@ -170,7 +170,7 @@ docker compose down --volumes
 | Лимиты | `UPLOAD_MAX_BYTES`, `CHAT_GENERATION_TIMEOUT_SECONDS` (реализовано, §0); лимиты страниц/распаковки/времени парсинга — пока константы `ParseLimits`; одновременные генерации (2 на пользователя) — константа ([ADR-019](adr/0019-answer-generation-in-api-process.md)) | — |
 | Jobs | `WORKER_CONCURRENCY` (реализовано в dev compose, §0); retry/backoff — в определении каждой задачи | — |
 | SMTP | `PLUMMY_SMTP_HOST`, `PLUMMY_SMTP_USER`, `PLUMMY_SMTP_PASSWORD_FILE` | да |
-| Коннекторы | `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` / `GOOGLE_OAUTH_CLIENT_SECRET_FILE` (Фаза 9, §7.4, [ADR-020](adr/0020-google-drive-connector.md)); `PLUMMY_MS_CLIENT_ID`, `PLUMMY_MS_CLIENT_SECRET_FILE` — Фаза 10 | да (secret) |
+| Коннекторы | `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` / `GOOGLE_OAUTH_CLIENT_SECRET_FILE` (Фаза 9, §7.4, [ADR-020](adr/0020-google-drive-connector.md)); `MICROSOFT_OAUTH_TENANT_ID`, `MICROSOFT_OAUTH_CLIENT_ID`, `MICROSOFT_OAUTH_CLIENT_SECRET` / `MICROSOFT_OAUTH_CLIENT_SECRET_FILE` (Фаза 10, §7.5, [ADR-021](adr/0021-microsoft-365-connector.md)) | да (secret) |
 | Сеть | `[[network.allowlist]]` в `CONFIG_FILE` (ADR-007, реализовано; заменяет черновое `PLUMMY_CONFIG_FILE`) | — |
 
 Изменение Instance Settings → перезапуск `api` и worker-сервисов. Через web-интерфейс Instance Settings не меняются.
@@ -330,6 +330,23 @@ Allowlist по умолчанию пуст; примеры выше не явл�
 Записи allowlist для Google не нужны: адреса публичные, а хосты API и загрузки зафиксированы в коде. Секция
 `[connectors.google_drive]` в `CONFIG_FILE` (подмена адресов Google) допустима только вне production — для E2E с
 фейковым сервером.
+
+### 7.5 Microsoft 365 ([ADR-021](adr/0021-microsoft-365-connector.md)) — с шага 10.1
+
+1. В Entra admin center зарегистрировать приложение (*Single tenant*), платформа **Web**, Redirect URI ровно
+   `<PUBLIC_URL>/api/v1/data-sources/oauth/callback`; создать client secret.
+2. API permissions → Microsoft Graph → **Delegated**: `Files.Read.All`, `Sites.Read.All`, `User.Read`,
+   `offline_access`; выдать **Grant admin consent** (`Sites.Read.All` без согласия администратора не работает).
+3. Передать `MICROSOFT_OAUTH_TENANT_ID` (GUID или домен; `common`/`organizations`/`consumers` отклоняются),
+   `MICROSOFT_OAUTH_CLIENT_ID` и `MICROSOFT_OAUTH_CLIENT_SECRET_FILE` сервисам `backend` и `worker`, задать
+   `PUBLIC_URL`, перезапустить их.
+4. Подключать **отдельную служебную учётную запись**, у которой есть доступ только к нужным библиотекам: выбор папки
+   не ограничивает токен — он читает всё, что видит учётная запись во всех сайтах и OneDrive tenant.
+5. Отзыв: «Disconnect» удаляет токен в приложении, но Microsoft не позволяет отозвать отдельный токен. Отзовите
+   согласие в <https://myapps.microsoft.com> (учётная запись) или удалите согласие корпоративного приложения в Entra
+   (администратор).
+
+Client secret Entra имеет срок действия: продлите его до истечения, иначе обновление токенов перестанет работать.
 
 ## 8. TLS и Nginx
 

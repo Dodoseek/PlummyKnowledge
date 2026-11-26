@@ -487,6 +487,10 @@ OpenAI/Anthropic). Полный алгоритм — в ADR-007; здесь — 
   Утечка токена = доступ ко всему, что разрешают выданные scopes.
 - `Files.Read.All` и подобные широкие разрешения Microsoft не ограничиваются выбранной папкой; исследовать
   Selected permissions (§7, §13 Фаза 10).
+- Microsoft 365 ([ADR-021](adr/0021-microsoft-365-connector.md)): delegated `Files.Read.All` + `Sites.Read.All`,
+  authority одного tenant организации, PKCE; app-only `Sites.Selected` рассмотрен и отложен (отдельный ADR при
+  потребности в изоляции на уровне OAuth). Отзыва отдельного токена у Microsoft нет: disconnect удаляет секрет
+  локально, UI предлагает отозвать согласие в Microsoft. Адреса следующих страниц Graph не берутся из ответа.
 - До production: изучить scopes, Google verification, Workspace delegated access, минимальные полномочия (§7).
 - Фактически выданные scopes сохраняются и **честно отображаются** в UI (§7).
 - Revoke/disconnect: отзыв токена у провайдера, где это поддерживается; удаление credentials; остановка sync;

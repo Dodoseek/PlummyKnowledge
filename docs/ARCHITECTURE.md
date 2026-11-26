@@ -360,8 +360,8 @@ class DataSourceConnector(Protocol):          # application/sources/ports.py
     async def browse(self, access_token, parent_id: str | None, *, page_token) -> BrowsePage: ...   # folder picker
     async def get_item(self, access_token, item_id: str) -> RemoteItem: ...       # revision = checksum/version
     async def list_children(self, access_token, folder_id, *, page_token) -> RemotePage: ...  # одна страница
-    async def start_cursor(self, access_token) -> str: ...
-    async def get_changes(self, access_token, cursor: str) -> ChangesPage: ...    # cursor + finished (checkpoint)
+    async def start_cursor(self, access_token, location: SourceLocation) -> str: ...  # ADR-021 §8
+    async def get_changes(self, access_token, location, cursor: str) -> ChangesPage: ...  # cursor + finished
     def download(self, access_token, item: RemoteItem, *, max_bytes: int) -> AsyncIterator[bytes]: ...
 ```
 
@@ -530,7 +530,8 @@ I/O-bound, не «долгая операция» в смысле §11. Жёст
 
 ### 9.5 Синхронизация источников (§7)
 
-- Job per source; `sync_cursor` (Google Changes API page token / Microsoft Graph delta link) хранится в БД и
+- Job per source; `sync_cursor` (Google Changes API page token / `token` Microsoft Graph Delta Query на весь drive,
+  [ADR-021](adr/0021-microsoft-365-connector.md)) хранится в БД и
   обновляется только после успешной обработки страницы изменений (checkpoint).
 - Lock от параллельного sync: partial unique index в БД + короткий Redis lock (см. DATABASE_SCHEMA.md).
 - Backoff с jitter при throttling/quota (`Retry-After` уважается), retry, dead-letter/error state.

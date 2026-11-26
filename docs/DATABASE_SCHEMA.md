@@ -383,8 +383,8 @@ SELECT NOT EXISTS (
 | `owner_knowledge_base_id` | `uuid` | Только для `upload`: KB, которой принадлежит источник. `CHECK ((type = 'upload') = (owner_knowledge_base_id IS NOT NULL))`, `UNIQUE (owner_knowledge_base_id)` **[Proposed — имя колонки]** |
 | `name` | `text` | |
 | `status` | `text` | `active` \| `paused` \| `error` \| `disconnected` |
-| `config` | `jsonb` | Выбранная папка / site / drive / library (без секретов) |
-| `sync_cursor` | `text` | Google page token / Graph delta link (§7), ≤ 2048 символов. Обновляется только после успешного checkpoint |
+| `config` | `jsonb` | Выбранная папка / site / drive / library (без секретов): Google — `{folder_id, folder_name, drive_id?}`, Microsoft 365 — `{drive_id, folder_id, folder_name, site_id?, site_name?, drive_name}` |
+| `sync_cursor` | `text` | Google page token / значение `token` Graph Delta Query (не URL, [ADR-021](adr/0021-microsoft-365-connector.md) §7), ≤ 2048 символов. Обновляется только после успешного checkpoint |
 | `sync_interval_minutes` | `integer` | Интервал инкрементальной синхронизации, 5–1440; NULL — только ручной запуск ([ADR-020](adr/0020-google-drive-connector.md) §8) |
 | `next_sync_at` | `timestamptz` | Когда scheduler поставит следующую синхронизацию; частичный индекс по активным источникам |
 | `last_sync_at`, `last_reconciled_at` | `timestamptz` | |
