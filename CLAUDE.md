@@ -11,9 +11,9 @@ PlummyKnowledge — open-source **self-hosted** платформа корпор�
 Лицензия — Apache License 2.0. Одна инсталляция принадлежит **одной** организации и работает на её серверах или в её
 облаке: multi-tenancy, сущности Organization и `organization_id` нет ([ADR-012](docs/adr/0012-single-organization-deployment.md)).
 
-**Текущее состояние:** Фазы 1–10 roadmap завершены (Foundation, Bootstrap & Authentication, Users & RBAC, AI providers
+**Текущее состояние:** Фазы 1–11 roadmap завершены (Foundation, Bootstrap & Authentication, Users & RBAC, AI providers
 & network policy, Local document ingestion, Retrieval & RAG evaluation, Knowledge Bases & Assistants, Chat UI &
-streaming, Google Drive, Microsoft 365); выпущены релизы 0.1.0 и 0.4.0 (теги `v0.1.0`, `v0.4.0`; 0.2.0 и 0.3.0 отдельно не
+streaming, Google Drive, Microsoft 365, Production deployment); выпущены релизы 0.1.0 и 0.4.0 (теги `v0.1.0`, `v0.4.0`; 0.2.0 и 0.3.0 отдельно не
 выпускались). Backend:
 FastAPI, Pydantic Settings, SQLAlchemy async, Alembic (`vector`/`citext`, users, activation tokens, groups,
 RBAC-каталог и назначения ролей, sessions, audit_logs), Redis (rate limit, брокер Celery), health live/ready; Celery
@@ -50,12 +50,12 @@ reconciliation) в очереди `connectors`, scheduler, sync jobs в `/jobs?t
 ([ADR-021](docs/adr/0021-microsoft-365-connector.md)): Microsoft 365 — OAuth Entra ID одного tenant (PKCE, ротация
 refresh token, отзыв только локальный), адаптер Graph за тем же `DataSourceConnector` (сайты, библиотеки, папки,
 Delta Query), общий транспорт `connector_http.py`, выбор провайдера в «External sources», E2E с
-`deploy/e2e/fake_microsoft.py`. Фаза 11 (идёт, [ADR-022](docs/adr/0022-s3-compatible-storage.md),
+`deploy/e2e/fake_microsoft.py`. Фаза 11 (завершена, [ADR-022](docs/adr/0022-s3-compatible-storage.md),
 [ADR-023](docs/adr/0023-production-deployment.md)): S3 storage (SigV4 на httpx, versitygw), `compose.prod.yaml` с
 Nginx/TLS/CSP, секретами файлами (`deploy/prod/init-secrets.sh`), `PROCESS_ROLE` и CI-smoke
 (`deploy/prod/smoke/`); backup/restore (`deploy/scripts/`, CLI `maintenance`: объекты через `StorageProvider`,
 повторное применение удалений после backup), restore drill и upgrade path с `v0.4.0` в CI; отмена jobs и
-страница `/admin/jobs`. Application Settings ещё нет ([DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md)).
+страница `/admin/jobs`; retention версий документов (последние 3 `outdated`). Application Settings ещё нет ([DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md)).
 Не начинать Google OAuth, Microsoft Graph и сложный RAG до стабильного запуска каркаса.
 
 ## Приоритет источников

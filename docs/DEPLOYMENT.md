@@ -426,9 +426,26 @@ Client secret Entra имеет срок действия: продлите ег�
   поиска. Откат — restore из backup, сделанного перед обновлением: миграции вниз не поддерживаются.
 - Upgrade path проверяется в CI (job «Production stack»): схему создают миграции предыдущего релиза (`UPGRADE_FROM`,
   сейчас `v0.4.0`), затем стек текущего коммита мигрирует её до head и проходит весь smoke-сценарий и restore drill.
-- Масштабирование: число реплик `api` и concurrency worker настраиваются независимо; DB pool ограничен на процесс
-  (§11).
-- Resource limits (CPU/память) обязательны для worker-сервисов, особенно `worker-ingestion` (§8 п.6).
+
+### 9.1 Масштабирование (шаг 11.5)
+
+Один хост с Compose — модель развёртывания MVP (ADR-023 §1); сервисы масштабируются независимо. Лимиты CPU и
+памяти — переменные `*_CPUS` и `*_MEMORY_LIMIT` в `deploy/prod/.env` (`prod.env.example`), они обязательны для
+worker-сервисов (§8 п.6).
+
+| Сервис | Как масштабировать | Ограничения |
+|---|---|---|
+| `backend` (API, SSE) | `docker compose up -d --scale backend=N`, затем `docker compose restart nginx` | Nginx разрешает имя `backend` при старте, новые реплики видит после перезапуска. Лимит одновременных генераций на пользователя и stop-флаг — в Redis, общие для всех реплик (ADR-019). Одна реплика держит до `DB_POOL_SIZE + DB_MAX_OVERFLOW` соединений с БД (по умолчанию 5 + 5) |
+| `worker` (embeddings, maintenance, sync) | `WORKER_CONCURRENCY` (процессов в контейнере) и/или `--scale worker=N` | Каждый процесс — свой пул соединений; квоты embedding-провайдера ограничивают пользу от параллелизма |
+| `worker-ingestion` (Docling) | Только `--scale worker-ingestion=N`; concurrency внутри контейнера — 1 | Память: `INGESTION_MEMORY_LIMIT` (4 ГБ по умолчанию) **на реплику** |
+| `scheduler` (Celery beat) | **Ровно один** | Второй экземпляр продублирует периодические задачи |
+| `migrate` | Однократный | — |
+| `postgres`, `redis`, `s3` | Вертикально: `POSTGRES_CPUS`, `POSTGRES_MEMORY_LIMIT` и т. д. | Сумма пулов всех процессов должна оставаться ниже `max_connections` PostgreSQL (100 по умолчанию): `реплики backend × 10 + процессы worker × 10 + реплики worker-ingestion × 10 + scheduler` |
+
+Признаки нехватки: jobs долго в `queued` на `/admin/jobs` — мало worker (`ingestion` — `worker-ingestion`,
+`embeddings` — `worker`); `429 rate_limited` в чате — лимит одновременных генераций пользователя (2) или rate limit, а не число реплик API; `OOMKilled` в
+`docker inspect` — поднять `*_MEMORY_LIMIT`. Несколько хостов, внешний PostgreSQL/Redis и оркестратор — вне MVP:
+внешние PostgreSQL и S3 подключаются override-файлом (§4, ADR-022).
 
 ## 10. Backup и restore (реализовано, шаг 11.3)
 

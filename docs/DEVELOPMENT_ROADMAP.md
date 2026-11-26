@@ -261,8 +261,11 @@ security gate (проверки безопасности **внутри** фаз
   секреты файлами, `PROCESS_ROLE`, CI-job «Production stack» со smoke через Nginx) и 11.3 (`deploy/scripts/backup.sh`
   и `restore.sh`, CLI `maintenance export-deletions`/`reapply-deletions`/`export-objects`/`import-objects`, restore
   drill и upgrade path с `v0.4.0` в CI), 11.4 (`POST /jobs/{type}/{id}/cancel`, retry отменённых администратором
-  ingestion jobs, страница `/admin/jobs`, troubleshooting в DEPLOYMENT §11).
-- **Security gate:** backup/restore drill; проверка lifecycle удаления; ключ шифрования хранится отдельно от backup.
+  ingestion jobs, страница `/admin/jobs`, troubleshooting в DEPLOYMENT §11), 11.5 (retention версий документов и
+  неактивных наборов chunks, масштабирование — DEPLOYMENT §9.1, security gate — ADR-023 Implementation notes). **Фаза 11
+  завершена.**
+- **Security gate (пройден, шаг 11.5):** backup/restore drill; проверка lifecycle удаления; ключ шифрования хранится
+  отдельно от backup.
 
 ### Фаза 12 — Security hardening (§13)
 

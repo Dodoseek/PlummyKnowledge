@@ -113,7 +113,7 @@ OAuth-провайдеры открываются переходом верхн�
 ### 7. Retention
 
 Purge устаревших версий документов (хранить последние 3 `outdated`, DATABASE_SCHEMA §8) — задача `maintenance`
-Фазы 11. Retention audit logs (1 год) откладывается до Фазы 12: роль приложения не имеет `DELETE` на `audit_logs`,
+Фазы 11 (реализовано, шаг 11.5). Retention audit logs (1 год) откладывается до Фазы 12: роль приложения не имеет `DELETE` на `audit_logs`,
 нужна отдельная роль БД и решение о ней.
 
 ## Alternatives
@@ -202,6 +202,35 @@ drill), 11.5 (retention, security gate).
   (`v0.4.0`), затем стек коммита мигрирует её и проходит smoke и drill. Новых миграций после `0016` пока нет, поэтому
   сейчас upgrade path проверяет совместимость кода с схемой релиза; данные релиза не создаются (у `v0.4.0` нет
   production-стека).
+
+**Шаг 11.4 (реализовано).** `POST /jobs/{type}/{id}/cancel` и страница `/admin/jobs`; администратор
+может повторить отменённый им ingestion job (API_CONTRACTS §2.15). Troubleshooting по кодам ошибок — DEPLOYMENT §11.
+
+**Шаг 11.5 (реализовано).**
+
+- `PruneDocumentVersions` (задача `plummy.maintenance.prune_document_versions`, раз в час): у живых документов
+  остаются текущая версия и 3 последние `outdated`. Удаление в два шага: версии становятся `deleted` и теряют
+  chunks (уходят из retrieval, viewer и поиска по checksum), затем удаляются файлы storage, затем строки. Прерванный
+  запуск дочищает следующий. Документы с `queued`/`running` job пропускаются: ничего, что job может читать, не
+  удаляется. Строки удаляются, а не остаются `deleted`: иначе `UNIQUE (document_id, checksum_sha256)` не дал бы
+  заново проиндексировать тот же контент (откат файла в Drive).
+- Той же задачей удаляются неактивные наборы chunks `ready`/`outdated` версий (оставались после reindex и отменённых
+  или прерванных запусков). Документы с активным job не затрагиваются.
+- Масштабирование — DEPLOYMENT §9.1.
+
+**Security gate Фазы 11 (DEVELOPMENT_ROADMAP).**
+
+| Требование | Чем подтверждено |
+|---|---|
+| Backup/restore drill | CI-job «Production stack»: backup → удаление → `down --volumes` → restore → проверка (DEPLOYMENT §10); upgrade path с `v0.4.0` |
+| Lifecycle удаления | После restore удаления повторяются до запуска Nginx (`test_restore_deletions.py`, drill); purge удалённых документов (`test_documents_api.py`); retention версий (`test_version_retention.py`); удалённый документ не находится поиском (drill, smoke) |
+| Ключ шифрования отдельно от backup | `backup.sh` отказывается завершиться при key ring или bootstrap token в копии; DEPLOYMENT §10 и SECURITY_MODEL §16.2 |
+| Секреты не в окружении и образах | Docker secrets файлами (`0400`, uid сервиса), `checks.sh`: нет секретов в `docker inspect`, нет предупреждения о key ring |
+| Сеть | `data`/`app` internal, опубликованы только 80/443 Nginx, S3 admin API на `127.0.0.1` (`checks.sh`); исходящие соединения S3 — через `SafeHttpClient` |
+| Web | CSP, HSTS, security headers, редирект на HTTPS, Swagger UI выключен, Secure-cookie (`smoke.py`) |
+
+Остаётся на Фазу 12: retention audit logs (отдельная роль БД), полный прогон SC-01…SC-09, сканирование
+образов и зависимостей контейнеров.
 
 ## Related documents
 

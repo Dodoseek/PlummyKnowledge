@@ -17,6 +17,7 @@ from plummy.composition import MaintenanceServices, maintenance_runner, vector_i
 from plummy.core.config import get_settings
 from plummy.workers.app import (
     CLEANUP_QUARANTINE_TASK,
+    PRUNE_VERSIONS_TASK,
     PURGE_TASK,
     REQUEUE_JOBS_TASK,
     SCHEDULE_SYNCS_TASK,
@@ -75,6 +76,15 @@ def _schedule_syncs(task: Any) -> int:
     return _retrying(task, lambda: _maintenance(lambda s: s.schedule_syncs.execute()), countdown=30)
 
 
+def _prune_versions(task: Any) -> int:
+    """DATABASE_SCHEMA.md §8: old outdated versions and unused chunk sets; returns the versions removed."""
+    return _retrying(task, lambda: _maintenance(lambda s: _versions(s)), countdown=300)
+
+
+async def _versions(services: MaintenanceServices) -> int:
+    return (await services.prune_versions.execute()).versions
+
+
 run_ensure_vector_index = shared_task(
     name=VECTOR_INDEX_TASK, bind=True, max_retries=10, soft_time_limit=60 * 60, time_limit=61 * 60
 )(_ensure_vector_index)
@@ -86,3 +96,4 @@ run_requeue_jobs = shared_task(name=REQUEUE_JOBS_TASK, bind=True, max_retries=2)
 run_sweep_deleted = shared_task(name=SWEEP_DELETED_TASK, bind=True, max_retries=2)(_sweep_deleted)
 run_sweep_chat = shared_task(name=SWEEP_CHAT_TASK, bind=True, max_retries=2)(_sweep_chat)
 run_schedule_syncs = shared_task(name=SCHEDULE_SYNCS_TASK, bind=True, max_retries=1)(_schedule_syncs)
+run_prune_versions = shared_task(name=PRUNE_VERSIONS_TASK, bind=True, max_retries=2)(_prune_versions)

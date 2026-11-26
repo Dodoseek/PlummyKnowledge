@@ -1835,6 +1835,47 @@ class SqlDocumentRepository:
             statement = statement.where(_search(query.search, DocumentModel.filename))
         return await paginate(self._db, statement, DocumentModel, page, _document)
 
+    async def with_excess_outdated(self, keep: int, *, limit: int) -> list[UUID]:
+        outdated = (
+            select(DocumentVersionModel.document_id)
+            .where(DocumentVersionModel.status == str(VersionStatus.OUTDATED))
+            .group_by(DocumentVersionModel.document_id)
+            .having(func.count() > keep)
+        )
+        leftover = select(DocumentVersionModel.document_id).where(
+            DocumentVersionModel.status == str(VersionStatus.DELETED)
+        )
+        rows = await self._db.scalars(
+            select(DocumentModel.id)
+            .where(
+                DocumentModel.deleted_at.is_(None),
+                DocumentModel.id.in_(union(outdated, leftover).scalar_subquery()),
+            )
+            .order_by(DocumentModel.id)
+            .limit(limit)
+        )
+        return list(rows)
+
+    async def mark_versions_deleted(self, version_ids: Sequence[UUID], *, at: datetime) -> None:
+        if not version_ids:
+            return
+        await self._db.execute(
+            update(DocumentVersionModel)
+            .where(DocumentVersionModel.id.in_(version_ids))
+            .values(status=str(VersionStatus.DELETED), active_chunk_set=None, updated_at=at)
+        )
+
+    async def delete_versions(self, version_ids: Sequence[UUID]) -> int:
+        if not version_ids:
+            return 0
+        result = await self._db.execute(
+            delete(DocumentVersionModel).where(
+                DocumentVersionModel.id.in_(version_ids),
+                DocumentVersionModel.status == str(VersionStatus.DELETED),
+            )
+        )
+        return int(getattr(result, "rowcount", 0) or 0)
+
     async def versions(self, document_id: UUID) -> list[DocumentVersion]:
         rows = await self._db.scalars(
             select(DocumentVersionModel)
@@ -2247,6 +2288,34 @@ class SqlChunkRepository:
     async def delete_for_document(self, document_id: UUID) -> int:
         result = await self._db.execute(
             delete(DocumentChunkModel).where(DocumentChunkModel.document_id == document_id)
+        )
+        return int(getattr(result, "rowcount", 0) or 0)
+
+    async def delete_for_versions(self, version_ids: Sequence[UUID]) -> int:
+        if not version_ids:
+            return 0
+        result = await self._db.execute(
+            delete(DocumentChunkModel).where(DocumentChunkModel.document_version_id.in_(version_ids))
+        )
+        return int(getattr(result, "rowcount", 0) or 0)
+
+    async def delete_inactive_sets(self, *, limit: int) -> int:
+        busy = exists().where(
+            IngestionJobModel.document_id == DocumentChunkModel.document_id,
+            IngestionJobModel.status.in_((str(JobStatus.QUEUED), str(JobStatus.RUNNING))),
+        )
+        stale = (
+            select(DocumentChunkModel.id)
+            .join(DocumentVersionModel, DocumentVersionModel.id == DocumentChunkModel.document_version_id)
+            .where(
+                DocumentVersionModel.status.in_((str(VersionStatus.READY), str(VersionStatus.OUTDATED))),
+                DocumentChunkModel.chunk_set.is_distinct_from(DocumentVersionModel.active_chunk_set),
+                ~busy,
+            )
+            .limit(limit)
+        )
+        result = await self._db.execute(
+            delete(DocumentChunkModel).where(DocumentChunkModel.id.in_(stale.scalar_subquery()))
         )
         return int(getattr(result, "rowcount", 0) or 0)
 

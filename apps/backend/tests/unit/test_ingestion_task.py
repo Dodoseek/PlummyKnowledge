@@ -17,6 +17,7 @@ from plummy.workers.app import (
     INGESTION_QUEUE,
     INGESTION_TASK,
     MAINTENANCE_QUEUE,
+    PRUNE_VERSIONS_TASK,
     PURGE_TASK,
     REQUEUE_JOBS_TASK,
     SCHEDULE_SYNCS_TASK,
@@ -104,6 +105,7 @@ def test_tasks_are_routed_to_their_queues() -> None:
         SWEEP_DELETED_TASK: {"queue": MAINTENANCE_QUEUE},
         SWEEP_CHAT_TASK: {"queue": MAINTENANCE_QUEUE},
         SCHEDULE_SYNCS_TASK: {"queue": MAINTENANCE_QUEUE},
+        PRUNE_VERSIONS_TASK: {"queue": MAINTENANCE_QUEUE},
         SYNC_TASK: {"queue": CONNECTORS_QUEUE},  # the worker with network and secrets (ADR-020 §8)
     }
     assert config["accept_content"] == ["json"]
@@ -117,6 +119,7 @@ def test_beat_sends_only_maintenance_tasks_that_expire() -> None:
         SWEEP_DELETED_TASK,
         SWEEP_CHAT_TASK,
         SCHEDULE_SYNCS_TASK,
+        PRUNE_VERSIONS_TASK,
     }
     for name, entry in schedule.items():
         assert entry["task"] == name

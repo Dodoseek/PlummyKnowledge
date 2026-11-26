@@ -22,6 +22,7 @@ from plummy.application.ai.ports import CancellationToken, ProviderAuthError
 from plummy.application.chat.runs import SweepChat
 from plummy.application.ingestion.maintenance import (
     CleanupQuarantine,
+    PruneDocumentVersions,
     PurgeDocument,
     RequeueJobs,
     SweepDeletedDocuments,
@@ -85,6 +86,7 @@ async def maintenance(env: Env) -> AsyncIterator[MaintenanceServices]:
             cleanup_quarantine=CleanupQuarantine(env.storage, clock, ttl=env.harness.settings.quarantine_ttl),
             sweep_chat=SweepChat(uow, clock, timeout_seconds=120),
             schedule_syncs=ScheduleSyncs(uow, jobs, clock),
+            prune_versions=PruneDocumentVersions(uow, env.storage, clock),
         )
     finally:
         await engine.dispose()

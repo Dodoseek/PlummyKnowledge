@@ -827,6 +827,19 @@ class DocumentRepository(Protocol):
         """Source ID -> document ID of every live document of the source."""
         ...
 
+    async def with_excess_outdated(self, keep: int, *, limit: int) -> list[UUID]:
+        """Live documents with more than ``keep`` ``outdated`` versions, or with ``deleted`` versions left
+        over by an interrupted prune (DATABASE_SCHEMA.md §8)."""
+        ...
+
+    async def mark_versions_deleted(self, version_ids: Sequence[UUID], *, at: datetime) -> None:
+        """The versions leave every lookup (status ``deleted``, no active chunk set)."""
+        ...
+
+    async def delete_versions(self, version_ids: Sequence[UUID]) -> int:
+        """Removes ``deleted`` version rows; jobs keep their row with ``document_version_id`` unset."""
+        ...
+
     async def version_with_checksum(
         self, document_id: UUID, checksum_sha256: bytes
     ) -> DocumentVersion | None:
@@ -932,6 +945,16 @@ class ChunkRepository(Protocol):
 
     async def delete_for_document(self, document_id: UUID) -> int:
         """All chunks of the document; their vectors go with them (``ON DELETE CASCADE``)."""
+        ...
+
+    async def delete_for_versions(self, version_ids: Sequence[UUID]) -> int:
+        """All chunks of the versions, with their vectors."""
+        ...
+
+    async def delete_inactive_sets(self, *, limit: int) -> int:
+        """Chunks of ``ready`` and ``outdated`` versions outside their active set (left by reindexes,
+        cancelled or failed runs), only for documents without a queued or running job; at most ``limit``
+        rows."""
         ...
 
     async def around(

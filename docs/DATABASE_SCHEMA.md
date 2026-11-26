@@ -697,7 +697,7 @@ Blueprint требует **определить** lifecycle и сроки; ко�
 |---|---|---|
 | Original files | Удаляются purge-job после soft delete документа | **Реализовано:** purge сразу после soft delete (задача `maintenance`; при недоступном брокере — периодический sweep). Grace period 7 дней — [Proposed], не реализован |
 | Extracted text | Вместе с версией | Как original |
-| Document versions | `outdated` хранятся для истории/цитат | Последние N=3 версии, остальные purge |
+| Document versions | `outdated` хранятся для истории/цитат | **Реализовано (шаг 11.5):** текущая версия и 3 последние `outdated`; более старые удаляет задача `maintenance` раз в час (строка версии, chunks, embeddings, оригинал, extracted text). Документы с активным job пропускаются до следующего запуска. Цитата на удалённую версию хранит snippet, viewer отвечает `404`. Тот же контент после удаления версии становится новой версией |
 | Chunks | Исключаются из retrieval немедленно; удаляются purge-job | Вместе с версией |
 | Embeddings | Как chunks; при смене profile старые удаляются после переключения | Вместе с версией/profile |
 | Chat history | Удаление диалога пользователем → soft delete, purge | Без автоудаления в MVP; настраиваемо |
@@ -705,7 +705,7 @@ Blueprint требует **определить** lifecycle и сроки; ко�
 | Credentials | При disconnect/revoke — немедленное удаление `secret_references` | — |
 | Quarantine/temp | Cleanup после обработки или по TTL (`scheduler`, раз в час) | 24 часа (`QUARANTINE_TTL`) |
 | Источник (`data_sources`) | Документы — lifecycle документа; credentials — сразу | — |
-| Неактивные `chunk_set` | Удаляются после переключения на новый набор | Сразу после успешного reindex |
+| Неактивные `chunk_set` | Удаляются после переключения на новый набор | **Реализовано (шаг 11.5):** у `ready`/`outdated` версий документов без активного job — той же часовой задачей |
 | Bootstrap token | Хэш обнуляется после инициализации; файл с токеном удаляет владелец | — |
 
 Инварианты: soft delete **немедленно** исключает документ из retrieval (§8); deleted docs не находятся (§12, §20).

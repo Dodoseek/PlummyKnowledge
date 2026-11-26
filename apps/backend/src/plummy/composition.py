@@ -65,6 +65,7 @@ from plummy.application.health import CheckReadiness
 from plummy.application.ingestion.indexing import RunIndexingJob
 from plummy.application.ingestion.maintenance import (
     CleanupQuarantine,
+    PruneDocumentVersions,
     PurgeDocument,
     RequeueJobs,
     SweepDeletedDocuments,
@@ -522,6 +523,7 @@ class MaintenanceServices:
     cleanup_quarantine: CleanupQuarantine
     sweep_chat: SweepChat
     schedule_syncs: ScheduleSyncs
+    prune_versions: PruneDocumentVersions
 
 
 @asynccontextmanager
@@ -540,6 +542,7 @@ async def maintenance_runner(settings: Settings) -> AsyncIterator[MaintenanceSer
             cleanup_quarantine=CleanupQuarantine(storage, clock, ttl=settings.quarantine_ttl),
             sweep_chat=SweepChat(uow, clock, timeout_seconds=settings.chat_generation_timeout_seconds),
             schedule_syncs=ScheduleSyncs(uow, jobs, clock),
+            prune_versions=PruneDocumentVersions(uow, storage, clock),
         )
     finally:
         jobs.close()
