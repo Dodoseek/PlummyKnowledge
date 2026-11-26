@@ -1,0 +1,42 @@
+# CI smoke test of the production stack (deploy/prod/smoke/smoke.py). Test infrastructure only: adds the fake
+# OpenAI-compatible provider of the E2E tests and an instance configuration that allows it.
+#
+#   docker compose -f compose.prod.yaml -f deploy/prod/smoke/compose.smoke.yaml --env-file <env> --profile s3 \
+#     up -d --build --wait
+
+services:
+  backend:
+    networks:
+      llm: {}
+  worker:
+    networks:
+      llm: {}
+
+  fake-llm:
+    image: python:3.13-slim
+    command: ["python", "/fake/fake_llm.py"]
+    volumes:
+      - ./deploy/e2e/fake_llm.py:/fake/fake_llm.py:ro
+    networks:
+      llm: {}
+    read_only: true
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+networks:
+  llm:
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.213.18.0/24
+
+configs:
+  plummy_toml:
+    file: ./deploy/prod/smoke/plummy.toml

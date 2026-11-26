@@ -1,0 +1,18 @@
+# Instance configuration of the production stack (compose.prod.yaml, ADR-007). Mounted as CONFIG_FILE.
+#
+# The bundled S3 server (profile s3) has a fixed address in the internal `data` network; the entry allows
+# exactly that address for the "storage" purpose (a wider CIDR would include PostgreSQL and Redis, which the
+# backend refuses). With an external https S3 endpoint this entry is not needed.
+[[network.allowlist]]
+name          = "bundled-s3"
+url           = "http://s3:7070"
+purposes      = ["storage"]
+allowed_cidrs = ["172.30.201.10/32"]
+
+# A local model (DEPLOYMENT.md §7.3), for example:
+# [[network.allowlist]]
+# name           = "local-ollama"
+# url            = "http://ollama:11434"
+# purposes       = ["llm", "embedding"]
+# provider_types = ["ollama"]
+# allowed_cidrs  = ["172.30.210.0/24"]

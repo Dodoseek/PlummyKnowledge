@@ -196,6 +196,50 @@ def test_production_requires_secrets_keyring_file() -> None:
         make_settings(app_env="production", secret_key=VALID_SECRET_KEY, secrets_keyring_file=None)
 
 
+@pytest.mark.parametrize("role", ["ingestion", "scheduler", "migrate"])
+def test_processes_without_secrets_run_in_production_without_them(role: str) -> None:
+    """ADR-023 §3: ingestion, the scheduler and migrate run without a key ring, SECRET_KEY or PUBLIC_URL."""
+    settings = make_settings(
+        app_env="production", process_role=role, secret_key=None, secrets_keyring_file=None, public_url=None
+    )
+    assert settings.is_production
+    assert settings.safe_summary()["process_role"] == role
+
+
+@pytest.mark.parametrize("role", ["api", "worker"])
+@pytest.mark.parametrize(
+    ("missing", "message"),
+    [
+        ({"secret_key": None}, "SECRET_KEY"),
+        ({"secrets_keyring_file": None}, "SECRETS_KEYRING_FILE is required"),
+        ({"public_url": None}, "PUBLIC_URL is required"),
+    ],
+)
+def test_api_and_worker_need_their_secrets_in_production(
+    role: str, missing: dict[str, object], message: str
+) -> None:
+    with pytest.raises(ConfigurationError, match=message):
+        make_settings(
+            **{"app_env": "production", "process_role": role, "secret_key": VALID_SECRET_KEY, **missing}
+        )
+
+
+@pytest.mark.parametrize("role", ["api", "ingestion"])
+def test_plain_http_public_url_is_refused_in_production_for_every_role(role: str) -> None:
+    with pytest.raises(ConfigurationError, match="PUBLIC_URL must use https"):
+        make_settings(
+            app_env="production",
+            process_role=role,
+            secret_key=VALID_SECRET_KEY,
+            public_url="http://x.example",
+        )
+
+
+def test_unknown_process_role_is_refused() -> None:
+    with pytest.raises(ConfigurationError):
+        make_settings(process_role="frontend")
+
+
 def test_secrets_keyring_file_is_optional_outside_production() -> None:
     settings = make_settings(app_env="development")
     assert settings.secrets_keyring_file is None

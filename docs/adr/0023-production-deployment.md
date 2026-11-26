@@ -145,6 +145,33 @@ Purge устаревших версий документов (хранить п�
 Шаги 11.2 (compose, Nginx, секреты, сети, smoke в CI), 11.3 (backup/restore, reapply-deletions, upgrade path,
 drill), 11.5 (retention, security gate).
 
+**Шаг 11.2 (реализовано).**
+
+- `compose.prod.yaml`, `deploy/prod/` (`init-secrets.sh`, `postgres-initdb/`, `s3-init.sh`, `plummy.toml`,
+  `prod.env.example`), `deploy/nginx/` и таргет `web` в `apps/frontend/Dockerfile` (`nginx-unprivileged`, порты 8080/8443
+  в контейнере). Порядок установки — [DEPLOYMENT.md §1.1](../DEPLOYMENT.md).
+- **`PROCESS_ROLE`** (`api`, `worker`, `ingestion`, `scheduler`, `migrate`): раньше `production` требовал
+  `SECRET_KEY`, `PUBLIC_URL` и key ring от каждого процесса, что противоречило §3. Теперь их требуют только `api` и
+  `worker`; проверки `APP_DEBUG`, `SESSION_COOKIE_SECURE` и `https` в `PUBLIC_URL` — для всех ролей.
+- **Права секретов (уточнение §3).** Compose без swarm монтирует файл-секрет как есть, с владельцем и режимом хоста,
+  а сервисы читают его своим uid. Поэтому `init-secrets.sh` под `root` назначает каждому файлу uid читающего сервиса
+  и `0400`; без `root` (рабочая станция) — `0444` в каталоге `0700`, и API предупреждает о доступном key ring. В CI —
+  вариант с `root`, проверка отсутствия предупреждения. TLS-сертификат и ключ — тоже Docker secrets (uid Nginx `101`).
+- **Встроенный S3:** versitygw с IAM в volume `s3-iam`; admin API слушает только `127.0.0.1:7071`, `s3-init`
+  использует сетевое пространство `s3` (`network_mode: service:s3`) и создаёт учётную запись с ролью `user`
+  (доступ только к своему бакету) и бакет. Фиксированные адреса Nginx (`172.30.200.10`) и S3 (`172.30.201.10`) —
+  вне `ip_range` динамических адресов.
+- `migrate` не монтирует key ring и не получает `SECRET_KEY`; `scheduler` — только БД и Redis; `worker-ingestion` —
+  БД, Redis, S3 и `CONFIG_FILE` (запись allowlist storage), `HOME=/tmp`. Спул загрузок — анонимный volume `/var/tmp`, а
+  не `tmpfs`.
+- CI-job «Production stack»: prod-образы, профиль `s3`, override `deploy/prod/smoke/compose.smoke.yaml` с фейковым
+  провайдером E2E; `deploy/prod/smoke/smoke.py` (stdlib) проходит основной сценарий через Nginx, `checks.sh`
+  проверяет порты, `docker inspect`, read-only ФС и внутренние сети.
+- Сопутствующее: фейковый провайдер E2E (`deploy/e2e/fake_llm.py`) мог вернуть нулевой embedding, если хэши слов
+  взаимно гасились; теперь такой вектор получает ненулевой компонент.
+- Вне 11.2: OAuth client secrets коннекторов подключаются override-файлом (DEPLOYMENT §4); внешний управляемый
+  PostgreSQL — override-файлом с `database_url` (без сервиса `postgres`).
+
 ## Related documents
 
 [ADR-003](0003-technology-stack.md) · [ADR-006](0006-initial-setup-and-system-configuration.md) ·

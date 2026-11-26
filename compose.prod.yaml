@@ -1,0 +1,407 @@
+# PlummyKnowledge — production stack (ADR-023, docs/DEPLOYMENT.md).
+#
+#   sh deploy/prod/init-secrets.sh                      # once: random secrets and the key ring
+#   cp deploy/prod/prod.env.example deploy/prod/.env    # PUBLIC_URL, server name, storage, limits
+#   # TLS certificate: deploy/prod/certs/fullchain.pem and privkey.pem (or PLUMMY_TLS_CERT / PLUMMY_TLS_KEY)
+#   docker compose -f compose.prod.yaml --env-file deploy/prod/.env --profile s3 up -d --build
+#   docker compose -f compose.prod.yaml --env-file deploy/prod/.env run --rm migrate \
+#     cat /var/lib/plummy/bootstrap/setup-token
+#
+# Nginx is the only service with published ports. No code is mounted, application filesystems are read-only,
+# secrets are files (Docker secrets), never environment values. Profile `s3` adds the bundled S3 server
+# (versitygw) and its init step; without it STORAGE_BACKEND=s3 points at an external S3 (ADR-022).
+
+name: plummy
+
+x-app-image: &app-image
+  build:
+    context: .
+    dockerfile: apps/backend/Dockerfile
+    target: prod
+  image: ${PLUMMY_IMAGE_PREFIX:-plummy}/backend:${PLUMMY_IMAGE_TAG:-local}
+
+x-hardening: &hardening
+  read_only: true
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: [ALL]
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+
+x-common-env: &common-env
+  APP_ENV: production
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  DATABASE_URL_FILE: /run/secrets/database_url
+  REDIS_URL_FILE: /run/secrets/redis_url
+  SESSION_COOKIE_SECURE: "true"
+
+# Storage settings of the services that read and write documents (ADR-022 §5).
+x-storage-env: &storage-env
+  STORAGE_BACKEND: ${STORAGE_BACKEND:-s3}
+  S3_ENDPOINT_URL: ${S3_ENDPOINT_URL:-http://s3:7070}
+  S3_BUCKET: ${S3_BUCKET:-plummy-documents}
+  S3_REGION: ${S3_REGION:-us-east-1}
+  S3_PREFIX: ${S3_PREFIX:-}
+  S3_ACCESS_KEY_ID_FILE: /run/secrets/s3_access_key_id
+  S3_SECRET_ACCESS_KEY_FILE: /run/secrets/s3_secret_access_key
+  # Uploads and parser inputs are spooled to disk (ADR-022 §2): a per-container volume, not the small tmpfs.
+  TMPDIR: /var/tmp
+  CONFIG_FILE: /run/configs/plummy.toml
+  UPLOAD_MAX_BYTES: ${UPLOAD_MAX_BYTES:-52428800}
+
+x-api-env: &api-env
+  <<: [*common-env, *storage-env]
+  SECRET_KEY_FILE: /run/secrets/secret_key
+  SECRETS_KEYRING_FILE: /run/secrets/keyring.json
+  PUBLIC_URL: ${PUBLIC_URL:?PUBLIC_URL is required (https://...)}
+  SETUP_MODE: ${SETUP_MODE:-web}
+  CHAT_GENERATION_TIMEOUT_SECONDS: ${CHAT_GENERATION_TIMEOUT_SECONDS:-120}
+  GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+  MICROSOFT_OAUTH_CLIENT_ID: ${MICROSOFT_OAUTH_CLIENT_ID:-}
+  MICROSOFT_OAUTH_TENANT_ID: ${MICROSOFT_OAUTH_TENANT_ID:-}
+
+x-app-depends: &app-depends
+  migrate:
+    condition: service_completed_successfully
+  postgres:
+    condition: service_healthy
+  redis:
+    condition: service_healthy
+  s3-init:
+    condition: service_completed_successfully
+    required: false
+
+x-celery-health: &celery-health
+  test: ["CMD-SHELL", "celery -A plummy.workers.main inspect ping --destination celery@$$HOSTNAME --timeout 5"]
+  interval: 30s
+  timeout: 15s
+  start_period: 30s
+  retries: 3
+
+services:
+  nginx:
+    <<: *hardening
+    build:
+      context: .
+      dockerfile: apps/frontend/Dockerfile
+      target: web
+    image: ${PLUMMY_IMAGE_PREFIX:-plummy}/web:${PLUMMY_IMAGE_TAG:-local}
+    environment:
+      PLUMMY_SERVER_NAME: ${PLUMMY_SERVER_NAME:-_}
+      # A little above UPLOAD_MAX_BYTES (multipart overhead); the API enforces the exact limit.
+      PLUMMY_CLIENT_MAX_BODY_SIZE: ${PLUMMY_CLIENT_MAX_BODY_SIZE:-60m}
+      # Longer than CHAT_GENERATION_TIMEOUT_SECONDS.
+      PLUMMY_STREAM_READ_TIMEOUT: ${PLUMMY_STREAM_READ_TIMEOUT:-180s}
+    secrets: [tls_fullchain.pem, tls_privkey.pem]
+    ports:
+      - "${PLUMMY_BIND_ADDRESS:-0.0.0.0}:${PLUMMY_HTTP_PORT:-80}:8080"
+      - "${PLUMMY_BIND_ADDRESS:-0.0.0.0}:${PLUMMY_HTTPS_PORT:-443}:8443"
+    networks:
+      public: {}
+      app:
+        ipv4_address: 172.30.200.10
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/nginx-health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    cpus: ${NGINX_CPUS:-1}
+    mem_limit: ${NGINX_MEMORY_LIMIT:-256m}
+    pids_limit: 256
+    restart: unless-stopped
+
+  postgres:
+    image: pgvector/pgvector:0.8.7-pg17
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      PLUMMY_DB_USER: ${PLUMMY_DB_USER:-plummy}
+      PLUMMY_DB_NAME: ${PLUMMY_DB_NAME:-plummy}
+      PLUMMY_DB_PASSWORD_FILE: /run/secrets/db_password
+    secrets: [postgres_password, db_password]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./deploy/prod/postgres-initdb:/docker-entrypoint-initdb.d:ro
+      - ./deploy/postgres/extensions.sql:/plummy/extensions.sql:ro
+    networks: [data]
+    shm_size: 256m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$${PLUMMY_DB_USER}\" -d \"$${PLUMMY_DB_NAME}\""]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    cpus: ${POSTGRES_CPUS:-2}
+    mem_limit: ${POSTGRES_MEMORY_LIMIT:-2g}
+    pids_limit: 512
+    stop_grace_period: 60s
+    restart: unless-stopped
+
+  redis:
+    image: redis:8.6-alpine
+    # requirepass, appendonly and save come from the secret file (deploy/prod/init-secrets.sh).
+    command: ["redis-server", "/run/secrets/redis_conf"]
+    secrets: [redis_conf]
+    volumes:
+      - redis-data:/data
+    networks: [data]
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - REDISCLI_AUTH="$$(sed -n 's/^requirepass //p' /run/secrets/redis_conf)" redis-cli ping | grep -q PONG
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    cpus: ${REDIS_CPUS:-1}
+    mem_limit: ${REDIS_MEMORY_LIMIT:-512m}
+    pids_limit: 128
+    restart: unless-stopped
+
+  # Bundled S3 server (profile s3, ADR-022): versitygw over a directory, IAM accounts in their own volume. The
+  # admin API listens on the loopback only; s3-init shares this container's network namespace to reach it.
+  s3:
+    profiles: [s3]
+    image: versity/versitygw:v1.11.0
+    entrypoint:
+      - sh
+      - -c
+      - >-
+        ROOT_ACCESS_KEY="$$(cat /run/secrets/s3_root_access_key)"
+        ROOT_SECRET_KEY="$$(cat /run/secrets/s3_root_secret_key)"
+        exec versitygw --port :7070 --admin-port 127.0.0.1:7071 --iam-dir /iam posix /data
+    secrets: [s3_root_access_key, s3_root_secret_key]
+    volumes:
+      - s3-data:/data
+      - s3-iam:/iam
+    networks:
+      data:
+        ipv4_address: 172.30.201.10
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:size=64m
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "7070"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    cpus: ${S3_CPUS:-1}
+    mem_limit: ${S3_MEMORY_LIMIT:-512m}
+    pids_limit: 256
+    restart: unless-stopped
+
+  # One-shot: the application's S3 account (role "user": only its own bucket) and the bucket. Idempotent.
+  s3-init:
+    profiles: [s3]
+    image: versity/versitygw:v1.11.0
+    entrypoint: ["sh", "/plummy/s3-init.sh"]
+    environment:
+      S3_BUCKET: ${S3_BUCKET:-plummy-documents}
+      ADMIN_ENDPOINT: http://127.0.0.1:7071
+    secrets: [s3_root_access_key, s3_root_secret_key, s3_access_key_id, s3_secret_access_key]
+    volumes:
+      - ./deploy/prod/s3-init.sh:/plummy/s3-init.sh:ro
+    network_mode: service:s3
+    read_only: true
+    depends_on:
+      s3:
+        condition: service_healthy
+    restart: "no"
+
+  # One-shot: migrations, then the setup token while the instance is not initialized (ADR-006). No key ring,
+  # SECRET_KEY or storage access.
+  migrate:
+    <<: [*app-image, *hardening]
+    command: ["sh", "-c", "alembic upgrade head && python -m plummy.cli setup init-token"]
+    environment:
+      <<: *common-env
+      PROCESS_ROLE: migrate
+      BOOTSTRAP_DIR: /var/lib/plummy/bootstrap
+    secrets: [database_url, redis_url]
+    volumes:
+      - bootstrap-data:/var/lib/plummy/bootstrap
+    networks: [data]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: "no"
+
+  backend:
+    <<: [*app-image, *hardening]
+    environment:
+      <<: *api-env
+      PROCESS_ROLE: api
+      # Only Nginx (fixed address in the app network) may set X-Forwarded-For.
+      FORWARDED_ALLOW_IPS: 172.30.200.10
+    secrets: [database_url, redis_url, secret_key, keyring.json, s3_access_key_id, s3_secret_access_key]
+    configs:
+      - source: plummy_toml
+        target: /run/configs/plummy.toml
+    volumes:
+      - storage-data:/var/lib/plummy/storage
+      - /var/tmp
+    networks: [app, data, egress]
+    depends_on: *app-depends
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health/ready', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 6
+    cpus: ${BACKEND_CPUS:-2}
+    mem_limit: ${BACKEND_MEMORY_LIMIT:-1g}
+    pids_limit: 512
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+  # Embeddings, maintenance and connector sync: provider and connector calls go out through the egress network
+  # and SafeHttpClient (ADR-007).
+  worker:
+    <<: [*app-image, *hardening]
+    command:
+      - sh
+      - -c
+      - >-
+        python -m plummy.check_config &&
+        exec celery -A plummy.workers.main --quiet worker --loglevel INFO
+        --concurrency ${WORKER_CONCURRENCY:-2} --queues default,embeddings,maintenance,connectors
+        --without-gossip --without-mingle
+    environment:
+      <<: *api-env
+      PROCESS_ROLE: worker
+    secrets: [database_url, redis_url, secret_key, keyring.json, s3_access_key_id, s3_secret_access_key]
+    configs:
+      - source: plummy_toml
+        target: /run/configs/plummy.toml
+    volumes:
+      - storage-data:/var/lib/plummy/storage
+      - /var/tmp
+    networks: [data, egress]
+    depends_on: *app-depends
+    healthcheck: *celery-health
+    cpus: ${WORKER_CPUS:-2}
+    mem_limit: ${WORKER_MEMORY_LIMIT:-1g}
+    pids_limit: 512
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+  # Parses untrusted documents (ADR-008 stages 2-7): database, Redis and storage only, no internet (the data
+  # network is internal). CONFIG_FILE only for the storage entry of the allowlist (ADR-022 §4).
+  worker-ingestion:
+    <<: [*hardening]
+    build:
+      context: .
+      dockerfile: apps/backend/Dockerfile
+      target: ingestion
+    image: ${PLUMMY_IMAGE_PREFIX:-plummy}/worker-ingestion:${PLUMMY_IMAGE_TAG:-local}
+    command:
+      - sh
+      - -c
+      - >-
+        python -m plummy.check_config &&
+        exec celery -A plummy.workers.main --quiet worker --loglevel INFO
+        --concurrency 1 --queues ingestion --without-gossip --without-mingle
+    environment:
+      <<: [*common-env, *storage-env]
+      PROCESS_ROLE: ingestion
+      HOME: /tmp
+    secrets: [database_url, redis_url, s3_access_key_id, s3_secret_access_key]
+    configs:
+      - source: plummy_toml
+        target: /run/configs/plummy.toml
+    volumes:
+      - storage-data:/var/lib/plummy/storage
+      - /var/tmp
+    networks: [data]
+    depends_on: *app-depends
+    healthcheck: *celery-health
+    cpus: ${INGESTION_CPUS:-2}
+    mem_limit: ${INGESTION_MEMORY_LIMIT:-4g}
+    pids_limit: 512
+    stop_grace_period: 60s
+    restart: unless-stopped
+
+  # Celery beat: exactly one instance; only Redis and the database (ADR-023 §3).
+  scheduler:
+    <<: [*app-image, *hardening]
+    command:
+      - sh
+      - -c
+      - >-
+        python -m plummy.check_config &&
+        exec celery -A plummy.workers.main --quiet beat --loglevel INFO --schedule /tmp/plummy-beat-schedule
+    environment:
+      <<: *common-env
+      PROCESS_ROLE: scheduler
+    secrets: [database_url, redis_url]
+    networks: [data]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    cpus: ${SCHEDULER_CPUS:-0.5}
+    mem_limit: ${SCHEDULER_MEMORY_LIMIT:-256m}
+    pids_limit: 128
+    stop_grace_period: 10s
+    restart: unless-stopped
+
+networks:
+  public: {}
+  # Nginx → API. Fixed subnet: the API trusts X-Forwarded-For only from Nginx's address. Dynamic addresses come
+  # from the upper half, so a fixed address is never handed to another container.
+  app:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.200.0/24
+          ip_range: 172.30.200.128/25
+  # PostgreSQL, Redis, S3 and the application services; no internet access.
+  data:
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.201.0/24
+          ip_range: 172.30.201.128/25
+  # Outbound access for the API and the worker (providers, connectors), always through SafeHttpClient.
+  egress: {}
+
+configs:
+  plummy_toml:
+    file: ${PLUMMY_CONFIG_FILE:-./deploy/prod/plummy.toml}
+
+# Files created by deploy/prod/init-secrets.sh (0444 in a 0700 directory: Compose mounts them as they are, and
+# the services read them as unprivileged users). keyring.json is backed up separately from the data.
+secrets:
+  postgres_password: {file: ./deploy/prod/secrets/postgres_password}
+  db_password: {file: ./deploy/prod/secrets/db_password}
+  database_url: {file: ./deploy/prod/secrets/database_url}
+  redis_conf: {file: ./deploy/prod/secrets/redis_conf}
+  redis_url: {file: ./deploy/prod/secrets/redis_url}
+  secret_key: {file: ./deploy/prod/secrets/secret_key}
+  keyring.json: {file: ./deploy/prod/secrets/keyring.json}
+  s3_root_access_key: {file: ./deploy/prod/secrets/s3_root_access_key}
+  s3_root_secret_key: {file: ./deploy/prod/secrets/s3_root_secret_key}
+  s3_access_key_id: {file: ./deploy/prod/secrets/s3_access_key_id}
+  s3_secret_access_key: {file: ./deploy/prod/secrets/s3_secret_access_key}
+  # The administrator's certificate and key (ACME and renewal are outside the stack, DEPLOYMENT.md).
+  tls_fullchain.pem: {file: "${PLUMMY_TLS_CERT:-./deploy/prod/certs/fullchain.pem}"}
+  tls_privkey.pem: {file: "${PLUMMY_TLS_KEY:-./deploy/prod/certs/privkey.pem}"}
+
+volumes:
+  postgres-data:
+  redis-data:
+  bootstrap-data:
+  # Documents with STORAGE_BACKEND=local (one host only); unused with S3.
+  storage-data:
+  s3-data:
+  s3-iam:

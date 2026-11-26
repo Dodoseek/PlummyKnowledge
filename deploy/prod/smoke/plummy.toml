@@ -1,0 +1,14 @@
+# Instance configuration of the CI smoke test (compose.smoke.yaml): the bundled S3 server, as in
+# deploy/prod/plummy.toml, plus the fake provider. Test infrastructure only.
+[[network.allowlist]]
+name          = "bundled-s3"
+url           = "http://s3:7070"
+purposes      = ["storage"]
+allowed_cidrs = ["172.30.201.10/32"]
+
+[[network.allowlist]]
+name           = "smoke-fake-llm"
+url            = "http://fake-llm:8080"
+purposes       = ["llm", "embedding"]
+provider_types = ["openai_compatible"]
+allowed_cidrs  = ["10.213.18.0/24"]

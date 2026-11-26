@@ -79,6 +79,16 @@ class SetupMode(StrEnum):
     CLI_ONLY = "cli_only"  # web initialization is disabled; only `python -m plummy.cli admin create`
 
 
+class ProcessRole(StrEnum):
+    """Which process reads these settings (ADR-023 §3): production requirements follow what it does."""
+
+    API = "api"
+    WORKER = "worker"  # embeddings, connectors, maintenance: provider secrets and the key ring
+    INGESTION = "ingestion"  # parses untrusted files: database, Redis and storage only
+    SCHEDULER = "scheduler"  # Celery beat: Redis and the database only
+    MIGRATE = "migrate"  # Alembic and the setup token
+
+
 class StorageBackend(StrEnum):
     LOCAL = "local"  # one host: a directory (volume)
     S3 = "s3"  # S3-compatible object storage (ADR-022)
@@ -181,6 +191,9 @@ class Settings(BaseSettings):
     # Instance configuration file (TOML): the outbound network allowlist (ADR-007). Unset: empty allowlist,
     # only public https endpoints are reachable.
     config_file: Path | None = None
+
+    # The process that reads these settings; production checks depend on it (ADR-023 §3).
+    process_role: ProcessRole = ProcessRole.API
 
     # Document storage (ARCHITECTURE.md §8.5): originals and quarantine. Quarantined files older than the TTL
     # are removed by the cleanup task.
@@ -396,16 +409,19 @@ class Settings(BaseSettings):
         if self.app_env is AppEnv.PRODUCTION:
             if self.app_debug:
                 raise ValueError("APP_DEBUG must be false when APP_ENV=production")
-            if self.secret_key is None:
-                raise ValueError("SECRET_KEY (or SECRET_KEY_FILE) is required when APP_ENV=production")
-            if self.public_url is None:
-                raise ValueError("PUBLIC_URL is required when APP_ENV=production")
-            if not self.public_url.startswith("https://"):
-                raise ValueError("PUBLIC_URL must use https when APP_ENV=production")
             if not self.session_cookie_secure:
                 raise ValueError("SESSION_COOKIE_SECURE must be true when APP_ENV=production")
-            if self.secrets_keyring_file is None:
-                raise ValueError("SECRETS_KEYRING_FILE is required when APP_ENV=production")
+            if self.public_url is not None and not self.public_url.startswith("https://"):
+                raise ValueError("PUBLIC_URL must use https when APP_ENV=production")
+            # Only the API and the worker handle sessions, OAuth redirects and stored secrets; the ingestion
+            # worker, the scheduler and migrate run without them (ADR-023 §3).
+            if self.process_role in (ProcessRole.API, ProcessRole.WORKER):
+                if self.secret_key is None:
+                    raise ValueError("SECRET_KEY (or SECRET_KEY_FILE) is required when APP_ENV=production")
+                if self.public_url is None:
+                    raise ValueError("PUBLIC_URL is required when APP_ENV=production")
+                if self.secrets_keyring_file is None:
+                    raise ValueError("SECRETS_KEYRING_FILE is required when APP_ENV=production")
         elif self.secret_key is None:
             # Development/test convenience: an ephemeral key, never persisted or logged.
             self.secret_key = SecretStr(secrets.token_urlsafe(48))
@@ -451,6 +467,7 @@ class Settings(BaseSettings):
         """Non-secret settings for startup diagnostics."""
         return {
             "app_env": self.app_env.value,
+            "process_role": self.process_role.value,
             "app_debug": self.app_debug,
             "log_level": self.log_level.value,
             "cors_origins": self.cors_origins,

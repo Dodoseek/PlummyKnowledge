@@ -38,6 +38,8 @@ def embed(text: str) -> list[float]:
     for word in WORD.findall(text.lower()):
         digest = hashlib.sha256(word.encode()).digest()
         vector[digest[0] % DIMENSIONS] += 1.0 if digest[1] % 2 else -1.0
+    if not any(vector):  # words cancelled out (or no words): the backend rejects zero vectors
+        vector[0] = 1.0
     norm = math.sqrt(sum(value * value for value in vector)) or 1.0
     return [value / norm for value in vector]
 

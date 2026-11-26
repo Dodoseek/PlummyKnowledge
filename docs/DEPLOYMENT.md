@@ -2,13 +2,13 @@
 
 | | |
 |---|---|
-| Статус | v0.3 — среда разработки и первоначальная настройка реализованы (Фазы 1–3, §0, §6); production-профиль — целевая модель Фазы 11 |
+| Статус | v0.4 — среда разработки, первоначальная настройка (Фазы 1–3, §0, §6) и production-стек (шаг 11.2, §1–§2, §4–§5, §7.1, §8) реализованы; backup/restore — шаг 11.3 |
 | Источник | [PROJECT_BLUEPRINT.md](PROJECT_BLUEPRINT.md) §3, §5, §8, §11, §13 (Фазы 1, 11) |
 | Решения | [ADR-006](adr/0006-initial-setup-and-system-configuration.md), [ADR-007](adr/0007-network-access-and-local-llm.md), [ADR-011](adr/0011-database-roles-and-extensions.md), [ADR-013](adr/0013-auth-session-strategy.md), [ADR-022](adr/0022-s3-compatible-storage.md), [ADR-023](adr/0023-production-deployment.md) |
 | Связанные документы | [ARCHITECTURE.md §4, §10, §12](ARCHITECTURE.md), [SECURITY_MODEL.md](SECURITY_MODEL.md) |
 
-Разделы §0 и §6 описывают то, что реализовано. Остальные имена переменных, сервисов, volumes и CLI-команд — **[Proposed]**;
-они фиксируются при реализации соответствующих фаз и обновляются здесь.
+Разделы §0–§2, §4–§6, §7.1 и §8 описывают то, что реализовано. Остальные имена переменных и CLI-команд, помеченные
+**[Proposed]**, фиксируются при реализации соответствующих шагов и обновляются здесь.
 
 ## 0. Среда разработки (реализовано, Фаза 1)
 
@@ -52,7 +52,7 @@
 - Requeue находит только jobs, которые не дошли до брокера (`queued` без `celery_task_id`); сообщение, потерянное
   внутри Redis после публикации, не обнаруживается: такой job остаётся `queued` (reindex возвращает его же, retry
   принимает только `failed`/`dead`), автоматического восстановления пока нет. Redis хранит данные в AOF.
-- Nginx, MinIO и prod-compose — Фаза 11.
+- Production-стек (Nginx/TLS, встроенный S3, секреты файлами) — `compose.prod.yaml`, §1–§2, §8.
 
 **Переменные окружения backend (реализовано).** Имена утверждены в задаче Фазы 1 и заменяют предложенные ниже
 `PLUMMY_ENV`, `PLUMMY_LOG_LEVEL`, `PLUMMY_DATABASE_URL_FILE`, `PLUMMY_REDIS_URL_FILE`, `PLUMMY_DB_POOL_SIZE`,
@@ -63,7 +63,8 @@
 | `APP_ENV` | `production` | `development` \| `test` \| `production`; без значения — самый строгий режим |
 | `APP_DEBUG` | `false` | В `production` запрещено `true` |
 | `LOG_LEVEL` | `INFO` | `DEBUG`…`CRITICAL`; логи — JSON в stdout, SQL-логирование отключено |
-| `SECRET_KEY` / `SECRET_KEY_FILE` | — | ≥ 32 символов; обязателен в `production`; в `development`/`test` без значения генерируется временный ключ |
+| `SECRET_KEY` / `SECRET_KEY_FILE` | — | ≥ 32 символов; обязателен в `production` для `PROCESS_ROLE` `api`/`worker`; в `development`/`test` без значения генерируется временный ключ |
+| `PROCESS_ROLE` | `api` | `api` \| `worker` \| `ingestion` \| `scheduler` \| `migrate` (шаг 11.2): в `production` `SECRET_KEY`, `PUBLIC_URL` и `SECRETS_KEYRING_FILE` обязательны только для `api` и `worker`; `APP_DEBUG=false`, `SESSION_COOKIE_SECURE=true` и `https` в `PUBLIC_URL` — для всех ролей |
 | `DATABASE_URL` / `DATABASE_URL_FILE` | — (обязателен) | `postgresql+asyncpg://…` |
 | `REDIS_URL` / `REDIS_URL_FILE` | — (обязателен) | `redis://…` или `rediss://…` |
 | `CORS_ORIGINS` | пусто (CORS выключен) | Список origins через запятую; `*`, пути и credentials отклоняются |
@@ -77,7 +78,7 @@
 | `BOOTSTRAP_DIR` | `/var/lib/plummy/bootstrap` | Каталог файла `setup-token` (`0700`, файл `0600`) |
 | `BOOTSTRAP_TOKEN_TTL` | `86400` (24 ч) | Срок действия bootstrap token; от 10 мин до 30 дней |
 | `FORWARDED_ALLOW_IPS` | `127.0.0.1` (uvicorn) | Адреса прокси, которым доверяется `X-Forwarded-For` (IP клиента для rate limit и audit) |
-| `SECRETS_KEYRING_FILE` | — (обязателен в `production`; dev compose: `/var/lib/plummy/secrets/keyring.json`) | Key ring шифрования секретов ([ADR-016](adr/0016-secret-encryption.md), §4); без него сохранение API keys отвечает `503 secrets_not_configured` |
+| `SECRETS_KEYRING_FILE` | — (обязателен в `production` для `api`/`worker`; dev compose: `/var/lib/plummy/secrets/keyring.json`) | Key ring шифрования секретов ([ADR-016](adr/0016-secret-encryption.md), §4); без него сохранение API keys отвечает `503 secrets_not_configured` |
 | `CONFIG_FILE` | — (пустой allowlist) | TOML-файл Instance Settings со структурой, сейчас `[[network.allowlist]]` ([ADR-007](adr/0007-network-access-and-local-llm.md), §7.3); ≤ 256 КБ, невалидный файл → отказ старта |
 | `WORKER_CONCURRENCY` | `2` (dev compose) | Число процессов Celery worker (флаг `--concurrency` в команде сервиса, не настройка приложения) |
 | `INGESTION_MEMORY_LIMIT` | `4g` (dev compose) | `mem_limit` контейнера `worker-ingestion` (Compose, не настройка приложения) |
@@ -132,32 +133,58 @@ docker compose run --rm -T e2e
 docker compose down --volumes
 ```
 
-## 1. Модель развёртывания
+## 1. Модель развёртывания (реализовано, шаг 11.2)
 
-- Docker + Docker Compose + Nginx (§3). Один хост для MVP; API и worker масштабируются независимо (§11).
-- Профили Compose (§13 Фаза 11): `dev` (локальная разработка, local storage) и `prod` (TLS, MinIO, resource limits).
-- Наружу публикуется **только** Nginx (443, редирект с 80). PostgreSQL, Redis, MinIO, API и worker внешних портов не
-  публикуют.
+- Docker + Docker Compose + Nginx ([ADR-023](adr/0023-production-deployment.md)). Два самостоятельных файла:
+  `compose.yaml` — разработка (§0), `compose.prod.yaml` — production (не overlay: в dev-файле bind mounts кода, порты и
+  значения по умолчанию, недопустимые в production). Один хост для MVP; `backend` и `worker` масштабируются
+  независимо (§9).
+- Наружу публикуется **только** Nginx (`80` → редирект, `443`). PostgreSQL, Redis, S3, API и worker портов не
+  публикуют. Образы — prod-таргеты Dockerfile, код не монтируется, корневые ФС сервисов приложения `read_only`
+  (`tmpfs` для `/tmp`), `no-new-privileges`, `cap_drop: ALL`, лимиты `cpus`/`mem_limit`/`pids_limit`.
 
-## 2. Сервисы
+### 1.1 Установка
 
-| Сервис | Назначение | Сети | Volumes |
-|---|---|---|---|
-| `nginx` | TLS, SPA, reverse proxy на API, SSE без буферизации | `edge` | `certs` (ro) |
-| `api` | FastAPI | `edge`, `data`, `egress`, `llm`* | — |
-| `worker-ingestion` | Parsing, chunking (очередь `ingestion`) | `data` | `quarantine`, `documents` (при local storage) |
-| `worker-io` | Embeddings, sync, maintenance (очереди `embeddings`, `connectors`, `maintenance`); в dev compose — сервис `worker` (§0) | `data`, `egress`, `llm`* | `quarantine`, `documents` |
-| `scheduler` | Cleanup quarantine, requeue jobs, purge sweep (реализовано); позже расписания sync и reconciliation | `data` | — |
-| `migrate` | Одноразовый шаг: Alembic + `python -m plummy.cli setup init-token` | `data` | `bootstrap` |
-| `postgres` | PostgreSQL + pgvector | `data` | `postgres-data` |
-| `redis` | Брокер, кэш, rate limits, locks | `data` | `redis-data` |
-| `minio` | S3-compatible storage (`prod`) | `data` | `minio-data` |
+```bash
+sudo sh deploy/prod/init-secrets.sh                  # секреты и key ring в deploy/prod/secrets/ (значения не печатаются)
+cp deploy/prod/prod.env.example deploy/prod/.env     # PUBLIC_URL, имя сервера, storage, лимиты
+# сертификат: deploy/prod/certs/fullchain.pem и privkey.pem (или PLUMMY_TLS_CERT / PLUMMY_TLS_KEY в .env)
+docker compose -f compose.prod.yaml --env-file deploy/prod/.env --profile s3 up -d --build --wait
+docker compose -f compose.prod.yaml --env-file deploy/prod/.env run --rm migrate \
+  cat /var/lib/plummy/bootstrap/setup-token          # токен первоначальной настройки (§6)
+```
 
-\* только если владелец подключает локальную модель (§6). Разделение worker на `ingestion` (без исходящего
-интернета) и `io` реализовано в dev compose (`worker-ingestion` и `worker`, §0): парсер недоверенных файлов не имеет
-сетевого выхода. В `production` конфигурация сейчас требует `SECRETS_KEYRING_FILE` от **каждого** процесса, в том
-числе `worker-ingestion`, которому key ring не нужен; prod-compose (Фаза 11) должен либо смонтировать ему файл,
-либо снять это требование для ingestion-процесса.
+Затем открыть `PUBLIC_URL`, создать первого администратора по токену. **Сразу** скопировать
+`deploy/prod/secrets/keyring.json` в отдельное защищённое место (§4). `--profile s3` включает встроенный S3-сервер
+(versitygw) и одноразовый `s3-init` (учётная запись приложения с ролью `user` и бакет `S3_BUCKET`, идемпотентно); с
+внешним S3 профиль не указывается, а в `.env` задаются `S3_ENDPOINT_URL` (`https`), `S3_BUCKET`, `S3_REGION`, ключи —
+в `secrets/s3_access_key_id` и `secrets/s3_secret_access_key` до первого запуска. Свой `CONFIG_FILE` (локальная
+модель, §7.3) — переменная `PLUMMY_CONFIG_FILE` (по умолчанию `deploy/prod/plummy.toml`, в нём запись allowlist
+встроенного S3).
+
+Сертификат и ключ монтируются как Docker secrets; Nginx читает их как uid `101`, поэтому ключ — `0400` с владельцем
+`101` (или `0444` в каталоге `0700`). Получение и продление сертификата (ACME) — вне стека: после продления
+`docker compose … restart nginx`.
+
+## 2. Сервисы (`compose.prod.yaml`)
+
+| Сервис | Назначение | Сети | Секреты | Volumes |
+|---|---|---|---|---|
+| `nginx` | TLS, SPA, reverse proxy на API, SSE без буферизации (таргет `web` образа frontend) | `public`, `app` (`172.30.200.10`) | TLS cert/key | — |
+| `backend` | FastAPI (`PROCESS_ROLE=api`) | `app`, `data`, `egress` | БД, Redis, `SECRET_KEY`, key ring, S3 | `storage-data`*, анонимный `/var/tmp` |
+| `worker` | Embeddings, sync, maintenance (`default`, `embeddings`, `maintenance`, `connectors`) | `data`, `egress` | как у `backend` | как у `backend` |
+| `worker-ingestion` | Parsing (очередь `ingestion`, образ `ingestion` с Docling), без интернета | `data` | БД, Redis, S3 | как у `backend` |
+| `scheduler` | Celery beat, ровно один | `data` | БД, Redis | — |
+| `migrate` | Одноразовый шаг: `alembic upgrade head` + `setup init-token` | `data` | БД, Redis | `bootstrap-data` |
+| `postgres` | PostgreSQL + pgvector; роли по ADR-011 (`deploy/prod/postgres-initdb`) | `data` | пароли `postgres` и роли приложения | `postgres-data` |
+| `redis` | Брокер, rate limits, locks; `requirepass` из секрета | `data` | `redis_conf` | `redis-data` |
+| `s3`, `s3-init` | Встроенный S3-сервер (profile `s3`): versitygw, admin API только на loopback | `data` (`172.30.201.10`) | ключи root и приложения | `s3-data`, `s3-iam` |
+
+\* только при `STORAGE_BACKEND=local` (один хост). `PROCESS_ROLE` (`api`, `worker`, `ingestion`, `scheduler`,
+`migrate`) определяет, какие секреты процессу обязательны в production: `SECRET_KEY`, `PUBLIC_URL` и
+`SECRETS_KEYRING_FILE` — только `api` и `worker`; `APP_DEBUG=false`, `SESSION_COOKIE_SECURE=true` и `https` в
+`PUBLIC_URL` — для всех. Загрузки и входные файлы парсера спулятся в `TMPDIR=/var/tmp` — анонимный volume контейнера
+(место на диске не меньше `UPLOAD_MAX_BYTES` на одновременную операцию), а не в `tmpfs`.
 
 ## 3. Конфигурация окружения (Instance Settings, ADR-006)
 
@@ -184,7 +211,15 @@ docker compose down --volumes
 
 ## 4. Секреты
 
-- Все секреты — файлы (Docker secrets / смонтированные файлы с правами `0400`), а не значения в `.env`.
+- Все секреты — файлы (Docker secrets), а не значения в `.env` или переменных окружения: `docker inspect` их не
+  показывает (проверяется в CI). `deploy/prod/init-secrets.sh` один раз генерирует случайные пароли PostgreSQL, Redis и
+  S3-сервера, `SECRET_KEY`, key ring, `database_url` и `redis_url`; существующие файлы не перезаписывает. Под `root`
+  каждому файлу назначается uid читающего сервиса (`10001` — приложение, `999` — PostgreSQL и Redis, `0` — S3-сервер) и
+  режим `0400`; без `root` (рабочая станция) — `0444` в каталоге `0700`, и API предупреждает о доступном key ring.
+  Каталог `deploy/prod/secrets/` — в `.gitignore`.
+- OAuth client secrets коннекторов: файл в `deploy/prod/secrets/` и override-файл с секретом и переменной
+  `GOOGLE_OAUTH_CLIENT_SECRET_FILE` / `MICROSOFT_OAUTH_CLIENT_SECRET_FILE` для `backend` и `worker` (client ID — в
+  `.env`).
 - **Key ring секретов** ([ADR-016](adr/0016-secret-encryption.md)) — JSON-файл `SECRETS_KEYRING_FILE`:
   `{"primary": "<key id>", "keys": {"<key id>": "<base64url, 32 байта>"}}`. В production создаётся при установке и
   монтируется файлом с правами `0400`; в dev compose его создаёт `migrate` (`secrets init-keyring`, существующий файл
@@ -204,12 +239,12 @@ docker compose down --volumes
 | Volume | Содержимое | Backup | Примечание |
 |---|---|---|---|
 | `postgres-data` | БД, векторы, audit | **Да** | Основной источник истины |
-| `documents` | Оригиналы и extracted text (local storage) | **Да** | В `prod` вместо него — MinIO/S3 |
-| `minio-data` | Object storage (`prod`) | **Да** | |
-| `quarantine` | Недоверенные файлы до проверки | Нет | Отдельный volume, `noexec`, ограниченные права, cleanup по TTL |
+| `s3-data` | Бакеты встроенного S3-сервера (оригиналы, extracted text, quarantine) | **Да** (бакет, шаг 11.3) | С внешним S3 — его backup |
+| `s3-iam` | Учётные записи встроенного S3-сервера | Нет | Пересоздаётся `s3-init` из секретов |
+| `storage-data` | Документы при `STORAGE_BACKEND=local` | **Да** | Только один хост |
 | `redis-data` | Очереди и кэш | Нет | Состояние jobs восстанавливается из БД |
-| `bootstrap` (dev: `bootstrap-data`) | Файл bootstrap token (`0600`, каталог `0700`) | Нет | Монтируется только в `migrate`/CLI, не в `api`; после настройки файл удаляет следующий запуск `init-token` (токен к тому времени уже погашен в БД) |
-| `certs` | TLS-сертификаты | По политике владельца | |
+| `bootstrap-data` | Файл bootstrap token (`0600`, каталог `0700`) | Нет | Монтируется только в `migrate`, не в `backend`; после настройки файл удаляет следующий запуск `init-token` |
+| `deploy/prod/secrets/` | Секреты и key ring (каталог хоста) | **Key ring — отдельно** от backup данных | §4 |
 
 ## 6. Bootstrap (ADR-006, реализовано)
 
@@ -278,14 +313,21 @@ docker compose down --volumes
 
 ## 7. Сетевая конфигурация (ADR-007)
 
-### 7.1 Сегментация
+### 7.1 Сегментация (реализовано, `compose.prod.yaml`)
 
 | Сеть | Участники | Исходящий интернет |
 |---|---|---|
-| `edge` | `nginx`, `api` | — |
-| `data` | `api`, worker-сервисы, `scheduler`, `migrate`, `postgres`, `redis`, `minio` | Нет (`internal: true`) |
-| `egress` | `api`, `worker-io` (dev: `worker` в сети `edge`) | Да — облачные провайдеры, Google/Microsoft |
-| `llm` | `api`, `worker-io`, сервис локальной модели | Нет (`internal: true`), фиксированная подсеть |
+| `public` | `nginx` | — (опубликованные порты) |
+| `app` | `nginx` (`172.30.200.10`), `backend` | Нет (`internal`, `172.30.200.0/24`) |
+| `data` | `backend`, `worker`, `worker-ingestion`, `scheduler`, `migrate`, `postgres`, `redis`, `s3` (`172.30.201.10`) | Нет (`internal`, `172.30.201.0/24`) |
+| `egress` | `backend`, `worker` | Да — облачные провайдеры, Google/Microsoft (через `SafeHttpClient`) |
+| `llm` | `backend`, `worker`, сервис локальной модели (override, §7.3) | Нет (`internal`), фиксированная подсеть |
+
+Фиксированные адреса берутся из нижней половины подсетей, динамические — из верхней (`ip_range`), поэтому адрес
+Nginx и S3-сервера никогда не достаётся другому контейнеру. `backend` доверяет `X-Forwarded-For` только от адреса Nginx
+(`FORWARDED_ALLOW_IPS`); Nginx перезаписывает заголовок адресом клиента. Встроенный S3 разрешён записью allowlist
+`deploy/prod/plummy.toml` с `allowed_cidrs = ["172.30.201.10/32"]` и `purposes = ["storage"]`: более широкий CIDR
+включил бы PostgreSQL и Redis, что backend отклоняет при старте.
 
 ### 7.2 Второй рубеж egress
 
@@ -355,15 +397,25 @@ Allowlist по умолчанию пуст; примеры выше не явл�
 
 Client secret Entra имеет срок действия: продлите его до истечения, иначе обновление токенов перестанет работать.
 
-## 8. TLS и Nginx
+## 8. TLS и Nginx (реализовано, шаг 11.2)
 
-Целевая конфигурация — [ADR-023](adr/0023-production-deployment.md) §4–§5 (шаг 11.2): `compose.prod.yaml`,
-сертификат администратора в `deploy/prod/certs/`, CSP со `style-src 'self' 'unsafe-inline'` только для стилей.
+Образ — таргет `web` в `apps/frontend/Dockerfile` (`nginx-unprivileged`, порты `8080`/`8443` внутри контейнера, статика
+из `dist`), конфигурация — `deploy/nginx/`:
 
-
-- TLS терминируется в Nginx; HSTS; security headers (SECURITY_MODEL.md §12).
-- Для SSE: отключённая буферизация ответа, увеличенный read timeout, корректная передача `X-Accel-Buffering: no`.
-- Лимит размера тела запроса согласован с `UPLOAD_MAX_BYTES`.
+- TLS 1.2/1.3, `ssl_session_tickets off`; порт 80 отвечает только `301` на HTTPS (и `/nginx-health` для healthcheck).
+- Заголовки и CSP — `deploy/nginx/security-headers.conf` ([ADR-023](adr/0023-production-deployment.md) §5): HSTS
+  `max-age=31536000`, CSP со `style-src 'self' 'unsafe-inline'` только для стилей emotion/Chakra UI, `nosniff`,
+  `Referrer-Policy: no-referrer`, `Permissions-Policy`, COOP, CORP, `X-Frame-Options: DENY`; `server_tokens off`.
+- `/api/` — прокси на `backend` без буферизации тела запроса (upload идёт потоком, лимит проверяет API);
+  `/api/v1/chat/stream` — без буферизации ответа, `proxy_read_timeout` = `PLUMMY_STREAM_READ_TIMEOUT` (больше
+  `CHAT_GENERATION_TIMEOUT_SECONDS`).
+- `client_max_body_size` = `PLUMMY_CLIENT_MAX_BODY_SIZE` (немного больше `UPLOAD_MAX_BYTES`).
+- `/assets/` кэшируется на год (имена с хэшем), оболочка SPA — `Cache-Control: no-cache`, остальные пути — fallback на
+  `index.html`. В access log нет query string (OAuth codes, курсоры, поисковые запросы).
+- Проверка в CI (job «Production stack»): `deploy/prod/smoke/smoke.py` — редирект, заголовки и CSP, readiness, Swagger
+  выключен, setup → провайдер → KB → upload в S3 → индексация → поиск → SSE-ответ с проверенной цитатой → logout,
+  всё через Nginx; `deploy/prod/smoke/checks.sh` — порты публикует только Nginx, секретов нет в `docker inspect`,
+  key ring не доступен другим, ФС read-only, сервисы без интернета только во внутренних сетях.
 
 ## 9. Health, обновления, масштабирование
 

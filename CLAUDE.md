@@ -49,8 +49,10 @@ reconciliation) в очереди `connectors`, scheduler, sync jobs в `/jobs?t
 ([ADR-021](docs/adr/0021-microsoft-365-connector.md)): Microsoft 365 — OAuth Entra ID одного tenant (PKCE, ротация
 refresh token, отзыв только локальный), адаптер Graph за тем же `DataSourceConnector` (сайты, библиотеки, папки,
 Delta Query), общий транспорт `connector_http.py`, выбор провайдера в «External sources», E2E с
-`deploy/e2e/fake_microsoft.py`. Application Settings, Nginx/CSP и prod-compose ещё нет
-([DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md)).
+`deploy/e2e/fake_microsoft.py`. Фаза 11 (идёт, [ADR-022](docs/adr/0022-s3-compatible-storage.md),
+[ADR-023](docs/adr/0023-production-deployment.md)): S3 storage (SigV4 на httpx, versitygw), `compose.prod.yaml` с
+Nginx/TLS/CSP, секретами файлами (`deploy/prod/init-secrets.sh`), `PROCESS_ROLE` и CI-smoke
+(`deploy/prod/smoke/`). Application Settings ещё нет ([DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md)).
 Не начинать Google OAuth, Microsoft Graph и сложный RAG до стабильного запуска каркаса.
 
 ## Приоритет источников

@@ -80,7 +80,7 @@ docker compose up --build
 | Данные | PostgreSQL 17 + pgvector, Redis |
 | Frontend | React 18, TypeScript (strict), Vite, Chakra UI 2, Redux Toolkit + RTK Query, React Router |
 | Качество | Ruff, mypy (strict), pytest; ESLint, Prettier, Vitest + Testing Library |
-| Развёртывание | Docker, Docker Compose (Nginx и production-профиль — Фаза 11) |
+| Развёртывание | Docker, Docker Compose; production — `compose.prod.yaml` с Nginx/TLS и встроенным S3 ([DEPLOYMENT.md](docs/DEPLOYMENT.md)) |
 
 ```text
 apps/backend/      FastAPI-приложение, Celery workers, Alembic-миграции, тесты

@@ -5,9 +5,11 @@
 #   dev   — Vite dev server; src/ is bind-mounted by compose.yaml, /api is proxied to the backend.
 #   build — production bundle in /app/dist.
 #   dist  — only the static files: docker build -f apps/frontend/Dockerfile --target dist -o out .
-#           (served by Nginx in the production profile, roadmap Phase 11).
+#   web   — Nginx of the production stack (compose.prod.yaml, ADR-023 §4): the bundle plus deploy/nginx/,
+#           unprivileged (ports 8080/8443), read-only root filesystem with a tmpfs /tmp.
 
 ARG NODE_IMAGE=node:22-alpine
+ARG NGINX_IMAGE=nginxinc/nginx-unprivileged:1.29.3-alpine
 
 FROM ${NODE_IMAGE} AS deps
 WORKDIR /app
@@ -36,3 +38,20 @@ RUN npm run build
 
 FROM scratch AS dist
 COPY --from=build /app/dist /
+
+FROM ${NGINX_IMAGE} AS web
+# Only ${PLUMMY_*} variables are substituted in the templates; nginx's own $variables stay as they are.
+ENV NGINX_ENVSUBST_OUTPUT_DIR=/tmp/nginx-conf \
+    NGINX_ENVSUBST_FILTER=PLUMMY_ \
+    PLUMMY_SERVER_NAME=_ \
+    PLUMMY_CLIENT_MAX_BODY_SIZE=60m \
+    PLUMMY_STREAM_READ_TIMEOUT=660s
+USER root
+RUN rm -f /etc/nginx/conf.d/default.conf
+COPY deploy/nginx/nginx.conf /etc/nginx/nginx.conf
+COPY deploy/nginx/security-headers.conf deploy/nginx/proxy-api.conf /etc/nginx/plummy/
+COPY deploy/nginx/templates/ /etc/nginx/templates/
+COPY --chmod=0755 deploy/nginx/05-plummy-tmp.sh /docker-entrypoint.d/
+COPY --from=build /app/dist /usr/share/nginx/html
+USER 101
+EXPOSE 8080 8443
