@@ -5,12 +5,14 @@ Run with ``uvicorn --factory plummy.main:create_app``: nothing is created or con
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from plummy.api.errors import REQUEST_ID_HEADER, register_exception_handlers
 from plummy.api.middleware import RequestContextMiddleware
@@ -22,9 +24,12 @@ from plummy.composition import (
     load_egress_policy,
     load_secret_cipher,
 )
-from plummy.core.config import ConfigurationError, Settings, get_settings
+from plummy.core.config import ConfigurationError, ProcessRole, Settings, get_settings
 from plummy.core.logging import configure_logging
 from plummy.core.version import get_version
+from plummy.infrastructure.db.engine import create_engine
+from plummy.infrastructure.db.errors import DATABASE_UNAVAILABLE_ERRORS
+from plummy.infrastructure.db.roles import inspect_role
 
 logger = logging.getLogger("plummy")
 
@@ -45,6 +50,41 @@ def _load_settings_or_exit() -> Settings:
         raise SystemExit(1) from None
 
 
+SEPARATED_ROLE_REQUIRED = (
+    "the database role of this process can change or delete audit records (schema owner, superuser or "
+    "UPDATE/DELETE on audit_logs): the services must connect with the runtime role "
+    "(ADR-024, DEPLOYMENT.md §6.1)"
+)
+
+
+async def check_database_role(settings: Settings, engine: AsyncEngine) -> None:
+    """ADR-024 §4: a service must not run with a role that can rewrite the audit log.
+
+    Production refuses to start; elsewhere a warning. ``migrate`` is the owner by design. A database that is
+    not reachable or not migrated yet is left to readiness.
+    """
+    if settings.process_role is ProcessRole.MIGRATE:
+        return
+    try:
+        status = await inspect_role(engine)
+    except DATABASE_UNAVAILABLE_ERRORS:
+        logger.warning("database role not checked: database unavailable")
+        return
+    if status is None or status.separated:
+        return
+    if settings.is_production:
+        raise ConfigurationError(SEPARATED_ROLE_REQUIRED)
+    logger.warning("%s (allowed outside production)", SEPARATED_ROLE_REQUIRED)
+
+
+async def _check_database_role_once(settings: Settings) -> None:
+    engine = create_engine(settings, application_name=f"plummy-{settings.process_role.value}-check")
+    try:
+        await check_database_role(settings, engine)
+    finally:
+        await engine.dispose()
+
+
 def check_configuration() -> int:
     """Validate configuration without starting the server: 0 if valid, 1 otherwise.
 
@@ -56,6 +96,8 @@ def check_configuration() -> int:
         load_secret_cipher(settings)
         load_egress_policy(settings)
         check_storage_configuration(settings)
+        configure_logging(settings.log_level.value)
+        asyncio.run(_check_database_role_once(settings))
     except ConfigurationError as exc:
         report_configuration_error(exc)
         return 1
@@ -76,6 +118,7 @@ def create_app(
         resources = resources_factory(settings)
         app.state.resources = resources
         try:
+            await check_database_role(settings, resources.engine)
             # Informational only: the process stays up and /health/ready reports 503 until
             # dependencies recover, so orchestration can tell "starting" from "broken".
             report = await resources.readiness.execute()

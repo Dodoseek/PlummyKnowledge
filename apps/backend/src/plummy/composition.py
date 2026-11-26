@@ -91,6 +91,7 @@ from plummy.application.knowledge.use_cases import (
     UpdateKnowledgeBase,
 )
 from plummy.application.knowledge.vector_index import EnsureVectorIndex
+from plummy.application.maintenance.audit_retention import PruneAuditLog
 from plummy.application.maintenance.deletions import ExportDeletions, ReapplyDeletions
 from plummy.application.maintenance.objects import ExportObjects, ImportObjects
 from plummy.application.ports import Clock, PasswordHasher, SecretCipher
@@ -936,6 +937,7 @@ class RestoreTask(StrEnum):
     EXPORT_DELETIONS = "export-deletions"
     REAPPLY_DELETIONS = "reapply-deletions"
     OBJECTS = "objects"
+    PRUNE_AUDIT = "prune-audit"
 
 
 @dataclass(frozen=True, slots=True)
@@ -949,6 +951,7 @@ class RestoreServices:
     reapply_deletions: ReapplyDeletions | None = None
     export_objects: ExportObjects | None = None
     import_objects: ImportObjects | None = None
+    prune_audit: PruneAuditLog | None = None
     engine: AsyncEngine | None = None
     storage: DocumentStorage | None = None
     resources: Resources | None = None
@@ -968,6 +971,10 @@ def build_restore_services(settings: Settings, *, task: RestoreTask) -> RestoreS
         engine = create_engine(settings, application_name="plummy-maintenance")
         uow = SqlAlchemyUnitOfWorkFactory(create_session_factory(engine))
         return RestoreServices(export_deletions=ExportDeletions(uow, clock), engine=engine)
+    if task is RestoreTask.PRUNE_AUDIT:
+        engine = create_engine(settings, application_name="plummy-maintenance")
+        uow = SqlAlchemyUnitOfWorkFactory(create_session_factory(engine))
+        return RestoreServices(prune_audit=PruneAuditLog(uow, clock), engine=engine)
     if task is RestoreTask.OBJECTS:
         storage = create_storage(settings)
         return RestoreServices(

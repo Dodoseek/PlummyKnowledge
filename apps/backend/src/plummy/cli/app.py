@@ -14,6 +14,8 @@
     maintenance reapply-deletions on a restored instance: delete again what the file lists (idempotent)
     maintenance export-objects    every stored object as a tar archive (file or stdout)
     maintenance import-objects    store the objects of such an archive (existing ones are kept)
+    maintenance prune-audit       delete audit records older than AUDIT_RETENTION_DAYS (schema owner role)
+    db grant-runtime              grant the runtime role of the services exactly its privileges (ADR-024)
 
 Secrets are never accepted as arguments (they would end up in shell history and ``ps``) and never printed:
 passwords are read with a hidden prompt or from stdin (``--password-stdin``), and the bootstrap token is only
@@ -32,14 +34,17 @@ import sys
 import time
 from collections import Counter
 from collections.abc import Callable, Coroutine, Mapping, Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import IO, Any, Protocol, TextIO
 from uuid import UUID
 
+from sqlalchemy.exc import DBAPIError
+
 from plummy.application.errors import ApplicationError, InvalidInputError
 from plummy.application.evaluation.dataset import DatasetError, parse_dataset
 from plummy.application.evaluation.runner import DEFAULT_KS, EvalOptions, operator_context
+from plummy.application.maintenance.audit_retention import PruneAuditLog
 from plummy.application.maintenance.deletions import DeletionExport, DeletionsFileError
 from plummy.application.retrieval.model import (
     DEFAULT_KEYWORD_WEIGHT,
@@ -62,7 +67,9 @@ from plummy.composition import (
 )
 from plummy.core.config import ConfigurationError, Settings, get_settings
 from plummy.domain.secrets import is_valid_key_id
+from plummy.infrastructure.db.engine import create_engine
 from plummy.infrastructure.db.errors import DATABASE_UNAVAILABLE_ERRORS
+from plummy.infrastructure.db.roles import RuntimeRoleError, grant_runtime
 from plummy.infrastructure.security.secret_cipher import (
     KeyRingError,
     create_keyring_file,
@@ -82,6 +89,7 @@ class MaintenanceFactory(Protocol):
 
 
 CeleryAppFactory = Callable[[Settings], Any]
+INSUFFICIENT_PRIVILEGE = "42501"
 
 
 class CliError(Exception):
@@ -158,6 +166,16 @@ def _parser() -> argparse.ArgumentParser:
         "import-objects", help="store the objects of an export-objects archive (existing ones are kept)"
     )
     import_objects.add_argument("--input", required=True, type=Path, help="the archive, or - for stdin")
+    prune_audit = maintenance_commands.add_parser(
+        "prune-audit",
+        help="delete audit records older than AUDIT_RETENTION_DAYS (migrate container, ADR-024 §6)",
+    )
+    prune_audit.add_argument("--dry-run", action="store_true", help="only count the records")
+    database = groups.add_parser("db", help="database roles (ADR-024)")
+    database_commands = database.add_subparsers(dest="command", required=True)
+    database_commands.add_parser(
+        "grant-runtime", help="reset the privileges of DATABASE_RUNTIME_ROLE; run by migrate after upgrades"
+    )
     evaluation = groups.add_parser("eval", help="retrieval evaluation (docs/evaluation/)")
     eval_commands = evaluation.add_subparsers(dest="command", required=True)
     run = eval_commands.add_parser(
@@ -349,6 +367,7 @@ async def _maintenance(
     ):
         raise CliError(f"{args.output} exists; choose a new file")
     task = {
+        "prune-audit": RestoreTask.PRUNE_AUDIT,
         "export-deletions": RestoreTask.EXPORT_DELETIONS,
         "reapply-deletions": RestoreTask.REAPPLY_DELETIONS,
         "export-objects": RestoreTask.OBJECTS,
@@ -357,6 +376,8 @@ async def _maintenance(
     services = factory(settings, task=task)
     try:
         match args.command:
+            case "prune-audit":
+                await _prune_audit(args, settings, _built(services.prune_audit), err)
             case "reapply-deletions":
                 export = _built(export)
                 report = await _built(services.reapply_deletions).execute(export)
@@ -395,6 +416,51 @@ async def _maintenance(
                     )
     finally:
         await services.aclose()
+
+
+async def _prune_audit(
+    args: argparse.Namespace, settings: Settings, use_case: PruneAuditLog, err: TextIO
+) -> None:
+    retention = timedelta(days=settings.audit_retention_days)
+    try:
+        report = await use_case.execute(retention, dry_run=args.dry_run)
+    except DBAPIError as exc:
+        if _sqlstate(exc) != INSUFFICIENT_PRIVILEGE:
+            raise
+        raise CliError(
+            "this database role may not delete audit records: run the command in the migrate container, "
+            "which connects as the schema owner (ADR-024 §6)"
+        ) from None
+    verb = "would be deleted" if report.dry_run else "deleted"
+    print(
+        f"Audit records older than {report.cutoff.isoformat()} "
+        f"({settings.audit_retention_days} days): {report.records} {verb}",
+        file=err,
+    )
+
+
+def _sqlstate(exc: DBAPIError) -> str | None:
+    original = exc.orig
+    code = getattr(original, "sqlstate", None) or getattr(original, "pgcode", None)
+    return code if isinstance(code, str) else None
+
+
+async def _grant_runtime(settings: Settings, out: TextIO) -> None:
+    role = settings.database_runtime_role
+    if role is None:
+        raise CliError("DATABASE_RUNTIME_ROLE is not set (the runtime role of the services, ADR-024)")
+    engine = create_engine(settings, application_name="plummy-migrate")
+    try:
+        report = await grant_runtime(engine, role)
+    except RuntimeRoleError as exc:
+        raise CliError(str(exc)) from None
+    finally:
+        await engine.dispose()
+    print(
+        f"Privileges of {report.role}: data access on {report.tables} tables, "
+        f"restricted on {', '.join(report.restricted) or 'none'}",
+        file=out,
+    )
 
 
 def _key_id(value: str) -> str:
@@ -581,6 +647,9 @@ def main(
             return 0
         if args.group == "worker":
             _worker_check(args, resolved, out, celery_app_factory)
+            return 0
+        if args.group == "db":
+            asyncio.run(_grant_runtime(resolved, out))
             return 0
         if args.group == "maintenance":
             asyncio.run(_maintenance(args, resolved, out, err, inp, maintenance_factory))

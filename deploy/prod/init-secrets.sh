@@ -25,6 +25,7 @@ if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_UID:-}" ]; then
 fi
 
 DB_USER=${PLUMMY_DB_USER:-plummy}
+DB_RUNTIME_USER=${PLUMMY_DB_RUNTIME_USER:-plummy_app}
 DB_NAME=${PLUMMY_DB_NAME:-plummy}
 
 random() { # URL-safe random string of $1 bytes of entropy
@@ -56,8 +57,18 @@ value() { cat "$DIR/$1"; }
 command -v openssl >/dev/null 2>&1 || { echo "openssl is required" >&2; exit 1; }
 
 write postgres_password $POSTGRES_UID "$(random 32)"
+# Two database roles (ADR-024): the schema owner for migrate only, the runtime role for the services.
 write db_password $POSTGRES_UID "$(random 32)"
-write database_url $APP_UID "postgresql+asyncpg://$DB_USER:$(value db_password)@postgres:5432/$DB_NAME"
+write db_runtime_password $POSTGRES_UID "$(random 32)"
+# Before 0.5.0 database_url was the owner's connection: it becomes migration_database_url.
+if [ -e "$DIR/database_url" ] && [ ! -e "$DIR/migration_database_url" ] \
+  && grep -q "^postgresql+asyncpg://$DB_USER:" "$DIR/database_url"; then
+  mv "$DIR/database_url" "$DIR/migration_database_url"
+  echo "moved     secrets/database_url -> secrets/migration_database_url (schema owner, ADR-024)"
+fi
+write migration_database_url $APP_UID "postgresql+asyncpg://$DB_USER:$(value db_password)@postgres:5432/$DB_NAME"
+write database_url $APP_UID \
+  "postgresql+asyncpg://$DB_RUNTIME_USER:$(value db_runtime_password)@postgres:5432/$DB_NAME"
 write redis_password 0 "$(random 32)"
 write redis_url $APP_UID "redis://:$(value redis_password)@redis:6379/0"
 write redis_conf $REDIS_UID "$(printf 'requirepass %s\nappendonly yes\nsave ""\nprotected-mode yes\n' "$(value redis_password)")"

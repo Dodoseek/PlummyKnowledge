@@ -310,6 +310,16 @@ class AuditLog(Protocol):
         """Number of successful events per action at or after ``since`` (actions without events omitted)."""
         ...
 
+    async def count_older_than(self, cutoff: datetime) -> int: ...
+
+    async def delete_older_than(self, cutoff: datetime, *, limit: int) -> int:
+        """Delete up to ``limit`` of the oldest records created before ``cutoff``; the number deleted.
+
+        Retention only (ADR-024 §6): the runtime role of the services has no DELETE on the audit log, so this
+        succeeds only under the schema owner role.
+        """
+        ...
+
 
 # --- secrets at rest (ADR-016) ---------------------------------------------------------------------------
 
@@ -987,7 +997,8 @@ class VectorIndexManager(Protocol):
     async def is_ready(self, profile: EmbeddingProfile) -> bool: ...
 
     async def ensure(self, profile: EmbeddingProfile) -> bool:
-        """Creates the index (``CONCURRENTLY``), replacing an invalid one; ``True`` if it was created."""
+        """Creates the index (the schema owner's function, ADR-024), replacing an invalid one; ``True`` if it
+        was created."""
         ...
 
     async def drop(self, profile_id: UUID) -> bool: ...

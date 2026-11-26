@@ -47,6 +47,21 @@ Retention audit logs (1 год, [DATABASE_SCHEMA.md §8](../DATABASE_SCHEMA.md))
   БД.
 - `alembic_version` — только `SELECT`: readiness и проверка ревизии читают её, но не меняют.
 - `USAGE, SELECT` на последовательности схемы, если они есть.
+- `EXECUTE` только на две функции владельца `SECURITY DEFINER` для HNSW-индексов (§2.1); права на остальные
+  функции схемы, выданные runtime-роли явно, снимаются.
+
+### 2.1 HNSW-индексы профилей (решение владельца проекта, шаг 12.1)
+
+`CREATE INDEX` требует владельца таблицы, а worker строит индекс профиля, когда KB начинает его использовать
+([ADR-017](0017-vector-storage.md) §2). Ревизия `0017` создаёт функции владельца `plummy_ensure_vector_index(uuid)` и
+`plummy_drop_vector_index(uuid)` (`SECURITY DEFINER`, `search_path = pg_catalog, public, pg_temp`, `EXECUTE` у
+`PUBLIC` отозван). Они принимают только id профиля и строят выражение из сохранённой строки профиля
+(CHECK-ограничения на размерность и метрику): то же выражение и предикат, что `index_spec`, по которым retrieval
+выбирает индекс (тест сравнивает `pg_get_indexdef` с эталонным DDL). Сборка транзакционная, без `CONCURRENTLY`:
+на время сборки вставки в `embeddings` ждут, чтение и поиск не блокируются; невалидный индекс прежней
+конкурентной сборки удаляется и строится заново. Отклонены: отдельный сервис-индексатор с ролью владельца
+(учётные данные владельца в работающем сервисе) и сборка индексов `migrate` и таймером хоста (до запуска таймера
+поиск по новому профилю шёл бы полным перебором).
 
 Права выдаёт не Alembic, а идемпотентная команда `python -m plummy.cli db grant-runtime`. Её выполняет `migrate`
 после `alembic upgrade head` при каждом запуске: `alembic upgrade head && python -m plummy.cli db grant-runtime &&
@@ -142,7 +157,21 @@ python -m plummy.cli setup init-token`. Команда сначала отзыв
 
 ## Implementation notes
 
-Шаг 12.1 ([DEVELOPMENT_ROADMAP.md](../DEVELOPMENT_ROADMAP.md)):
+Реализовано в шаге 12.1 ([DEVELOPMENT_ROADMAP.md](../DEVELOPMENT_ROADMAP.md)). Уточнения при реализации:
+
+- `db grant-runtime` (`infrastructure/db/roles.py`) кроме прав на таблицы сам выдаёт `CONNECT` на базу и отзывает
+  у `PUBLIC` права на базу и `CREATE` на схеме: это может владелец, поэтому шаг администратора сводится к созданию
+  роли. Команда отказывает, если роль не существует, является владельцем или входит в его роль, либо имеет
+  `SUPERUSER`/`BYPASSRLS`/`CREATEROLE`/`CREATEDB`.
+- Каждая `SECURITY DEFINER` функция схемы должна быть в `EXECUTABLE_FUNCTIONS` и не исполняться `PUBLIC` — это
+  проверяет тест: новая функция-повышение прав не появится незаметно.
+- Проверка при запуске (§4) выполняется в `python -m plummy.check_config` (workers, scheduler) и в lifespan API;
+  при недоступной БД — предупреждение, решение оставлено readiness.
+- Development: `compose.yaml` передаёт integration-тестам URL владельца в `TEST_OWNER_DATABASE_URL` (только
+  контейнер `backend`, сам API её не читает). Тесты создают и мигрируют БД владельцем, выдают права runtime-роли и
+  запускают приложение под ней — весь набор тестов проверяет, что сервисам хватает DML.
+
+Изначальный план шага:
 
 - `deploy/prod/postgres-initdb/10-roles-and-extensions.sh` и `deploy/postgres/initdb/10-dev-roles-and-extensions.sh`
   — вторая роль; `deploy/scripts/split-db-roles.sh` — для существующих инсталляций;

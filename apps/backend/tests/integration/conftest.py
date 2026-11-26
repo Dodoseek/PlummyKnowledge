@@ -1,9 +1,11 @@
 """Integration fixtures: a throw-away PostgreSQL database per test and the real Redis.
 
-Run inside the dev stack: ``docker compose exec backend pytest``. Tests connect with the application role
-from DATABASE_URL — not a superuser (ADR-011). In development that role has CREATEDB, and the required
-extensions are pre-installed in ``template1`` by the postgres init script, so a new database looks like one
-prepared by a DBA; ``template0`` gives a database without extensions.
+Run inside the dev stack: ``docker compose exec backend pytest``. Databases are created and migrated by the
+schema owner role (TEST_OWNER_DATABASE_URL, else DATABASE_URL) — not a superuser (ADR-011). In development
+that role has CREATEDB, and the required extensions are pre-installed in ``template1`` by the postgres init
+script, so a new database looks like one prepared by a DBA; ``template0`` gives a database without
+extensions. When DATABASE_URL is another role, it is the runtime role of the services (ADR-024): the migrated
+database grants it its privileges and the application under test connects with it.
 """
 
 from __future__ import annotations
@@ -30,11 +32,33 @@ if TYPE_CHECKING:
     from tests.integration.harness import Harness
 
 
+# Read once: the Migrator points DATABASE_URL at a test database while a test runs.
+_OWNER_URL = os.environ.get("TEST_OWNER_DATABASE_URL")
+_RUNTIME_URL = os.environ.get("DATABASE_URL")
+
+
 def _base_url() -> str:
-    url = os.environ.get("DATABASE_URL")
+    url = _OWNER_URL or _RUNTIME_URL
     if not url or not os.environ.get("REDIS_URL"):
         pytest.skip("integration tests need DATABASE_URL and REDIS_URL (run them via docker compose)")
     return url
+
+
+def runtime_role() -> str | None:
+    """The runtime role of the environment, or ``None`` when the tests run with one role only."""
+    if not _RUNTIME_URL or not _OWNER_URL:
+        return None
+    role = make_url(_RUNTIME_URL).username
+    return role if role != make_url(_OWNER_URL).username else None
+
+
+def runtime_url(owner_url: str) -> str:
+    """The same database as ``owner_url``, through the runtime role when there is one."""
+    if runtime_role() is None or _RUNTIME_URL is None:
+        return owner_url
+    runtime = make_url(_RUNTIME_URL)
+    url = make_url(owner_url).set(username=runtime.username, password=runtime.password)
+    return url.render_as_string(hide_password=False)
 
 
 async def _drop_database(admin: AsyncEngine, name: str, attempts: int = 5) -> None:
@@ -122,9 +146,25 @@ FAST_HASHER_PARAMS = {"time_cost": 1, "memory_cost_kib": 8, "parallelism": 1}
 TEST_ORIGIN = "https://testserver"
 
 
+async def grant_runtime_privileges(owner_url: str) -> None:
+    """What ``migrate`` does after the upgrade: ``python -m plummy.cli db grant-runtime`` (ADR-024 §2)."""
+    from plummy.infrastructure.db.roles import grant_runtime
+
+    role = runtime_role()
+    if role is None:
+        return
+    engine = create_async_engine(owner_url)
+    try:
+        await grant_runtime(engine, role)
+    finally:
+        await engine.dispose()
+
+
 @pytest.fixture
 async def migrated_database_url(migrator: Migrator, database_url: str) -> str:
+    """Migrated by the owner, privileges granted to the runtime role; the URL is the owner's."""
     await migrator.upgrade()
+    await grant_runtime_privileges(database_url)
     return database_url
 
 

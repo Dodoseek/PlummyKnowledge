@@ -424,10 +424,11 @@ OpenAI/Anthropic). Полный алгоритм — в ADR-007; здесь — 
 Журнал append-only (DATABASE_SCHEMA.md §7.3); не содержит секретов, токенов и содержимого документов. На уровне БД
 append-only обеспечивает runtime-роль без `UPDATE`/`DELETE` на `audit_logs`; записи старше срока хранения (1 год)
 удаляет `maintenance prune-audit` под ролью владельца схемы ([ADR-024](adr/0024-database-owner-and-runtime-roles.md),
-шаг 12.1; до него — только код).
+реализовано в шаге 12.1): событие `maintenance.audit_pruned` с числом записей и границей.
 
 Реализованы события setup, аутентификации, пользователей, групп, ролей, провайдеров, моделей, embedding profiles,
-`secrets.rotated`, `network.egress.denied`, `job.retried`, `job.cancelled` и `maintenance.*`; остальные — **[Proposed]**. В audit провайдеров нет значений ключей:
+`secrets.rotated`, `network.egress.denied`, `job.retried`, `job.cancelled` и `maintenance.*` (в том числе
+`maintenance.audit_pruned`); остальные — **[Proposed]**. В audit провайдеров нет значений ключей:
 `provider.secret.rotated` содержит только `change = added | replaced | removed`.
 
 **Критичные действия:**
@@ -443,7 +444,7 @@ append-only обеспечивает runtime-роль без `UPDATE`/`DELETE` �
 | KB и документы | `kb.created`, `kb.updated`, `kb.deleted`, `kb.source.attached`, `kb.source.detached`, `kb.reindex.requested`, `document.uploaded`, `document.deleted`, `document.reindex.requested` |
 | Ассистенты и чат | `assistant.created`, `assistant.updated`, `assistant.deleted`, `conversation.deleted` |
 | Jobs | `job.retried`, `job.cancelled` |
-| Обслуживание (CLI на сервере, `actor_type = system`) | `maintenance.deletions_exported`, `maintenance.deletion_reapplied` (§16.2) |
+| Обслуживание (CLI на сервере, `actor_type = system`) | `maintenance.deletions_exported`, `maintenance.deletion_reapplied` (§16.2), `maintenance.audit_pruned` (ADR-024 §6) |
 | Безопасность | Отказы доступа (`outcome = denied`) на чувствительных операциях; срабатывание rate limit на login; `network.egress.denied` |
 | Опционально (открытый вопрос 4, §20) | `document.viewed`, `audit.viewed` |
 
@@ -561,7 +562,7 @@ append-only обеспечивает runtime-роль без `UPDATE`/`DELETE` �
 | Потеря управления и эскалация через управление пользователями | Последний активный администратор защищён блокировкой строки роли `admin`; запрет отключать/удалять себя; роли при создании — только с `roles.assign` (§3.1) | Тесты последнего администратора, в том числе параллельные | — |
 | Перехват ссылки активации | Токен во фрагменте URL, только SHA-256 в БД, 72 ч, одноразовость под блокировкой, лимит на IP (ADR-015) | Тесты повторной, параллельной, истёкшей и перевыпущенной активации | — |
 | Утечка API keys / OAuth tokens | AES-256-GCM, key ring вне БД и вне backup, write-only API, redaction ошибок, нет в prompt (ADR-016) | `test_secrets.py`, тесты API провайдеров и источников, E2E: токены фейковых Google/Microsoft не попадают в страницу | 12.5: сквозной тест логов на DEBUG |
-| Подмена или удаление audit log, DDL при компрометации API/worker | Сейчас только код (приложение выполняет лишь `INSERT`); роль сервисов владеет таблицами | Нет проверки на уровне БД | 12.1: runtime-роль без DDL и без `UPDATE`/`DELETE` на `audit_logs` ([ADR-024](adr/0024-database-owner-and-runtime-roles.md)) |
+| Подмена или удаление audit log, DDL при компрометации API/worker | Runtime-роль сервисов без DDL, `TRUNCATE`, `TEMPORARY` и без `UPDATE`/`DELETE` на `audit_logs`; владелец схемы — только у `migrate`; единственный путь к DDL — две функции `SECURITY DEFINER` для HNSW-индексов профиля (ADR-024 §2.1); отказ старта в production с ролью владельца; retention — CLI владельца ([ADR-024](adr/0024-database-owner-and-runtime-roles.md), шаг 12.1) | `test_database_roles.py`, `checks.sh` в CI (роли подключений и права runtime-роли) | — (закрыто в 12.1) |
 | SSRF | `SafeHttpClient`: валидация URL и IP, запрет private/metadata/loopback, allowlist в Instance Settings, pinning адреса, проверка redirect (ADR-007); сегментация сетей Compose | `test_safe_http_client.py`, `test_safe_http_redirects.py`, `test_network_policy.py`, `test_network_egress.py` (SC-06, SC-07) | 12.3: SC-прогон |
 | Malicious uploads / parser exploits | Quarantine, magic bytes, отказ от macro-enabled, лимиты размера/страниц/листов/строк, парсер в отдельном контейнере без сети и секретов, процесс с rlimits и timeout | `test_file_inspection.py`, `test_isolated_parser.py`, `test_document_upload.py` | 12.4: XXE и billion laughs в DOCX/XLSX, вложенные архивы, polyglot, несовпадение MIME — в `worker-ingestion` |
 | Archive bombs | Лимиты числа записей, распакованного размера и коэффициента сжатия ZIP | `test_file_inspection.py` | 12.4: вложенные архивы |

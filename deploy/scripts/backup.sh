@@ -4,7 +4,7 @@
 #   sh deploy/scripts/backup.sh /srv/plummy-backups
 #
 # Creates <directory>/plummy-<UTC time>/ with:
-#   database.dump  pg_dump (custom format) of the application database, as the application role;
+#   database.dump  pg_dump (custom format) of the application database, as the schema owner role;
 #   objects.tar    every stored object (documents, quarantine) through the storage port: works the same for
 #                  local storage, the bundled S3 server and an external S3;
 #   manifest.json  application version, Alembic revision, start time of the dump, SHA-256 of both files.

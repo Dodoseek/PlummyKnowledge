@@ -701,7 +701,8 @@ class SqlInstanceStateRepository:
 
 
 class SqlAuditLog:
-    """Append-only: only INSERT (DATABASE_SCHEMA.md §7.3)."""
+    """Append-only: the services only INSERT (DATABASE_SCHEMA.md §7.3); their database role cannot UPDATE or
+    DELETE (ADR-024). ``delete_older_than`` is retention, run under the schema owner role."""
 
     def __init__(self, session: AsyncSession) -> None:
         self._db = session
@@ -752,6 +753,22 @@ class SqlAuditLog:
             .group_by(AuditLogModel.action)
         )
         return {str(action): int(count) for action, count in rows.all()}
+
+    async def count_older_than(self, cutoff: datetime) -> int:
+        count = await self._db.scalar(
+            select(func.count()).select_from(AuditLogModel).where(AuditLogModel.created_at < cutoff)
+        )
+        return int(count or 0)
+
+    async def delete_older_than(self, cutoff: datetime, *, limit: int) -> int:
+        oldest = (
+            select(AuditLogModel.id)
+            .where(AuditLogModel.created_at < cutoff)
+            .order_by(AuditLogModel.created_at)
+            .limit(limit)
+        )
+        result = await self._db.execute(delete(AuditLogModel).where(AuditLogModel.id.in_(oldest)))
+        return int(getattr(result, "rowcount", 0) or 0)
 
 
 def _secret(row: SecretReferenceModel) -> SecretRecord:

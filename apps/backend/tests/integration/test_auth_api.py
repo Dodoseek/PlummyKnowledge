@@ -298,7 +298,7 @@ async def test_login_fails_closed_without_redis(admin: Harness) -> None:
     from tests.integration.harness import running_auth_app
 
     async with running_auth_app(
-        admin.settings.database_url.get_secret_value(),
+        admin.owner_url,
         "redis://127.0.0.1:1/0",
         Path(admin.settings.bootstrap_dir),
     ) as h:

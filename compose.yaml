@@ -5,9 +5,10 @@
 # Frontend: http://localhost:5173 · API: http://localhost:8000/api/v1 (docs: /api/v1/docs)
 #
 # Development only: default credentials below are for a database that is never published outside the
-# Docker network. PostgreSQL has two roles (ADR-011): the bootstrap superuser `postgres`, used only by the
-# container's init script (deploy/postgres/initdb) to create the application role, database and extensions,
-# and the application role `plummy` (no superuser) used by migrations and the API.
+# Docker network. PostgreSQL roles (ADR-011, ADR-024): the bootstrap superuser `postgres`, used only by the
+# container's init script (deploy/postgres/initdb) to create the roles, database and extensions; the schema
+# owner `plummy` (no superuser) used by migrations; the runtime role `plummy_app` (data access only, the audit
+# log append-only) used by the API and the workers.
 # The production profile (Nginx/TLS, MinIO, secrets as files, resource limits) is roadmap Phase 11 — see
 # docs/DEPLOYMENT.md. Variables can be overridden in a local .env (see .env.example).
 
@@ -18,7 +19,7 @@ x-backend-env: &backend-env
   APP_DEBUG: ${APP_DEBUG:-false}
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
   SECRET_KEY: ${SECRET_KEY:-}
-  DATABASE_URL: postgresql+asyncpg://${PLUMMY_DB_USER:-plummy}:${PLUMMY_DB_PASSWORD:-plummy_dev_password}@postgres:5432/${PLUMMY_DB_NAME:-plummy}
+  DATABASE_URL: postgresql+asyncpg://${PLUMMY_DB_RUNTIME_USER:-plummy_app}:${PLUMMY_DB_RUNTIME_PASSWORD:-plummy_app_dev_password}@postgres:5432/${PLUMMY_DB_NAME:-plummy}
   REDIS_URL: redis://redis:6379/0
   CORS_ORIGINS: ${CORS_ORIGINS:-}
   API_DOCS_ENABLED: ${API_DOCS_ENABLED:-}
@@ -35,10 +36,13 @@ x-backend-env: &backend-env
 
 # The ingestion worker parses untrusted documents: database, Redis and storage only. No key ring, provider
 # secrets or setup token reach it (SECURITY_MODEL.md §9).
+# The schema owner (ADR-024): migrate, and the integration tests that create and migrate their databases.
+x-owner-database-url: &owner-database-url postgresql+asyncpg://${PLUMMY_DB_USER:-plummy}:${PLUMMY_DB_PASSWORD:-plummy_dev_password}@postgres:5432/${PLUMMY_DB_NAME:-plummy}
+
 x-ingestion-env: &ingestion-env
   APP_ENV: ${APP_ENV:-development}
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
-  DATABASE_URL: postgresql+asyncpg://${PLUMMY_DB_USER:-plummy}:${PLUMMY_DB_PASSWORD:-plummy_dev_password}@postgres:5432/${PLUMMY_DB_NAME:-plummy}
+  DATABASE_URL: postgresql+asyncpg://${PLUMMY_DB_RUNTIME_USER:-plummy_app}:${PLUMMY_DB_RUNTIME_PASSWORD:-plummy_app_dev_password}@postgres:5432/${PLUMMY_DB_NAME:-plummy}
   REDIS_URL: redis://redis:6379/0
   STORAGE_PATH: /var/lib/plummy/storage
 
@@ -53,6 +57,8 @@ services:
       PLUMMY_DB_USER: ${PLUMMY_DB_USER:-plummy}
       PLUMMY_DB_PASSWORD: ${PLUMMY_DB_PASSWORD:-plummy_dev_password}
       PLUMMY_DB_NAME: ${PLUMMY_DB_NAME:-plummy}
+      PLUMMY_DB_RUNTIME_USER: ${PLUMMY_DB_RUNTIME_USER:-plummy_app}
+      PLUMMY_DB_RUNTIME_PASSWORD: ${PLUMMY_DB_RUNTIME_PASSWORD:-plummy_app_dev_password}
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./deploy/postgres/initdb:/docker-entrypoint-initdb.d:ro
@@ -94,8 +100,14 @@ services:
     command:
       - sh
       - -c
-      - python -m plummy.cli secrets init-keyring && alembic upgrade head && python -m plummy.cli setup init-token
-    environment: *backend-env
+      - >-
+        python -m plummy.cli secrets init-keyring && alembic upgrade head &&
+        python -m plummy.cli db grant-runtime && python -m plummy.cli setup init-token
+    environment:
+      <<: *backend-env
+      PROCESS_ROLE: migrate
+      DATABASE_URL: *owner-database-url
+      DATABASE_RUNTIME_ROLE: ${PLUMMY_DB_RUNTIME_USER:-plummy_app}
     volumes:
       - ./apps/backend/alembic:/app/alembic:ro
       - ./apps/backend/src:/app/src:ro
@@ -117,6 +129,9 @@ services:
       <<: *backend-env
       # Trust X-Forwarded-For from the Vite proxy (development only; in production only Nginx is trusted).
       FORWARDED_ALLOW_IPS: "*"
+      # Integration tests only: they create and migrate throw-away databases as the schema owner and run the
+      # application under test as the runtime role (DATABASE_URL). The API itself never reads this variable.
+      TEST_OWNER_DATABASE_URL: *owner-database-url
       # The S3 adapter's integration tests (tests/integration/test_storage_contract.py); unset = skipped.
       S3_TEST_URL: http://s3:7070
       S3_TEST_ACCESS_KEY_ID: ${S3_DEV_ACCESS_KEY:-plummy-dev}

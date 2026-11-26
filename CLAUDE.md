@@ -56,8 +56,9 @@ Nginx/TLS/CSP, секретами файлами (`deploy/prod/init-secrets.sh`)
 (`deploy/prod/smoke/`); backup/restore (`deploy/scripts/`, CLI `maintenance`: объекты через `StorageProvider`,
 повторное применение удалений после backup), restore drill и upgrade path с `v0.4.0` в CI; отмена jobs и
 страница `/admin/jobs`; retention версий документов (последние 3 `outdated`). Фаза 12 (Security hardening) начата:
-[ADR-024](docs/adr/0024-database-owner-and-runtime-roles.md) — роль владельца схемы и runtime-роль, retention
-audit; threat model пересмотрена (SECURITY_MODEL §17). Application Settings ещё нет ([DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md)).
+[ADR-024](docs/adr/0024-database-owner-and-runtime-roles.md) — владелец схемы (`plummy`, только `migrate`) и
+runtime-роль сервисов (`plummy_app`, только DML, `audit_logs` append-only; права — `db grant-runtime`), retention
+audit `maintenance prune-audit`; threat model пересмотрена (SECURITY_MODEL §17). Application Settings ещё нет ([DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md)).
 Не начинать Google OAuth, Microsoft Graph и сложный RAG до стабильного запуска каркаса.
 
 ## Приоритет источников
@@ -296,6 +297,15 @@ docker compose exec backend python -m plummy.cli eval run --dataset /app/evaluat
 docker compose run --rm migrate python -m plummy.cli secrets status         # записи по key_id
 docker compose run --rm migrate python -m plummy.cli secrets rotate         # перешифровать на primary
 docker compose run --rm migrate python -m plummy.cli secrets generate-key   # новая запись key ring (печатает ключ)
+```
+
+Роли БД ([ADR-024](docs/adr/0024-database-owner-and-runtime-roles.md); `migrate` — владелец схемы, остальные
+сервисы — runtime-роль):
+
+```bash
+docker compose run --rm migrate python -m plummy.cli db grant-runtime                  # права runtime-роли (migrate делает сам)
+docker compose run --rm migrate python -m plummy.cli maintenance prune-audit --dry-run # retention audit (таймер хоста)
+sh deploy/scripts/split-db-roles.sh                                                    # однократно для БД до 0.5.0
 ```
 
 Живые contract tests провайдеров (тратят токены, в CI не запускаются; в `apps/backend`):

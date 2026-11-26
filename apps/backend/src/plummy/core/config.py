@@ -49,6 +49,9 @@ _TENANT_GUID: Final = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 _S3_BUCKET: Final = re.compile(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]")
 _S3_REGION: Final = re.compile(r"[a-z0-9-]{1,32}")
 _S3_PREFIX: Final = re.compile(r"(?:[a-z0-9][a-z0-9-]{0,62}/){0,8}")
+# A PostgreSQL role name the CLI may quote into GRANT statements (ADR-024 §2).
+_ROLE_NAME: Final = re.compile(r"[a-z_][a-z0-9_]{0,62}")
+MIN_AUDIT_RETENTION_DAYS: Final = 30
 _TENANT_DOMAIN: Final = re.compile(r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}")
 
 FILE_SECRET_FIELDS: tuple[str, ...] = (
@@ -162,6 +165,12 @@ class Settings(BaseSettings):
     # Comma-separated list of allowed origins. Empty = CORS disabled (same-origin only).
     cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
+    # Runtime role of the services (ADR-024): `migrate` runs as the schema owner and grants this role its
+    # privileges (`python -m plummy.cli db grant-runtime`). Needed by that command only.
+    database_runtime_role: str | None = None
+    # Audit records older than this are deleted by `maintenance prune-audit` (schema owner role, ADR-024 §6).
+    audit_retention_days: int = Field(default=365, ge=MIN_AUDIT_RETENTION_DAYS, le=36500)
+
     db_pool_size: int = Field(default=5, ge=1, le=100)
     db_max_overflow: int = Field(default=5, ge=0, le=100)
 
@@ -249,6 +258,13 @@ class Settings(BaseSettings):
             raise ValueError("must use the postgresql+asyncpg:// scheme")
         if not parts.hostname or parts.path in {"", "/"}:
             raise ValueError("must include a host and a database name")
+        return value
+
+    @field_validator("database_runtime_role")
+    @classmethod
+    def _check_database_runtime_role(cls, value: str | None) -> str | None:
+        if value is not None and not _ROLE_NAME.fullmatch(value):
+            raise ValueError("must be a lower-case PostgreSQL role name (letters, digits, underscore)")
         return value
 
     @field_validator("redis_url")

@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -123,6 +127,57 @@ class PrecommitSplitTests(unittest.TestCase):
 
     def test_nothing_to_lint(self) -> None:
         self.assertEqual(precommit_lint.split_staged(["README.md", "VERSION"]), ([], [], []))
+
+
+INIT_SECRETS = Path(__file__).resolve().parents[2] / "deploy" / "prod" / "init-secrets.sh"
+
+
+@unittest.skipUnless(shutil.which("openssl"), "init-secrets.sh needs openssl")
+@unittest.skipIf(os.getuid() == 0, "as root the script changes file owners")
+class InitSecretsTests(unittest.TestCase):
+    """deploy/prod/init-secrets.sh: two database roles (ADR-024), the upgrade of the pre-0.5.0 layout."""
+
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root)
+        shutil.copy(INIT_SECRETS, self.root / "init-secrets.sh")
+        self.secrets = self.root / "secrets"
+
+    def run_script(self) -> str:
+        env = {k: v for k, v in os.environ.items() if not k.startswith("PLUMMY_DB_")}
+        result = subprocess.run(
+            ["sh", str(self.root / "init-secrets.sh")], capture_output=True, text=True, env=env, check=True
+        )
+        return result.stdout + result.stderr
+
+    def read(self, name: str) -> str:
+        return (self.secrets / name).read_text()
+
+    def test_a_new_installation_gets_both_roles(self) -> None:
+        output = self.run_script()
+        owner, runtime = self.read("db_password"), self.read("db_runtime_password")
+        self.assertNotEqual(owner, runtime)
+        self.assertEqual(
+            self.read("migration_database_url"), f"postgresql+asyncpg://plummy:{owner}@postgres:5432/plummy"
+        )
+        self.assertEqual(
+            self.read("database_url"), f"postgresql+asyncpg://plummy_app:{runtime}@postgres:5432/plummy"
+        )
+        for name in ("db_password", "db_runtime_password", "keyring.json", "secret_key"):
+            self.assertNotIn(self.read(name), output)  # file names only
+
+    def test_the_pre_0_5_layout_is_upgraded_and_reruns_keep_everything(self) -> None:
+        self.secrets.mkdir(mode=0o700)
+        old_url = "postgresql+asyncpg://plummy:oldOwnerPassword@postgres:5432/plummy"
+        (self.secrets / "db_password").write_text("oldOwnerPassword")
+        (self.secrets / "database_url").write_text(old_url)
+        output = self.run_script()
+        self.assertIn("moved", output)
+        self.assertEqual(self.read("migration_database_url"), old_url)
+        self.assertTrue(self.read("database_url").startswith("postgresql+asyncpg://plummy_app:"))
+        before = {path.name: path.read_text() for path in self.secrets.iterdir()}
+        self.assertNotIn("moved", self.run_script())
+        self.assertEqual({path.name: path.read_text() for path in self.secrets.iterdir()}, before)
 
 
 if __name__ == "__main__":

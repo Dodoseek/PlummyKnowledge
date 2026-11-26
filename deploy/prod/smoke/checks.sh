@@ -53,5 +53,30 @@ for service in worker-ingestion scheduler postgres redis; do
   done
 done
 
+echo "- the services connect as the runtime role; only migrate has the schema owner's credentials (ADR-024)"
+for container in $(docker compose ps -aq); do
+  service=$(docker inspect -f '{{index .Config.Labels "com.docker.compose.service"}}' "$container")
+  [ "$service" = migrate ] && continue
+  if docker inspect -f '{{range .Mounts}}{{.Source}} {{end}}' "$container" | grep -q migration_database_url; then
+    echo "FAILED: $service has the schema owner's database URL" >&2
+    status=1
+  fi
+done
+psql_su() { docker compose exec -T postgres psql -X -U postgres -d "${PLUMMY_DB_NAME:-plummy}" -Atc "$1"; }
+runtime=${PLUMMY_DB_RUNTIME_USER:-plummy_app}
+users=$(psql_su "SELECT DISTINCT usename FROM pg_stat_activity
+  WHERE datname = current_database() AND application_name LIKE 'plummy-%' ORDER BY 1")
+if [ "$users" != "$runtime" ]; then
+  echo "FAILED: service connections use the roles: $(echo "$users" | tr '\n' ' ')" >&2
+  status=1
+fi
+audit=$(psql_su "SELECT has_table_privilege('$runtime', 'audit_logs', 'UPDATE')
+  OR has_table_privilege('$runtime', 'audit_logs', 'DELETE') OR has_table_privilege('$runtime', 'audit_logs', 'TRUNCATE')
+  OR has_database_privilege('$runtime', current_database(), 'CREATE')")
+if [ "$audit" != "f" ]; then
+  echo "FAILED: the runtime role can change the audit log or create schemas" >&2
+  status=1
+fi
+
 [ "$status" -eq 0 ] && echo "production stack checks passed"
 exit "$status"

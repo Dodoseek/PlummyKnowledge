@@ -23,7 +23,7 @@ from plummy.infrastructure.security.passwords import Argon2PasswordHasher
 from plummy.infrastructure.security.secret_cipher import create_keyring_file
 from plummy.main import create_app
 from tests.conftest import make_settings
-from tests.integration.conftest import FAST_HASHER_PARAMS, TEST_ORIGIN
+from tests.integration.conftest import FAST_HASHER_PARAMS, TEST_ORIGIN, runtime_url
 
 ADMIN_EMAIL = "admin@example.com"
 ADMIN_PASSWORD = "correct horse battery staple"
@@ -48,8 +48,9 @@ def _storage_root(base: Path) -> Path:
 
 
 def harness_settings(database_url: str, redis_url: str, bootstrap_dir: Path, **overrides: Any) -> Settings:
+    """``database_url`` is the owner's (migrations); the app connects as the runtime role like a service."""
     values: dict[str, Any] = {
-        "database_url": database_url,
+        "database_url": runtime_url(database_url),
         "redis_url": redis_url,
         "public_url": TEST_ORIGIN,
         "bootstrap_dir": bootstrap_dir,
@@ -67,6 +68,8 @@ class Harness:
     app: FastAPI
     client: httpx.AsyncClient
     settings: Settings
+    # The schema owner's URL (ADR-024): test data and inspection queries, never the application's own access.
+    owner_url: str
     # Celery key prefix of this app: a dev worker on the same Redis never sees the test's messages.
     job_namespace: str = ""
 
@@ -140,7 +143,7 @@ class Harness:
         return user_id
 
     async def sql(self, statement: str, **params: Any) -> list[Any]:
-        engine = create_async_engine(self.settings.database_url.get_secret_value())
+        engine = create_async_engine(self.owner_url)
         try:
             async with engine.begin() as connection:
                 result = await connection.execute(text(statement), params)
@@ -169,7 +172,9 @@ async def running_auth_app(
     )
     try:
         async with app.router.lifespan_context(app), make_https_client(app) as client:
-            yield Harness(app=app, client=client, settings=settings, job_namespace=namespace)
+            yield Harness(
+                app=app, client=client, settings=settings, owner_url=database_url, job_namespace=namespace
+            )
     finally:
         redis = Redis.from_url(redis_url)
         try:

@@ -17,7 +17,7 @@ from uuid import UUID
 import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from plummy.application.ai.ports import (
     CancellationToken,
@@ -30,7 +30,7 @@ from plummy.application.ai.ports import (
 )
 from plummy.application.ingestion.indexing import RunIndexingJob
 from plummy.application.ingestion.pipeline import RunOutcome
-from plummy.application.knowledge.vector_index import EnsureVectorIndex, index_name
+from plummy.application.knowledge.vector_index import EnsureVectorIndex, index_name, index_spec
 from plummy.domain.ai import EmbeddingProfile
 from plummy.infrastructure.chunking.structured import StructuredChunker
 from plummy.infrastructure.clock import SystemClock
@@ -354,12 +354,16 @@ async def test_kb_creation_requests_the_vector_index_and_the_task_builds_it(env:
         assert await index(env, job_id, FakeEmbedder()) is RunOutcome.SUCCEEDED  # 3 vectors, same dimensions
         name = index_name(profile_id)
         assert await PgVectorIndexManager(engine).drop(profile_id) is True
-        async with engine.connect() as connection:
-            autocommit = await connection.execution_options(isolation_level="AUTOCOMMIT")
-            with pytest.raises(IntegrityError):
-                await autocommit.execute(
-                    text(f"CREATE UNIQUE INDEX CONCURRENTLY {name} ON embeddings (dimensions)")
-                )
+        owner = create_async_engine(env.harness.owner_url)  # DDL of the test itself: the schema owner
+        try:
+            async with owner.connect() as connection:
+                autocommit = await connection.execution_options(isolation_level="AUTOCOMMIT")
+                with pytest.raises(IntegrityError):
+                    await autocommit.execute(
+                        text(f"CREATE UNIQUE INDEX CONCURRENTLY {name} ON embeddings (dimensions)")
+                    )
+        finally:
+            await owner.dispose()
         assert await PgVectorIndexManager(engine).is_ready(await profile_of(engine, profile_id)) is False
         assert await use_case.execute(profile_id) is True
         [(valid, definition)] = await env.harness.sql(
@@ -380,3 +384,67 @@ async def test_kb_creation_requests_the_vector_index_and_the_task_builds_it(env:
         assert await use_case.execute(UUID(int=1)) is False  # unknown profile
     finally:
         await engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("dimensions", "metric"),
+    [(8, "cosine"), (8, "l2"), (2000, "inner_product"), (2001, "cosine"), (4000, "l2")],
+)
+async def test_the_owner_function_builds_exactly_the_index_retrieval_expects(
+    env: Env, dimensions: int, metric: str
+) -> None:
+    """Revision 0017 builds the index in SQL; retrieval uses ``index_spec`` (ADR-017 §3): they must agree."""
+    [(profile_id,)] = await env.harness.sql("SELECT embedding_config_id FROM knowledge_bases")
+    await env.harness.sql(
+        "UPDATE embedding_provider_configs SET dimensions = :d, distance_metric = :m WHERE id = :id",
+        d=dimensions,
+        m=metric,
+        id=profile_id,
+    )
+    engine = create_engine(env.harness.settings, application_name="plummy-test-worker")  # the runtime role
+    try:
+        profile = await profile_of(engine, profile_id)
+        manager = PgVectorIndexManager(engine)
+        assert await manager.ensure(profile) is True
+        assert await manager.ensure(profile) is False
+        assert await manager.is_ready(profile) is True
+    finally:
+        await engine.dispose()
+    spec = index_spec(profile)
+    reference = spec.name[:-8] + "ref00000"
+    await env.harness.sql(
+        spec.create_sql().replace("CONCURRENTLY ", "").replace(spec.name, reference)
+    )  # the reference DDL, as the owner
+    [(built,)] = await env.harness.sql("SELECT pg_get_indexdef(CAST(:n AS regclass))", n=spec.name)
+    [(expected,)] = await env.harness.sql("SELECT pg_get_indexdef(CAST(:n AS regclass))", n=reference)
+    assert built == expected.replace(reference, spec.name)
+
+
+async def test_the_index_functions_refuse_what_no_profile_allows(env: Env) -> None:
+    [(profile_id,)] = await env.harness.sql("SELECT embedding_config_id FROM knowledge_bases")
+    await env.harness.sql(
+        "UPDATE embedding_provider_configs SET dimensions = 4001 WHERE id = :id", id=profile_id
+    )
+    engine = create_engine(env.harness.settings, application_name="plummy-test-worker")
+    try:
+        async with engine.begin() as connection:
+            with pytest.raises(Exception, match="not indexable"):
+                await connection.scalar(
+                    text("SELECT public.plummy_ensure_vector_index(:id)"), {"id": profile_id}
+                )
+        async with engine.begin() as connection:  # an unknown profile: nothing to build or drop
+            assert (
+                await connection.scalar(
+                    text("SELECT public.plummy_ensure_vector_index(:id)"), {"id": UUID(int=7)}
+                )
+                is False
+            )
+            assert (
+                await connection.scalar(
+                    text("SELECT public.plummy_drop_vector_index(:id)"), {"id": UUID(int=7)}
+                )
+                is False
+            )
+    finally:
+        await engine.dispose()
+    assert await env.harness.sql("SELECT 1 FROM pg_indexes WHERE indexname LIKE 'ix_embeddings_hnsw_%'") == []

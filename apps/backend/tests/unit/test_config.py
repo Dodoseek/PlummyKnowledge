@@ -356,3 +356,28 @@ def test_quarantine_ttl_bounds(ttl: str) -> None:
 def test_invalid_storage_settings_are_rejected(field: str, value: str) -> None:
     with pytest.raises(ConfigurationError, match=field.upper()):
         make_settings(**{field: value})
+
+
+def test_database_role_settings(clean_env: pytest.MonkeyPatch) -> None:
+    _set_required_env(clean_env)
+    clean_env.setenv("DATABASE_RUNTIME_ROLE", "plummy_app")
+    clean_env.setenv("AUDIT_RETENTION_DAYS", "30")
+    settings = load_settings(app_env="test")
+    assert settings.database_runtime_role == "plummy_app"
+    assert settings.audit_retention_days == 30
+    clean_env.delenv("DATABASE_RUNTIME_ROLE")
+    clean_env.delenv("AUDIT_RETENTION_DAYS")
+    assert make_settings().database_runtime_role is None
+    assert make_settings().audit_retention_days == 365
+
+
+@pytest.mark.parametrize("role", ['plummy"; DROP ROLE x; --', "Plummy", "1app", "", "a" * 64, "app-role"])
+def test_a_runtime_role_that_is_not_a_plain_name_is_rejected(role: str) -> None:
+    with pytest.raises(ConfigurationError, match="DATABASE_RUNTIME_ROLE"):
+        make_settings(database_runtime_role=role)
+
+
+@pytest.mark.parametrize("days", [0, 29, -1, 36501])
+def test_audit_retention_bounds(days: int) -> None:
+    with pytest.raises(ConfigurationError, match="AUDIT_RETENTION_DAYS"):
+        make_settings(audit_retention_days=days)

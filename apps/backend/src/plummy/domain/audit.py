@@ -83,6 +83,7 @@ class AuditAction(StrEnum):
     NETWORK_EGRESS_DENIED = "network.egress.denied"
     MAINTENANCE_DELETIONS_EXPORTED = "maintenance.deletions_exported"
     MAINTENANCE_DELETION_REAPPLIED = "maintenance.deletion_reapplied"
+    MAINTENANCE_AUDIT_PRUNED = "maintenance.audit_pruned"
 
 
 @dataclass(frozen=True, slots=True)

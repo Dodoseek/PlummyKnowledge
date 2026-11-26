@@ -28,11 +28,17 @@
 
 - Сеть `data` — `internal: true`; порты PostgreSQL и Redis не публикуются. Учётные данные БД в `compose.yaml` —
   только для разработки (значения по умолчанию, переопределяются через `.env`).
-- Роли PostgreSQL ([ADR-011](adr/0011-database-roles-and-extensions.md)): суперпользователь `postgres`
-  (`POSTGRES_PASSWORD`) используется только init-скриптом `deploy/postgres/initdb` при создании volume. Скрипт
-  создаёт роль приложения `PLUMMY_DB_USER` (без `SUPERUSER`; `CREATEDB` — только для integration-тестов) и её БД
-  `PLUMMY_DB_NAME`, устанавливает расширения из `deploy/postgres/extensions.sql`. `migrate` и `backend`
-  подключаются под ролью приложения. Volume, созданный до ADR-011, пересоздаётся: `docker compose down -v`.
+- Роли PostgreSQL ([ADR-011](adr/0011-database-roles-and-extensions.md),
+  [ADR-024](adr/0024-database-owner-and-runtime-roles.md)): суперпользователь `postgres` (`POSTGRES_PASSWORD`)
+  используется только init-скриптом `deploy/postgres/initdb` при создании volume. Скрипт создаёт владельца схемы
+  `PLUMMY_DB_USER` (без `SUPERUSER`; `CREATEDB` — только для integration-тестов) и его БД `PLUMMY_DB_NAME`,
+  runtime-роль `PLUMMY_DB_RUNTIME_USER` (`plummy_app`, без собственных прав) и устанавливает расширения из
+  `deploy/postgres/extensions.sql`. `migrate` подключается владельцем и выдаёт runtime-роли права
+  (`db grant-runtime`); `backend` и workers — под runtime-ролью. Integration-тесты создают и мигрируют БД владельцем
+  (`TEST_OWNER_DATABASE_URL` у `backend`, только dev), а приложение в тестах работает под runtime-ролью. Volume,
+  созданный до ADR-024, получает runtime-роль командой
+  `COMPOSE_FILE=compose.yaml PLUMMY_DB_RUNTIME_PASSWORD_FILE=<файл с plummy_app_dev_password> sh deploy/scripts/split-db-roles.sh`
+  или пересоздаётся (`docker compose down -v`).
 - `backend` (dev) перед `uvicorn --reload` выполняет `python -m plummy.check_config`: при невалидной конфигурации
   контейнер завершается с кодом 1 и не перезапускается (как `prod`-таргет).
 - Volumes: `postgres-data`, `redis-data`, `bootstrap-data` (файл setup token; монтируется только в `migrate`, не в
@@ -171,12 +177,12 @@ docker compose -f compose.prod.yaml --env-file deploy/prod/.env run --rm migrate
 | Сервис | Назначение | Сети | Секреты | Volumes |
 |---|---|---|---|---|
 | `nginx` | TLS, SPA, reverse proxy на API, SSE без буферизации (таргет `web` образа frontend) | `public`, `app` (`172.30.200.10`) | TLS cert/key | — |
-| `backend` | FastAPI (`PROCESS_ROLE=api`) | `app`, `data`, `egress` | БД, Redis, `SECRET_KEY`, key ring, S3 | `storage-data`*, анонимный `/var/tmp` |
+| `backend` | FastAPI (`PROCESS_ROLE=api`) | `app`, `data`, `egress` | БД (runtime-роль), Redis, `SECRET_KEY`, key ring, S3 | `storage-data`*, анонимный `/var/tmp` |
 | `worker` | Embeddings, sync, maintenance (`default`, `embeddings`, `maintenance`, `connectors`) | `data`, `egress` | как у `backend` | как у `backend` |
-| `worker-ingestion` | Parsing (очередь `ingestion`, образ `ingestion` с Docling), без интернета | `data` | БД, Redis, S3 | как у `backend` |
-| `scheduler` | Celery beat, ровно один | `data` | БД, Redis | — |
-| `migrate` | Одноразовый шаг: `alembic upgrade head` + `setup init-token` | `data` | БД, Redis | `bootstrap-data` |
-| `postgres` | PostgreSQL + pgvector; роли по ADR-011 (`deploy/prod/postgres-initdb`) | `data` | пароли `postgres` и роли приложения | `postgres-data` |
+| `worker-ingestion` | Parsing (очередь `ingestion`, образ `ingestion` с Docling), без интернета | `data` | БД (runtime-роль), Redis, S3 | как у `backend` |
+| `scheduler` | Celery beat, ровно один | `data` | БД (runtime-роль), Redis | — |
+| `migrate` | Одноразовый шаг: `alembic upgrade head` + `db grant-runtime` + `setup init-token`; retention аудита по таймеру хоста (§6.1) | `data` | БД (владелец схемы, `migration_database_url`), Redis | `bootstrap-data` |
+| `postgres` | PostgreSQL + pgvector; роли по ADR-011 и ADR-024 (`deploy/prod/postgres-initdb`) | `data` | пароли `postgres`, владельца и runtime-роли | `postgres-data` |
 | `redis` | Брокер, rate limits, locks; `requirepass` из секрета | `data` | `redis_conf` | `redis-data` |
 | `s3`, `s3-init` | Встроенный S3-сервер (profile `s3`): versitygw, admin API только на loopback | `data` (`172.30.201.10`) | ключи root и приложения | `s3-data`, `s3-iam` |
 
@@ -195,7 +201,7 @@ docker compose -f compose.prod.yaml --env-file deploy/prod/.env run --rm migrate
 | Группа | Переменные | Секрет |
 |---|---|---|
 | Общие | `PUBLIC_URL`, `APP_ENV`, `LOG_LEVEL` (реализовано, §0) | — |
-| БД | `PLUMMY_DATABASE_URL_FILE`, `PLUMMY_DB_POOL_SIZE` | да |
+| БД | `DATABASE_URL_FILE` (у сервисов — runtime-роль, у `migrate` — владелец схемы), `DB_POOL_SIZE`; `DATABASE_RUNTIME_ROLE` (только `migrate`, `db grant-runtime`); `AUDIT_RETENTION_DAYS` (365, минимум 30; `maintenance prune-audit`) — [ADR-024](adr/0024-database-owner-and-runtime-roles.md) | да (URL) |
 | Redis | `PLUMMY_REDIS_URL_FILE` | да |
 | Шифрование | `SECRETS_KEYRING_FILE` (key ring с `key_id`, реализовано, §0; заменяет черновое `PLUMMY_SECRETS_KEY_FILE`) | **да, хранится вне БД и отдельно от backup** |
 | Storage | `STORAGE_BACKEND`, `STORAGE_PATH`, `QUARANTINE_TTL` (реализовано, §0); `S3_ENDPOINT_URL`, `S3_BUCKET`, `S3_REGION`, `S3_PREFIX`, `S3_ACCESS_KEY_ID_FILE`, `S3_SECRET_ACCESS_KEY_FILE` — шаг 11.1, [ADR-022](adr/0022-s3-compatible-storage.md) | частично |
@@ -213,7 +219,10 @@ docker compose -f compose.prod.yaml --env-file deploy/prod/.env run --rm migrate
 
 - Все секреты — файлы (Docker secrets), а не значения в `.env` или переменных окружения: `docker inspect` их не
   показывает (проверяется в CI). `deploy/prod/init-secrets.sh` один раз генерирует случайные пароли PostgreSQL, Redis и
-  S3-сервера, `SECRET_KEY`, key ring, `database_url` и `redis_url`; существующие файлы не перезаписывает. Под `root`
+  S3-сервера, `SECRET_KEY`, key ring, `database_url` и `redis_url`; существующие файлы не перезаписывает. Для БД —
+  две роли (ADR-024): `db_password` и `migration_database_url` — владелец схемы, только для `migrate`;
+  `db_runtime_password` и `database_url` — runtime-роль всех остальных сервисов. Прежний `database_url` с ролью
+  владельца (до 0.5.0) скрипт переносит в `migration_database_url`. Под `root`
   каждому файлу назначается uid читающего сервиса (`10001` — приложение, `999` — PostgreSQL и Redis, `0` — S3-сервер) и
   режим `0400`; без `root` (рабочая станция) — `0444` в каталоге `0700`, и API предупреждает о доступном key ring.
   Каталог `deploy/prod/secrets/` — в `.gitignore`.
@@ -283,21 +292,35 @@ docker compose -f compose.prod.yaml --env-file deploy/prod/.env run --rm migrate
 `admin.password_reset_via_cli` / `admin.created_via_cli`). Web-setup повторно не открывается: состояние хранится
 флагом `instance_state.initialized_at`, а не выводится из числа пользователей.
 
-### 6.1 PostgreSQL: роли и расширения (ADR-011, реализовано)
+### 6.1 PostgreSQL: роли и расширения (ADR-011, ADR-024, реализовано)
 
 Выполняется администратором БД **до** первого запуска `migrate`. Ни приложение, ни миграции не получают прав
-суперпользователя. С шага 12.1 ролей две ([ADR-024](adr/0024-database-owner-and-runtime-roles.md)): владелец схемы
-(`PLUMMY_DB_USER`, только `migrate` и CLI обслуживания) и runtime-роль сервисов (`PLUMMY_DB_RUNTIME_USER`, только
-DML, `audit_logs` append-only); команды и шаг для существующих инсталляций появятся здесь вместе с реализацией.
+суперпользователя. Ролей две ([ADR-024](adr/0024-database-owner-and-runtime-roles.md)):
 
-1. Ролью администратора (суперпользователь или администратор управляемого PostgreSQL) создать роль приложения и БД:
+- **владелец схемы** (`PLUMMY_DB_USER`, по умолчанию `plummy`) — владеет БД и таблицами; под ним работают только
+  `migrate`, backup/restore и `maintenance prune-audit`;
+- **runtime-роль** (`PLUMMY_DB_RUNTIME_USER`, по умолчанию `plummy_app`) — API и workers: чтение и запись данных, на
+  `audit_logs` только `SELECT`/`INSERT`, без DDL, `TRUNCATE` и `TEMPORARY`. Права выдаёт `migrate` после каждого
+  `alembic upgrade` (`python -m plummy.cli db grant-runtime`): команда сбрасывает их к списку ADR-024 §2, в том числе
+  после restore и новых ревизий. В production API и workers отказываются стартовать, если их роль может изменить
+  журнал аудита.
+
+`compose.prod.yaml` делает всё это сам (`deploy/prod/postgres-initdb`). Для внешнего или управляемого PostgreSQL:
+
+1. Ролью администратора (суперпользователь или администратор управляемого PostgreSQL) создать роли и БД:
 
    ```sql
    CREATE ROLE plummy LOGIN PASSWORD '<из менеджера секретов>'
      NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+   CREATE ROLE plummy_app LOGIN PASSWORD '<из менеджера секретов>'
+     NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT;
    CREATE DATABASE plummy OWNER plummy;
+   REVOKE ALL ON DATABASE plummy FROM PUBLIC;
+   GRANT CONNECT ON DATABASE plummy TO plummy_app;
    ```
 
+   `plummy_app` не должна входить в роль `plummy` (`GRANT plummy TO plummy_app` запрещён): `db grant-runtime` это
+   проверяет и отказывает.
 2. Подключившись к этой БД той же ролью администратора, установить расширения:
 
    ```bash
@@ -305,10 +328,39 @@ DML, `audit_logs` append-only); команды и шаг для существу
    ```
 
    В управляемых сервисах сначала разрешить расширения `vector` и `citext` в настройках провайдера.
-3. В `DATABASE_URL` (лучше `DATABASE_URL_FILE`) указать роль приложения. Учётные данные администратора в
-   окружение приложения не передаются.
+3. `migrate`: `DATABASE_URL_FILE` с ролью `plummy` и `DATABASE_RUNTIME_ROLE=plummy_app`. Остальным сервисам —
+   `DATABASE_URL_FILE` с ролью `plummy_app`. Учётные данные администратора в окружение приложения не передаются.
 4. Запустить `migrate`. Если расширения не установлены, ревизия `0001` завершается ошибкой со списком недостающих
-   расширений и ссылкой на `extensions.sql`; API не стартует.
+   расширений и ссылкой на `extensions.sql`; если нет runtime-роли — `db grant-runtime` завершается ошибкой со
+   ссылкой на этот раздел. В обоих случаях сервисы не стартуют.
+
+**Обновление инсталляции, созданной до 0.5.0** (одна роль приложения), — однократно: backup (§10) →
+`sudo sh deploy/prod/init-secrets.sh` (создаёт `db_runtime_password`, переносит прежний `database_url` в
+`migration_database_url` и создаёт новый `database_url`) → `sudo sh deploy/scripts/split-db-roles.sh` (создаёт
+runtime-роль суперпользователем контейнера `postgres` через локальный сокет; повтор безопасен) → `docker compose …
+up -d --build --wait`. Для внешнего PostgreSQL вместо скрипта выполнить `CREATE ROLE plummy_app …`, `REVOKE` и
+`GRANT CONNECT` из п.1. CI проверяет этот путь с `v0.4.0` (§9).
+
+**Retention журнала аудита** (1 год, `AUDIT_RETENTION_DAYS`) — задача хоста, не `scheduler`: удалять записи
+может только владелец схемы. Пример systemd timer (или строка cron с той же командой):
+
+```ini
+# /etc/systemd/system/plummy-audit-retention.service
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/plummy
+ExecStart=/usr/bin/docker compose -f compose.prod.yaml --env-file deploy/prod/.env run --rm --no-deps migrate python -m plummy.cli maintenance prune-audit
+
+# /etc/systemd/system/plummy-audit-retention.timer
+[Timer]
+OnCalendar=weekly
+Persistent=true
+[Install]
+WantedBy=timers.target
+```
+
+`--dry-run` только считает записи. Каждый запуск оставляет событие `maintenance.audit_pruned` (число и граница).
+Под runtime-ролью (например, в контейнере `backend`) команда отказывает с подсказкой.
 
 Новые версии могут добавить расширение или потребовать `ALTER EXTENSION … UPDATE`. Это отражается в release notes
 как шаг администратора перед `migrate`.
@@ -426,8 +478,9 @@ Client secret Entra имеет срок действия: продлите ег�
 - Обновление (реализовано, шаг 11.3): backup (§10) → `git checkout` новой версии → `docker compose up -d --build
   --wait` (сервис `migrate` применяет миграции до head, остальные ждут его завершения) → проверка readiness, входа и
   поиска. Откат — restore из backup, сделанного перед обновлением: миграции вниз не поддерживаются.
-- Upgrade path проверяется в CI (job «Production stack»): схему создают миграции предыдущего релиза (`UPGRADE_FROM`,
-  сейчас `v0.4.0`), затем стек текущего коммита мигрирует её до head и проходит весь smoke-сценарий и restore drill.
+- Upgrade path проверяется в CI (job «Production stack»): БД предыдущего релиза (`UPGRADE_FROM`, сейчас `v0.4.0`)
+  с одной ролью, схему создают его миграции; затем `split-db-roles.sh` (§6.1), стек текущего коммита мигрирует её
+  до head и проходит весь smoke-сценарий, проверки ролей (`checks.sh`) и restore drill.
 
 ### 9.1 Масштабирование (шаг 11.5)
 
@@ -493,7 +546,8 @@ sh deploy/scripts/restore.sh /srv/plummy-backups/plummy-<время> --deletions
 ```
 
 Порядок: проверка SHA-256 → PostgreSQL и Redis → проверка, что БД пуста (иначе отказ) → `pg_restore` (без записей
-расширений: их ставит initdb, ADR-011) → storage, `migrate` (upgrade до текущей версии) и API → `maintenance
+расширений: их ставит initdb, ADR-011; права не восстанавливаются — их заново выдаёт `migrate`, ADR-024) → storage,
+`migrate` (upgrade до текущей версии и `db grant-runtime`) и API → `maintenance
 import-objects` (существующие объекты не перезаписываются, повтор безопасен) → `maintenance reapply-deletions` → все
 остальные сервисы, включая Nginx. Удаления применяются **до** того, как Nginx откроет доступ пользователям; каждое —
 теми же use cases, что у API, от имени системы с audit `maintenance.deletion_reapplied`; уже удалённое пропускается,

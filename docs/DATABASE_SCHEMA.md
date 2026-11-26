@@ -509,13 +509,15 @@ credentials удаляются немедленно; строки `knowledge_bas
 метрике профиля.
 
 ```sql
-CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_embeddings_hnsw_<profile_id_hex>
+CREATE INDEX ix_embeddings_hnsw_<profile_id_hex>
   ON embeddings USING hnsw ((embedding::halfvec(3072)) halfvec_cosine_ops)
   WHERE embedding_config_id = '<profile-uuid>';
 ```
 
-Индекс создаёт идемпотентная задача `maintenance` при первом использовании профиля KB (до записи векторов); Alembic
-эти индексы игнорирует. Запрос обязан использовать то же выражение и предикат, что и индекс, с литералами UUID и
+Индекс создаёт идемпотентная задача `maintenance` при первом использовании профиля KB (до записи векторов) через
+функцию владельца схемы `plummy_ensure_vector_index(profile_id)` (`SECURITY DEFINER`, ревизия `0017`,
+[ADR-024](adr/0024-database-owner-and-runtime-roles.md) §2.1): у runtime-роли нет DDL. Сборка транзакционная, без
+`CONCURRENTLY`. Alembic эти индексы игнорирует. Запрос обязан использовать то же выражение и предикат, что и индекс, с литералами UUID и
 размерности из записи профиля.
 
 ### 5.11 Правила retrieval на уровне данных (§6, §9) — реализовано (фаза 6)
@@ -674,7 +676,8 @@ CREATE UNIQUE INDEX sync_jobs_one_active_per_source
 
 Append-only ([ADR-024](adr/0024-database-owner-and-runtime-roles.md)): runtime-роль сервисов имеет на
 `audit_logs` только `SELECT` и `INSERT`; удаление — только retention (`maintenance prune-audit`) под ролью владельца
-схемы. До шага 12.1 роль приложения владеет таблицей, и append-only обеспечивается только кодом (только `INSERT`). Индексы: `(created_at DESC)`, `(action, created_at)`,
+схемы. Реализовано в шаге 12.1 (`db grant-runtime`, `RESTRICTED_TABLES` в `infrastructure/db/roles.py`; тесты —
+`test_database_roles.py`). Индексы: `(created_at DESC)`, `(action, created_at)`,
 `(target_type, target_id)`, `(actor_user_id, created_at)`. Реализовано, `0005`.
 
 ### 7.4 `usage_events` (позднее, §9)
@@ -701,7 +704,7 @@ Blueprint требует **определить** lifecycle и сроки; ко�
 | Chunks | Исключаются из retrieval немедленно; удаляются purge-job | Вместе с версией |
 | Embeddings | Как chunks; при смене profile старые удаляются после переключения | Вместе с версией/profile |
 | Chat history | Удаление диалога пользователем → soft delete, purge | Без автоудаления в MVP; настраиваемо |
-| Audit logs | Не удаляются пользователем | 1 год (`AUDIT_RETENTION_DAYS`, минимум 30): CLI `maintenance prune-audit` под ролью владельца схемы по cron/systemd timer хоста ([ADR-024](adr/0024-database-owner-and-runtime-roles.md) §6, шаг 12.1) |
+| Audit logs | Не удаляются пользователем | 1 год (`AUDIT_RETENTION_DAYS`, минимум 30): CLI `maintenance prune-audit` под ролью владельца схемы по cron/systemd timer хоста ([ADR-024](adr/0024-database-owner-and-runtime-roles.md) §6, реализовано в шаге 12.1; DEPLOYMENT §6.1) |
 | Credentials | При disconnect/revoke — немедленное удаление `secret_references` | — |
 | Quarantine/temp | Cleanup после обработки или по TTL (`scheduler`, раз в час) | 24 часа (`QUARANTINE_TTL`) |
 | Источник (`data_sources`) | Документы — lifecycle документа; credentials — сразу | — |
@@ -718,7 +721,8 @@ Blueprint требует **определить** lifecycle и сроки; ко�
   [ADR-011](adr/0011-database-roles-and-extensions.md)). Первая ревизия только проверяет их наличие и завершается
   понятной ошибкой, если их нет; миграции не выполняют `CREATE/DROP EXTENSION`.
 - Миграции работают под ролью владельца схемы без `SUPERUSER` (ADR-011); сервисы — под runtime-ролью только с DML,
-  права выдаёт `db grant-runtime` после каждого `alembic upgrade` ([ADR-024](adr/0024-database-owner-and-runtime-roles.md), шаг 12.1).
+  права выдаёт `db grant-runtime` после каждого `alembic upgrade` ([ADR-024](adr/0024-database-owner-and-runtime-roles.md), реализовано в шаге 12.1).
+  Новая append-only таблица добавляется в `RESTRICTED_TABLES`; иначе runtime-роль получает на неё полный DML.
 - Сид системных `permissions` и системных `roles` — миграцией данных.
 - Каждая миграция проверяется на **чистой БД** и на **upgrade path** с предыдущего релиза (§20).
 - Тяжёлые индексы (HNSW, GIN) — `CREATE INDEX CONCURRENTLY` в отдельной ревизии.
@@ -730,7 +734,8 @@ Blueprint требует **определить** lifecycle и сроки; ко�
   (`ingestion_jobs.updated_at` и индекс неопубликованных jobs), `0011` (`document_chunks.search_vector`, ADR-018),
   `0012` (GIN-индекс `search_vector`, `CONCURRENTLY`), `0013` (ассистенты), `0014` (диалоги, сообщения, цитаты,
   generation runs), `0015` (sync state источников, `data_source_credentials`, `sync_jobs`, одна KB на источник),
-  `0016` (уникальность `external_id` только среди живых документов).
+  `0016` (уникальность `external_id` только среди живых документов), `0017` (функции владельца `SECURITY DEFINER`
+  `plummy_ensure_vector_index`/`plummy_drop_vector_index` для HNSW-индексов, ADR-024 §2.1).
 
 ## 10. Открытые вопросы
 

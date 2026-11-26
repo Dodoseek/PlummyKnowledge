@@ -45,6 +45,8 @@ class VectorIndexSpec:
     distance_operator: str
 
     def create_sql(self) -> str:
+        """The reference DDL. The database builds the same index through the schema owner's function of
+        revision 0017 (ADR-024: the services have no DDL); ``test_indexing.py`` compares the two."""
         return (
             f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {self.name} ON embeddings "
             f"USING hnsw (({self.expression}) {self.operator_class}) WHERE {self.predicate}"
