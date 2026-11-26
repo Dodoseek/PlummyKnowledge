@@ -4,7 +4,7 @@
 |---|---|
 | Статус | v0.4 — среда разработки, первоначальная настройка (Фазы 1–3, §0, §6) и production-стек (шаг 11.2, §1–§2, §4–§5, §7.1, §8), обновление и backup/restore (шаг 11.3, §9–§10) реализованы |
 | Источник | [PROJECT_BLUEPRINT.md](PROJECT_BLUEPRINT.md) §3, §5, §8, §11, §13 (Фазы 1, 11) |
-| Решения | [ADR-006](adr/0006-initial-setup-and-system-configuration.md), [ADR-007](adr/0007-network-access-and-local-llm.md), [ADR-011](adr/0011-database-roles-and-extensions.md), [ADR-013](adr/0013-auth-session-strategy.md), [ADR-022](adr/0022-s3-compatible-storage.md), [ADR-023](adr/0023-production-deployment.md) |
+| Решения | [ADR-006](adr/0006-initial-setup-and-system-configuration.md), [ADR-007](adr/0007-network-access-and-local-llm.md), [ADR-011](adr/0011-database-roles-and-extensions.md), [ADR-024](adr/0024-database-owner-and-runtime-roles.md), [ADR-013](adr/0013-auth-session-strategy.md), [ADR-022](adr/0022-s3-compatible-storage.md), [ADR-023](adr/0023-production-deployment.md) |
 | Связанные документы | [ARCHITECTURE.md §4, §10, §12](ARCHITECTURE.md), [SECURITY_MODEL.md](SECURITY_MODEL.md) |
 
 Разделы §0–§2, §4–§6, §7.1 и §8 описывают то, что реализовано. Остальные имена переменных и CLI-команд, помеченные
@@ -286,7 +286,9 @@ docker compose -f compose.prod.yaml --env-file deploy/prod/.env run --rm migrate
 ### 6.1 PostgreSQL: роли и расширения (ADR-011, реализовано)
 
 Выполняется администратором БД **до** первого запуска `migrate`. Ни приложение, ни миграции не получают прав
-суперпользователя.
+суперпользователя. С шага 12.1 ролей две ([ADR-024](adr/0024-database-owner-and-runtime-roles.md)): владелец схемы
+(`PLUMMY_DB_USER`, только `migrate` и CLI обслуживания) и runtime-роль сервисов (`PLUMMY_DB_RUNTIME_USER`, только
+DML, `audit_logs` append-only); команды и шаг для существующих инсталляций появятся здесь вместе с реализацией.
 
 1. Ролью администратора (суперпользователь или администратор управляемого PostgreSQL) создать роль приложения и БД:
 

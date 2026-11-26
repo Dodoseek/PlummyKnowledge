@@ -672,9 +672,9 @@ CREATE UNIQUE INDEX sync_jobs_one_active_per_source
 | `details` | `jsonb` | NOT NULL, по умолчанию `{}`; без секретов, токенов, паролей, email в открытом виде и содержимого документов |
 | `created_at` | `timestamptz` | |
 
-Append-only: роль БД приложения не имеет `UPDATE`/`DELETE` на `audit_logs`; удаление — только retention-job под
-отдельной ролью **[Proposed]** — пока роль приложения владеет таблицей, это обеспечивается кодом (только `INSERT`);
-защита на уровне БД появится с разделением ролей (ADR-011). Индексы: `(created_at DESC)`, `(action, created_at)`,
+Append-only ([ADR-024](adr/0024-database-owner-and-runtime-roles.md)): runtime-роль сервисов имеет на
+`audit_logs` только `SELECT` и `INSERT`; удаление — только retention (`maintenance prune-audit`) под ролью владельца
+схемы. До шага 12.1 роль приложения владеет таблицей, и append-only обеспечивается только кодом (только `INSERT`). Индексы: `(created_at DESC)`, `(action, created_at)`,
 `(target_type, target_id)`, `(actor_user_id, created_at)`. Реализовано, `0005`.
 
 ### 7.4 `usage_events` (позднее, §9)
@@ -701,7 +701,7 @@ Blueprint требует **определить** lifecycle и сроки; ко�
 | Chunks | Исключаются из retrieval немедленно; удаляются purge-job | Вместе с версией |
 | Embeddings | Как chunks; при смене profile старые удаляются после переключения | Вместе с версией/profile |
 | Chat history | Удаление диалога пользователем → soft delete, purge | Без автоудаления в MVP; настраиваемо |
-| Audit logs | Не удаляются пользователем | 1 год (retention-job — Фаза 12: нужна отдельная роль БД, [ADR-023](adr/0023-production-deployment.md) §7) |
+| Audit logs | Не удаляются пользователем | 1 год (`AUDIT_RETENTION_DAYS`, минимум 30): CLI `maintenance prune-audit` под ролью владельца схемы по cron/systemd timer хоста ([ADR-024](adr/0024-database-owner-and-runtime-roles.md) §6, шаг 12.1) |
 | Credentials | При disconnect/revoke — немедленное удаление `secret_references` | — |
 | Quarantine/temp | Cleanup после обработки или по TTL (`scheduler`, раз в час) | 24 часа (`QUARANTINE_TTL`) |
 | Источник (`data_sources`) | Документы — lifecycle документа; credentials — сразу | — |
@@ -717,7 +717,8 @@ Blueprint требует **определить** lifecycle и сроки; ко�
 - Расширения `vector` и `citext` устанавливает администратор БД до первой миграции (`deploy/postgres/extensions.sql`,
   [ADR-011](adr/0011-database-roles-and-extensions.md)). Первая ревизия только проверяет их наличие и завершается
   понятной ошибкой, если их нет; миграции не выполняют `CREATE/DROP EXTENSION`.
-- Миграции и приложение работают под ролью без `SUPERUSER`, владеющей базой приложения (ADR-011).
+- Миграции работают под ролью владельца схемы без `SUPERUSER` (ADR-011); сервисы — под runtime-ролью только с DML,
+  права выдаёт `db grant-runtime` после каждого `alembic upgrade` ([ADR-024](adr/0024-database-owner-and-runtime-roles.md), шаг 12.1).
 - Сид системных `permissions` и системных `roles` — миграцией данных.
 - Каждая миграция проверяется на **чистой БД** и на **upgrade path** с предыдущего релиза (§20).
 - Тяжёлые индексы (HNSW, GIN) — `CREATE INDEX CONCURRENTLY` в отдельной ревизии.

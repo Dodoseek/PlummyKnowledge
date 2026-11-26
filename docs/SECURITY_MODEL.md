@@ -2,9 +2,9 @@
 
 | | |
 |---|---|
-| Статус | v0.3 — аутентификация, сессии и bootstrap (Фазы 2–3), шифрование секретов и сетевая политика (Фаза 4) реализованы |
+| Статус | v0.4 — меры Фаз 1–11 реализованы; threat model пересмотрена в Фазе 12 (§17) |
 | Источник | [PROJECT_BLUEPRINT.md](PROJECT_BLUEPRINT.md) §1, §2, §5, §7, §8, §11, §12, §13 (Фазы 3, 9, 10, 12), §18, §20 |
-| Решения | [ADR-005](adr/0005-assistant-access-model.md) … [ADR-008](adr/0008-unified-document-ingestion.md), [ADR-012](adr/0012-single-organization-deployment.md), [ADR-013](adr/0013-auth-session-strategy.md) (Accepted) |
+| Решения | [ADR-005](adr/0005-assistant-access-model.md) … [ADR-008](adr/0008-unified-document-ingestion.md), [ADR-012](adr/0012-single-organization-deployment.md), [ADR-013](adr/0013-auth-session-strategy.md), [ADR-016](adr/0016-secret-encryption.md), [ADR-023](adr/0023-production-deployment.md), [ADR-024](adr/0024-database-owner-and-runtime-roles.md) (Accepted) |
 | Связанные документы | [ARCHITECTURE.md](ARCHITECTURE.md), [DATABASE_SCHEMA.md](DATABASE_SCHEMA.md), [API_CONTRACTS.md](API_CONTRACTS.md), [DEPLOYMENT.md](DEPLOYMENT.md) |
 
 **Как читать.** Threat model, обязательные меры, правила prompt injection, Document ACL и Retention (§8) —
@@ -383,14 +383,14 @@ OpenAI/Anthropic). Полный алгоритм — в ADR-007; здесь — 
 те же стадии 2–4 ingestion pipeline: проверка прав и состояния ресурсов, типа и размера, безопасности файла. Worker повторно
 проверяет состояние ресурсов, не доверяя payload задачи.
 
-| Мера | Реализация **[Proposed — значения]** |
+| Мера | Реализация (Фаза 5; значения — по умолчанию) |
 |---|---|
 | Quarantine | Файл сначала попадает в quarantine/temp storage с ограниченными правами (каталог `0700`, без exec), cleanup по TTL (§8 п.8) |
 | Тип | По содержимому (magic bytes), а не расширению/`Content-Type`; только форматы MVP (§6); macro-enabled (`.docm`, `.xlsm`) отклоняются |
 | Размер | Лимит на файл (по умолчанию 50 МБ) — проверяется потоково, до полной загрузки |
-| Страницы / листы / строки | Лимиты страниц PDF, листов и строк XLSX/CSV |
-| Archive bombs | DOCX и XLSX — ZIP-контейнеры: лимит суммарного распакованного размера, числа записей, коэффициента сжатия, вложенности |
-| Время парсинга | Жёсткий timeout на документ; превышение → `failed` с кодом `parse_timeout` |
+| Страницы / листы / строки | 2000 страниц PDF, 100 листов, 200 000 строк XLSX/CSV |
+| Archive bombs | DOCX и XLSX — ZIP-контейнеры: не более 10 000 записей, 512 МБ распакованного размера, коэффициент сжатия записи ≤ 100 (для записей больше 1 МБ); вложенные архивы и XML-сущности — проверки шага 12.4 |
+| Время парсинга | Жёсткий timeout на документ (300 с, группа процессов завершается); превышение → `failed` с кодом `parse_timeout` |
 | Ресурсы worker | Парсинг в отдельном процессе/контейнере с лимитами CPU/памяти (cgroups, rlimits); отдельная очередь |
 | Имена файлов | Используются только для отображения; ключи storage генерирует сервер; `Content-Disposition` с безопасным кодированием. Malicious filenames не выходят из storage (§12) |
 | Checksum | SHA-256 для идемпотентности и целостности |
@@ -406,7 +406,7 @@ OpenAI/Anthropic). Полный алгоритм — в ADR-007; здесь — 
 - Модель может сослаться только на citation IDs, выданные backend; остальные отклоняются (§6, §12).
 - **Рендеринг ответа:** Markdown без сырого HTML; внешние изображения в ответе не загружаются автоматически
   (защита от эксфильтрации через URL изображений); ссылки — `rel="noopener noreferrer nofollow"` с отображением
-  домена **[Proposed]**.
+  домена (реализовано, Фаза 8, §12).
 - Тестирование adversarial documents: документы с инструкциями «игнорируй правила», попытками выдать чужие
   citation IDs, раскрыть system prompt, вставить ссылки/изображения для эксфильтрации (§8, §13 Фаза 6).
 
@@ -421,7 +421,10 @@ OpenAI/Anthropic). Полный алгоритм — в ADR-007; здесь — 
 
 ## 11. Audit log (§8 п.9)
 
-Журнал append-only (DATABASE_SCHEMA.md §7.3); не содержит секретов, токенов и содержимого документов.
+Журнал append-only (DATABASE_SCHEMA.md §7.3); не содержит секретов, токенов и содержимого документов. На уровне БД
+append-only обеспечивает runtime-роль без `UPDATE`/`DELETE` на `audit_logs`; записи старше срока хранения (1 год)
+удаляет `maintenance prune-audit` под ролью владельца схемы ([ADR-024](adr/0024-database-owner-and-runtime-roles.md),
+шаг 12.1; до него — только код).
 
 Реализованы события setup, аутентификации, пользователей, групп, ролей, провайдеров, моделей, embedding profiles,
 `secrets.rotated`, `network.egress.denied`, `job.retried`, `job.cancelled` и `maintenance.*`; остальные — **[Proposed]**. В audit провайдеров нет значений ключей:
@@ -442,7 +445,7 @@ OpenAI/Anthropic). Полный алгоритм — в ADR-007; здесь — 
 | Jobs | `job.retried`, `job.cancelled` |
 | Обслуживание (CLI на сервере, `actor_type = system`) | `maintenance.deletions_exported`, `maintenance.deletion_reapplied` (§16.2) |
 | Безопасность | Отказы доступа (`outcome = denied`) на чувствительных операциях; срабатывание rate limit на login; `network.egress.denied` |
-| Опционально (открытый вопрос 6) | `document.viewed`, `audit.viewed` |
+| Опционально (открытый вопрос 4, §20) | `document.viewed`, `audit.viewed` |
 
 ## 12. Web security (§8 п.4, §13 Фаза 12)
 
@@ -457,13 +460,15 @@ OpenAI/Anthropic). Полный алгоритм — в ADR-007; здесь — 
   HTML; изображения из ответа не загружаются (утечка данных через URL), остаётся ссылка; ссылки только http(s) с
   `rel="noopener noreferrer nofollow"` и показом домена; `javascript:`/`data:`/`mailto:` и прочие схемы — текст;
   ссылки на источники строятся из UUID цитат, выданных backend; текст документа в viewer — только текст
-  (`AnswerMarkdown.test.tsx`, `viewer.test.tsx`). CSP — вместе с Nginx (Фаза 11).
+  (`AnswerMarkdown.test.tsx`, `viewer.test.tsx`). CSP задаёт Nginx (реализовано, Фаза 11).
 - **CORS:** same-origin; при необходимости — явный allowlist origins, никогда `*` вместе с credentials.
 - **Session theft:** HttpOnly cookies, хэш токена в БД, idle и абсолютный срок, немедленный отзыв, новая сессия при входе (ADR-013).
 
 ## 13. Rate limiting и resource exhaustion (§8 п.5, п.6)
 
-- Rate limits для login, upload, chat и дорогих операций (§8 п.5); значения — [API_CONTRACTS.md](API_CONTRACTS.md), раздел 5 «Rate limits».
+- Rate limits для login, setup, activation, upload, chat, provider test, search, sync и дорогих операций (§8 п.5);
+  общий лимит `general` (300 запросов в минуту на пользователя, без сессии — на IP; без health и SSE-потока) — шаг
+  12.5. Значения — [API_CONTRACTS.md](API_CONTRACTS.md), раздел 5 «Rate limits».
 - Лимит одновременных генераций на пользователя и общий лимит на инсталляцию.
 - Ограниченные DB pools, лимиты очередей, timeouts на всех внешних вызовах (§11).
 - Ограничение длины сообщения чата, числа сообщений истории и context budget (§5, §6).
@@ -544,28 +549,36 @@ OpenAI/Anthropic). Полный алгоритм — в ADR-007; здесь — 
 
 ## 17. Threat model (§8)
 
-| Угроза (§8) | Меры | Проверка |
-|---|---|---|
-| Утечка между KB / пользователями | Контекст из сессии, фильтры доступа к KB в SQL, проверка состояния ресурсов в jobs, (RLS) | Тесты «KB без доступа / чужой диалог недоступны» для каждого endpoint/job |
-| Утечка между организациями | Одна организация на инсталляцию (ADR-012): отдельные БД, storage, ключи | Не применимо внутри инсталляции |
-| RBAC bypass | Policy в каждом use case, deny by default, 404/403, frontend не boundary | Negative RBAC tests, тесты комбинаций permissions (§13 Фаза 7) |
-| Потеря управления и эскалация через управление пользователями | Последний активный администратор защищён блокировкой строки роли `admin`; `admin` только напрямую; запрет отключать/удалять себя; роли при создании — только с `roles.assign` (§3.1) | Тесты последнего администратора, в том числе параллельные снятия ролей и удаления |
-| Перехват ссылки активации | Токен во фрагменте URL, только SHA-256 в БД, 72 ч, одноразовость под блокировкой, перевыпуск отменяет прежний, одинаковая ошибка, лимит на IP (ADR-015) | Тесты повторной/параллельной активации, истёкшего и перевыпущенного токена |
-| Утечка API keys / OAuth tokens | Шифрование, ключ вне БД, write-only API, redaction, отсутствие в prompt | Тесты: secrets не возвращаются и не логируются |
-| SSRF | Валидация URL и IP, запрет private/metadata, allowlist уровня инсталляции, pinning | SSRF-тесты (§12) |
-| Malicious uploads / parser exploits | Quarantine, magic bytes, лимиты, изолированный парсер, timeout | Upload/parser tests (§13 Фаза 12) |
-| Archive bombs | Лимиты распаковки ZIP-контейнеров | Archive bomb tests |
-| Prompt injection | Недоверенный контент, разделение инструкций и контекста, нет tools, валидация цитат, безопасный рендеринг | Adversarial documents (§13 Фаза 6) |
-| XSS | Экранирование, CSP, запрет сырого HTML | XSS tests |
-| CSRF | Double-submit + Origin, SameSite | CSRF tests |
-| Session theft | HttpOnly/Secure, хэш токена в БД, idle/абсолютный срок, отзыв, новая сессия при входе (ADR-013) | Тесты revoked/expired sessions, session fixation (§12) |
-| Resource exhaustion | Rate limits, лимиты upload/парсинга/генераций, pools, timeouts | Performance tests (§12) |
-| Утечки через логи | Запрет payload-логирования, redaction | Проверка логов в тестах |
-| Ошибки удаления | Немедленное исключение из retrieval, purge jobs, lifecycle drills | Тест «deleted docs не находятся» (§12) |
-| Захват неинициализированной инсталляции | Bootstrap token, атомарная инициализация, флаг без сброса через API, CLI-восстановление (ADR-006) | SC-03, SC-04 |
-| Обход сетевой политики администратором приложения | Allowlist только в Instance Settings, нет API изменения (ADR-007) | SC-02 |
-| Доступ к ассистенту без доступа ко всем его KB | ADR-005, проверка на каждом запросе | SC-01 |
-| Чрезмерные OAuth permissions | Минимальные scopes, честное отображение, исследование Selected permissions | Документация и ревью перед production |
+Пересмотрена в шаге 12.0: меры сверены с реализацией Фаз 1–11. Колонка «Фаза 12» называет шаг
+([DEVELOPMENT_ROADMAP.md](DEVELOPMENT_ROADMAP.md)), который закрывает пробел или сводит проверки в один прогон; «—» —
+пробелов не найдено.
+
+| Угроза (§8) | Меры (реализовано) | Проверка | Фаза 12 |
+|---|---|---|---|
+| Утечка между KB / пользователями | Контекст из сессии; фильтры доступа к KB, документам и версиям в SQL до retrieval и LLM; jobs заново загружают ресурс и проверяют состояние; `404` без раскрытия существования. RLS нет (§5 п.6, §20) | SC-05, `test_authorization.py`, `test_source_viewer.py`, `test_conversations_api.py`, E2E `access.spec.ts` | 12.2: инвентаризация всех маршрутов и матрица ролей; 12.3: SC-прогон |
+| Утечка между организациями | Одна организация на инсталляцию (ADR-012): отдельные БД, storage, ключи | Не применимо внутри инсталляции | — |
+| RBAC bypass | `require_permission` и policy в каждом use case, deny by default, frontend не boundary | Negative RBAC tests по модулям (`tests/integration/rbac.py`) | 12.2: тест падает, если маршрут не описан в таблице прав; 401/403 без сессии и CSRF для каждого маршрута |
+| Потеря управления и эскалация через управление пользователями | Последний активный администратор защищён блокировкой строки роли `admin`; запрет отключать/удалять себя; роли при создании — только с `roles.assign` (§3.1) | Тесты последнего администратора, в том числе параллельные | — |
+| Перехват ссылки активации | Токен во фрагменте URL, только SHA-256 в БД, 72 ч, одноразовость под блокировкой, лимит на IP (ADR-015) | Тесты повторной, параллельной, истёкшей и перевыпущенной активации | — |
+| Утечка API keys / OAuth tokens | AES-256-GCM, key ring вне БД и вне backup, write-only API, redaction ошибок, нет в prompt (ADR-016) | `test_secrets.py`, тесты API провайдеров и источников, E2E: токены фейковых Google/Microsoft не попадают в страницу | 12.5: сквозной тест логов на DEBUG |
+| Подмена или удаление audit log, DDL при компрометации API/worker | Сейчас только код (приложение выполняет лишь `INSERT`); роль сервисов владеет таблицами | Нет проверки на уровне БД | 12.1: runtime-роль без DDL и без `UPDATE`/`DELETE` на `audit_logs` ([ADR-024](adr/0024-database-owner-and-runtime-roles.md)) |
+| SSRF | `SafeHttpClient`: валидация URL и IP, запрет private/metadata/loopback, allowlist в Instance Settings, pinning адреса, проверка redirect (ADR-007); сегментация сетей Compose | `test_safe_http_client.py`, `test_safe_http_redirects.py`, `test_network_policy.py`, `test_network_egress.py` (SC-06, SC-07) | 12.3: SC-прогон |
+| Malicious uploads / parser exploits | Quarantine, magic bytes, отказ от macro-enabled, лимиты размера/страниц/листов/строк, парсер в отдельном контейнере без сети и секретов, процесс с rlimits и timeout | `test_file_inspection.py`, `test_isolated_parser.py`, `test_document_upload.py` | 12.4: XXE и billion laughs в DOCX/XLSX, вложенные архивы, polyglot, несовпадение MIME — в `worker-ingestion` |
+| Archive bombs | Лимиты числа записей, распакованного размера и коэффициента сжатия ZIP | `test_file_inspection.py` | 12.4: вложенные архивы |
+| Prompt injection | Документы — данные в блоке `<documents>`; нет tools; system rules первыми; citation IDs выдаёт и фильтрует backend; Markdown без HTML и без загрузки изображений | SC-08: `test_retrieval_context.py`, `test_chat_stream.py`, `test_source_sync.py` | 12.4: набор враждебных документов через весь pipeline |
+| XSS | React-экранирование, Markdown без сырого HTML, только http(s)-ссылки, CSP без `unsafe-inline` для скриптов (ADR-023 §5) | `AnswerMarkdown.test.tsx`, `viewer.test.tsx`, проверка заголовков в CI-smoke | — (nonce для стилей — §20) |
+| CSRF | Double-submit token + проверка `Origin`, SameSite (ADR-013) | `test_chat_security_gate.py`, тесты auth | 12.2: каждый изменяющий маршрут без CSRF → `403` |
+| CORS | Same-origin; allowlist origins, никогда `*` с credentials | Тесты конфигурации | 12.5: тесты preflight и ответов на чужой origin |
+| Session theft | HttpOnly/Secure, хэш токена в БД, idle/абсолютный срок, отзыв, новая сессия при входе (ADR-013) | Тесты revoked/expired sessions, session fixation | — |
+| Resource exhaustion | Лимиты login, setup, activation, upload, chat, provider_test, search, sync, expensive; семафор генераций; лимиты парсинга; pools и timeouts | `test_rate_limiter.py`, `test_generation_control.py` | 12.5: общий лимит `general` |
+| Утечки через логи | Запрет payload-логирования, redaction | `test_chat_security_gate.py` (чат), `test_logging_and_version.py` | 12.5: сквозной тест загрузки, провайдеров и коннекторов на DEBUG |
+| Ошибки удаления | Немедленное исключение из retrieval, purge, retention версий, повторное применение удалений после restore (ADR-023 §6) | «deleted docs не находятся», `test_restore_deletions.py`, restore drill в CI | — |
+| Захват неинициализированной инсталляции | Bootstrap token, атомарная инициализация, флаг без сброса через API, CLI-восстановление (ADR-006) | SC-03, SC-04 (`test_setup_api.py`) | 12.3: SC-прогон |
+| Обход сетевой политики администратором приложения | Allowlist только в Instance Settings, нет API изменения (ADR-007) | SC-02 | 12.3: SC-прогон |
+| Доступ к ассистенту без доступа ко всем его KB | ADR-005, проверка на каждом запросе | SC-01 (`test_assistant_access.py`, `test_chat_stream.py`) | 12.3: SC-прогон |
+| Чрезмерные OAuth permissions | Минимальные scopes, фактические scopes в UI, предупреждение о широте токена (§15) | `test_microsoft_sources_api.py`, E2E `drive.spec.ts`, `microsoft.spec.ts` | — (Selected permissions — отдельный ADR при потребности) |
+| Уязвимые зависимости и образы | pip-audit, npm audit, Dependabot, dependency review в CI | CI | 12.6: Trivy для production-образов |
+| Компрометация backup | Ключ шифрования и setup token не попадают в backup (`backup.sh` отказывается), каталог `0700`, checksums в manifest (ADR-023 §6) | Restore drill в CI | — |
 
 ## 18. Обязательные security-тесты (§12)
 
@@ -610,8 +623,9 @@ restart, interrupted sync.
 ## 19. Процессы (§12, §13 Фаза 12, §20)
 
 - **Definition of Done** включает security review (§12).
-- **Dependency и container scanning** в CI (§13 Фаза 12); инструменты — **[Proposed]**: pip-audit, npm audit /
-  Dependabot, Trivy.
+- **Dependency и container scanning** в CI (§13 Фаза 12): pip-audit, npm audit, Dependabot и dependency review
+  (реализовано); Trivy для production-образов — шаг 12.6 (сбой на CRITICAL/HIGH, для которых есть исправление;
+  исключения — в `.trivyignore` с причиной и сроком).
 - **Security reporting:** `SECURITY.md` с процессом ответственного раскрытия (§4, §13 Фаза 13).
 - **Перед релизом** (§20): нет известных critical/high issues; тесты изоляции KB/пользователей и permission tests проходят; secrets
   не попадают в logs/API responses; upload/parser limits и ingestion idempotency работают; deleted docs исключены
@@ -620,14 +634,16 @@ restart, interrupted sync.
 
 ## 20. Открытые вопросы
 
-1. Алгоритм и ротация ключа шифрования секретов (планируемый ADR).
-2. RLS как второй рубеж доступа на уровне KB (планируемый ADR).
-3. Antivirus-сканирование загрузок.
-4. CSP для стилей Chakra UI (nonce vs `unsafe-inline`).
-5. Нужно ли аудировать просмотр документов и чтение аудита.
-6. Список распространённых паролей для парольной политики (источник, лицензия).
+1. RLS как второй рубеж доступа на уровне KB (планируемый ADR). Разделение ролей БД
+   ([ADR-024](adr/0024-database-owner-and-runtime-roles.md)) защищает схему и журнал, но не данные KB.
+2. Antivirus-сканирование загрузок.
+3. CSP для стилей Chakra UI: nonce вместо `unsafe-inline` (пока `unsafe-inline`, ADR-023 §5).
+4. Нужно ли аудировать просмотр документов и чтение аудита.
+5. Список распространённых паролей для парольной политики (источник, лицензия).
 
-Решено: одна организация на инсталляцию ([ADR-012](adr/0012-single-organization-deployment.md)), сессии, CSRF,
+Решено: алгоритм и ротация ключа шифрования секретов ([ADR-016](adr/0016-secret-encryption.md)), роли БД и
+retention журнала аудита ([ADR-024](adr/0024-database-owner-and-runtime-roles.md)), одна организация на
+инсталляцию ([ADR-012](adr/0012-single-organization-deployment.md)), сессии, CSRF,
 пароли и лимиты входа ([ADR-013](adr/0013-auth-session-strategy.md)), создание пользователей ссылкой активации
 ([ADR-015](adr/0015-user-activation-links.md)), срок и повторная генерация bootstrap token
 (§4.5), сетевой allowlist и локальные модели ([ADR-007](adr/0007-network-access-and-local-llm.md)), bootstrap

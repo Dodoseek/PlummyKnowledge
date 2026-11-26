@@ -40,6 +40,7 @@
 | [ADR-021](0021-microsoft-365-connector.md) | Microsoft 365 Connector | Accepted | 2026-11-26 |
 | [ADR-022](0022-s3-compatible-storage.md) | S3-Compatible Document Storage | Accepted | 2026-11-26 |
 | [ADR-023](0023-production-deployment.md) | Production Deployment with Docker Compose | Accepted | 2026-11-26 |
+| [ADR-024](0024-database-owner-and-runtime-roles.md) | Database Owner and Runtime Roles, Audit Retention | Accepted | 2026-11-27 |
 
 ADR-001…004 оформляют решения, уже зафиксированные в blueprint v1.0; новых решений они не вводят. ADR-012 изменяет
 блупринт: инсталляция принадлежит одной организации (multi-tenancy упразднена); ADR-005…008, 010, 011 содержат
@@ -52,7 +53,6 @@ ADR-001…004 оформляют решения, уже зафиксирован
 | Тема | Нужен к | Где описан черновик |
 |---|---|---|
 | Хранилище idempotency keys (пагинация решена в ADR-014) | С первой операцией без естественного ключа | [API_CONTRACTS.md §1.7](../API_CONTRACTS.md) |
-| Разделение роли миграций и runtime-роли API/worker | Фаза 2 / 12 | [ADR-011](0011-database-roles-and-extensions.md) |
 | PostgreSQL Row Level Security как второй рубеж доступа на уровне KB (нужна ли без multi-tenancy) | Фаза 12 | [SECURITY_MODEL.md §5](../SECURITY_MODEL.md) |
 
 ## Шаблон

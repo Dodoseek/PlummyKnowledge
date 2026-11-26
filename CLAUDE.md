@@ -55,7 +55,9 @@ Delta Query), общий транспорт `connector_http.py`, выбор пр
 Nginx/TLS/CSP, секретами файлами (`deploy/prod/init-secrets.sh`), `PROCESS_ROLE` и CI-smoke
 (`deploy/prod/smoke/`); backup/restore (`deploy/scripts/`, CLI `maintenance`: объекты через `StorageProvider`,
 повторное применение удалений после backup), restore drill и upgrade path с `v0.4.0` в CI; отмена jobs и
-страница `/admin/jobs`; retention версий документов (последние 3 `outdated`). Application Settings ещё нет ([DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md)).
+страница `/admin/jobs`; retention версий документов (последние 3 `outdated`). Фаза 12 (Security hardening) начата:
+[ADR-024](docs/adr/0024-database-owner-and-runtime-roles.md) — роль владельца схемы и runtime-роль, retention
+audit; threat model пересмотрена (SECURITY_MODEL §17). Application Settings ещё нет ([DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md)).
 Не начинать Google OAuth, Microsoft Graph и сложный RAG до стабильного запуска каркаса.
 
 ## Приоритет источников

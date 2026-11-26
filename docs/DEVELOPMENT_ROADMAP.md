@@ -273,6 +273,14 @@ security gate (проверки безопасности **внутри** фаз
 - OAuth, SSRF, upload/parser, archive bomb и prompt injection tests — полный прогон SC-01…SC-09.
 - XSS/CSRF/CORS, rate limits, logs, deletion lifecycle.
 - Dependency/container scanning и security reporting.
+- Решение — [ADR-024](adr/0024-database-owner-and-runtime-roles.md): роль владельца схемы для миграций и
+  runtime-роль сервисов (только DML, `audit_logs` append-only), retention журнала аудита (1 год) CLI под ролью
+  владельца по расписанию хоста. Шаги: 12.0 ADR-024 и пересмотр threat model (SECURITY_MODEL §17); 12.1 разделение
+  ролей БД, `db grant-runtime`, `maintenance prune-audit`, скрипт для существующих инсталляций; 12.2
+  RBAC/KB-access audit (инвентаризация маршрутов, матрица ролей); 12.3 прогон SC-01…SC-09 и таблица трассировки;
+  12.4 враждебные файлы и документы (XXE, billion laughs, вложенные архивы, polyglot, prompt injection); 12.5 лимит
+  `general`, CORS, сквозной тест логов, `GET /audit/events` и страница `/admin/audit`; 12.6 Trivy и `SECURITY.md`;
+  12.7 security gate и предрелизный чек-лист (SECURITY_MODEL §19). Выполнен 12.0.
 - **Выход (вместе с Фазой 11):** **релиз 0.5.0**.
 
 ### Фаза 13 — Open-source release (§13)

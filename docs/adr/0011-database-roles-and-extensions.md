@@ -4,6 +4,8 @@
 - **Date:** 2026-11-17
 - **Amended by:** [ADR-012](0012-single-organization-deployment.md) — tenant isolation упразднена; RLS, если будет
   введена, служит вторым рубежом для доступа на уровне KB, а не для изоляции организаций.
+- **Amended by:** [ADR-024](0024-database-owner-and-runtime-roles.md) — роль владельца схемы (миграции) и
+  runtime-роль сервисов (только DML, `audit_logs` append-only).
 
 ## Context
 
@@ -45,9 +47,9 @@ PostgreSQL (RDS, Cloud SQL, Azure) у клиента вообще нет суп�
 6. Integration-тесты закрепляют модель: роль приложения не является суперпользователем; миграция на БД без
    расширений падает с понятной ошибкой и ничего не создаёт; downgrade не удаляет расширения.
 
-**Отложено.** Разделение роли миграций (владелец схемы) и runtime-роли API/worker (только DML, без DDL) —
-отдельным решением не позже введения RLS (Фаза 2 / 12). Тогда же — `REVOKE CREATE ON SCHEMA public FROM PUBLIC` и
-явные `GRANT` для runtime-роли.
+**Отложено, решено в [ADR-024](0024-database-owner-and-runtime-roles.md).** Разделение роли миграций (владелец
+схемы) и runtime-роли API/worker (только DML, без DDL), `REVOKE CREATE ON SCHEMA public FROM PUBLIC` и явные `GRANT`
+для runtime-роли.
 
 ## Alternatives
 
