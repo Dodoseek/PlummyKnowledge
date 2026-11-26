@@ -26,7 +26,7 @@ from plummy.application.sources.ports import (
 )
 from plummy.core.instance_config import Microsoft365Endpoints
 from plummy.core.network.policy import RedirectPolicy
-from plummy.infrastructure.integrations.sources.google_common import retry_after
+from plummy.infrastructure.integrations.sources.connector_http import retry_after
 
 PROVIDER_TYPE: Final = "microsoft_365"
 GRAPH_PREFIX: Final = "https://graph.microsoft.com/"
@@ -38,8 +38,6 @@ REQUESTED_SCOPES: Final = (
 )
 # Without these the connector cannot read the chosen folder; User.Read only labels the account.
 REQUIRED_SCOPES: Final = ("files.read.all", "sites.read.all")
-MAX_JSON_BYTES: Final = 4 * 1024 * 1024
-TIMEOUT: Final = httpx.Timeout(30.0, connect=10.0)
 _QUOTA_CODES: Final = frozenset({"quotaLimitReached"})
 
 

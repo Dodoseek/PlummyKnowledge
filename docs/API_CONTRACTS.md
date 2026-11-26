@@ -527,9 +527,10 @@ KB, иначе `404`; без OAuth client в Instance Settings — `409 connecto
   shared drive, не в корзине) и сохраняет `folder = {id, name}`; ошибки поля `folder_id`: `invalid_folder_id`,
   `folder_not_found`, `not_a_folder`; без подключения — `409 source_not_connected`. `folder_id: null` снимает папку
   (`paused`). Смена папки сбрасывает курсор: следующая синхронизация — полный обход.
-- `GET …/browse?parent_id=&cursor=` → `200 {"items": [{"id", "name", "kind": "folder" | "shared_drive"}],
-  "next_cursor", "has_more"}`: без `parent_id` — shared drives (первые 100), свои папки и папки, расшаренные
-  учётной записи. Ошибки query: `invalid_folder_id`, `folder_not_found`, `invalid_cursor`.
+- `GET …/browse?parent_id=&cursor=` → `200 {"items": [{"id", "name", "kind"}], "next_cursor", "has_more"}`,
+  `kind` — `folder`, `shared_drive` (Google) или `site`, `drive` (Microsoft 365): без `parent_id` — shared drives
+  (первые 100), свои папки и папки, расшаренные учётной записи. Ошибки query: `invalid_folder_id`,
+  `folder_not_found`, `invalid_cursor`.
 - `POST …/validate` → `200 {"status": "ok" | "failed", "checked_at", "error_code", "account_label",
   "folder_accessible"}`: обновляет токен, читает учётную запись и проверяет папку; сбой провайдера возвращается как
   `failed` с кодом, не ошибкой HTTP. Лимит `provider_test`.
@@ -565,8 +566,9 @@ KB, иначе `404`; без OAuth client в Instance Settings — `409 connecto
 `MICROSOFT_OAUTH_*` — `409 connector_not_configured`; `browse` без `parent_id` возвращает OneDrive учётной записи
 (`kind = drive`) и сайты (`kind = site`, первые 100), `parent_id` сайта — его библиотеки (`drive`), библиотеки или
 папки — вложенные папки (`folder`); ID записей непрозрачны (`site:…`, `drive:…`, `item:…`). `PATCH {"folder_id"}`
-принимает ID записи `drive` или `folder` (сайт — `422 not_a_folder`); `folder` в карточке —
-`{id, name}` выбранной папки, `config` хранит ещё `drive_id` и имена сайта и библиотеки. `disconnect` и `DELETE`
+принимает ID записи `drive` или `folder` (сайт — `422 not_a_folder`, ID длиннее 512 — `string_too_long`);
+`folder` в карточке — `{id, name}` выбранной папки: для библиотеки это её корень `item:{drive}:{root}` с именем
+библиотеки, `config` хранит ещё `drive_id`. `disconnect` и `DELETE`
 не отзывают токен у Microsoft (такого endpoint нет): секрет удаляется локально.
 
 UI обязан показывать **фактические** `granted_scopes` и предупреждение, что выбор папки не ограничивает OAuth token

@@ -185,6 +185,26 @@ credentials `revoked`, источник `error`, `connector_auth_revoked`.
 - Тесты: `tests/fake_microsoft.py` (секрет клиента, одноразовые коды, PKCE, ротация), unit
   `test_microsoft_oauth.py`, integration `test_microsoft_sources_api.py` на PostgreSQL и Redis.
 
+10.2 (выполнен):
+
+- `MicrosoftGraphConnector` (`microsoft_graph.py`) без SDK; ретраи, backoff и ограниченная загрузка вынесены в общий
+  `ConnectorTransport` (`connector_http.py`), которым пользуется и коннектор Google — поведение Google не менялось.
+- Идентификаторы: `RemoteItem.id` и `parents` — `item:{drive_id}:{item_id}`, поэтому порты `get_item` и
+  `list_children` не меняются, а sync engine, пути папок и `external_id` документов работают как есть. Выбранная
+  библиотека хранится как её корень: `folder_id = item:{drive}:{root}`, `folder_name` — имя библиотеки, плюс
+  `drive_id`. Имена сайта и библиотеки отдельно в `config` не хранятся (для синхронизации не нужны).
+- `get_item` сайта возвращает элемент `unsupported` (существует, но не папка → `not_a_folder`); чужой формат ID —
+  `connector_not_found` без запроса к Graph. Общая проверка ID расширена до `[A-Za-z0-9_!:,.-]{1,512}` (`!` в ID
+  drive и OneDrive personal, `,` и `.` в ID сайтов); в URL каждый сегмент экранируется.
+- Ссылки `@odata.nextLink`/`@odata.deltaLink` принимаются, только если схема, хост и порт совпадают с `api_url` и
+  путь лежит под его путём; из них берётся один параметр (`token`, `$skiptoken` или `$deltatoken`), курсор и
+  `next_cursor` picker'а хранят его как `name=value` (≤ 2048). Подделанный курсор — `ConnectorCursorInvalid` без
+  запроса.
+- Ревизия: `qx:`/`sha256:`/`sha1:` хеша, иначе `ctag:`; `eTag` не используется. `folder`/`root` → папка,
+  `remoteItem` → ярлык (не обходится), `package` и элементы без `file` → `unsupported`, `deleted` → удаление.
+- Picker: верхний уровень — `/me/drive` (без лицензии OneDrive — только сайты) и первые 100 из `/sites?search=*`;
+  сайт → его библиотеки; библиотека или папка → вложенные папки со страницами по `$skiptoken`.
+
 ## Related documents
 
 [ADR-020](0020-google-drive-connector.md) · [ADR-006](0006-initial-setup-and-system-configuration.md) ·

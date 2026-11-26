@@ -30,7 +30,8 @@ from plummy.domain.sources import CredentialStatus
 logger = logging.getLogger(__name__)
 
 AUTH_REVOKED: Final = "connector_auth_revoked"
-_REMOTE_ID: Final = re.compile(r"[A-Za-z0-9_-]{1,256}")
+# Google IDs, and the opaque ``site:``/``drive:``/``item:`` identifiers of Microsoft Graph (ADR-021 §6).
+_REMOTE_ID: Final = re.compile(r"[A-Za-z0-9_!:,.-]{1,512}")
 _PAGE_TOKEN: Final = re.compile(r"[!-~]{1,2048}")  # printable ASCII, no spaces
 
 

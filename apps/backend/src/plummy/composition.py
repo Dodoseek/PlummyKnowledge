@@ -166,6 +166,7 @@ from plummy.infrastructure.integrations.sources.google_common import GoogleEndpo
 from plummy.infrastructure.integrations.sources.google_drive import GoogleDriveConnector
 from plummy.infrastructure.integrations.sources.google_oauth import GoogleOAuthClient
 from plummy.infrastructure.integrations.sources.microsoft_common import MicrosoftEndpoints
+from plummy.infrastructure.integrations.sources.microsoft_graph import MicrosoftGraphConnector
 from plummy.infrastructure.integrations.sources.microsoft_oauth import MicrosoftOAuthClient
 from plummy.infrastructure.parsing.isolated import IsolatedParser
 from plummy.infrastructure.parsing.text import PlainTextParser
@@ -610,6 +611,13 @@ def source_connectors(
     if settings.google_drive_configured:
         connectors[DataSourceType.GOOGLE_DRIVE] = GoogleDriveConnector(
             http, GoogleEndpoints.from_config(load_config(settings).google_drive), max_attempts=max_attempts
+        )
+    if settings.microsoft_365_configured and settings.microsoft_oauth_tenant_id is not None:
+        endpoints = MicrosoftEndpoints.for_tenant(
+            settings.microsoft_oauth_tenant_id, load_config(settings).microsoft_365
+        )
+        connectors[DataSourceType.MICROSOFT_365] = MicrosoftGraphConnector(
+            http, endpoints, max_attempts=max_attempts
         )
     return connectors
 

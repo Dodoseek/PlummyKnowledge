@@ -118,7 +118,7 @@ class CreateDataSourceRequest(_Request):
 class UpdateDataSourceRequest(_Request):
     name: str | None = Field(default=None, min_length=1, max_length=MAX_NAME_INPUT_LENGTH)
     sync_interval_minutes: int | None = None
-    folder_id: str | None = Field(default=None, max_length=256)  # ``null`` removes the folder
+    folder_id: str | None = Field(default=None, max_length=512)  # ``null`` removes the folder
 
     def patch_values(self) -> dict[str, Any]:
         """Only the fields that were sent: ``sync_interval_minutes: null`` means manual sync only,

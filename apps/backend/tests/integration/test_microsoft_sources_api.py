@@ -236,3 +236,123 @@ async def test_an_unconfigured_type_next_to_a_configured_one_is_refused(env: Env
         URL, json={"type": "google_drive", "name": "X", "knowledge_base_id": env.kb_id}
     )
     problem(response, 409, "connector_not_configured")
+
+
+# --- the provider: picker, folder choice and validation (ADR-021 §6) -----------------------------------
+
+
+async def connected_source(env: Env) -> dict[str, Any]:
+    source = await create_source(env)
+    assert (await connect(env, source["id"]))["oauth"] == "connected"
+    return source
+
+
+async def test_the_picker_walks_sites_libraries_and_folders(env: Env) -> None:
+    source = await connected_source(env)
+    microsoft = env.microsoft
+    own = microsoft.drive("OneDrive", own=True)
+    site = microsoft.site("Legal")
+    library = microsoft.drive("Documents", site=site)
+    contracts = microsoft.folder(library, "Contracts")
+    microsoft.add(library, "readme.txt", content=b"x")
+    browse = f"{URL}/{source['id']}/browse"
+
+    top = await env.admin.get(browse)
+    assert top.status_code == 200, top.text
+    assert top.json()["items"] == [
+        {"id": f"drive:{own}", "name": "OneDrive", "kind": "drive"},
+        {"id": f"site:{site}", "name": "Legal", "kind": "site"},
+    ]
+    libraries = (await env.admin.get(browse, params={"parent_id": f"site:{site}"})).json()
+    assert libraries["items"] == [{"id": f"drive:{library}", "name": "Documents", "kind": "drive"}]
+    folders = (await env.admin.get(browse, params={"parent_id": f"drive:{library}"})).json()
+    assert folders["items"] == [{"id": f"item:{library}:{contracts}", "name": "Contracts", "kind": "folder"}]
+
+    response = await env.admin.get(browse, params={"parent_id": "item:b!unknown:01X"})
+    assert problem(response, 422, "invalid_query_parameter")["errors"][0]["code"] == "folder_not_found"
+    response = await env.admin.get(browse, params={"parent_id": "drive:../me"})
+    assert problem(response, 422, "invalid_query_parameter")["errors"][0]["code"] == "invalid_folder_id"
+    stored = json.dumps(await env.harness.sql("SELECT * FROM data_source_credentials"), default=str)
+    assert not [token for token in microsoft.access_tokens if token in stored]
+
+
+async def test_a_library_root_or_a_folder_is_chosen_with_its_drive(env: Env) -> None:
+    source = await connected_source(env)
+    microsoft = env.microsoft
+    site = microsoft.site("Legal")
+    library = microsoft.drive("Contracts Library", site=site)
+    folder = microsoft.folder(library, "2026")
+    file_id = microsoft.add(library, "a.txt", content=b"x")
+    patch = f"{URL}/{source['id']}"
+    root = f"item:{library}:{microsoft.root(library)}"
+
+    chosen = await env.admin.patch(patch, json={"folder_id": f"drive:{library}"})
+    assert chosen.status_code == 200, chosen.text
+    assert (chosen.json()["status"], chosen.json()["folder"]) == (
+        "active",
+        {"id": root, "name": "Contracts Library"},
+    )
+    [(config,)] = await env.harness.sql("SELECT config FROM data_sources WHERE id = :id", id=source["id"])
+    assert config == {"folder_id": root, "folder_name": "Contracts Library", "drive_id": library}
+
+    chosen = await env.admin.patch(patch, json={"folder_id": f"item:{library}:{folder}"})
+    assert chosen.json()["folder"] == {"id": f"item:{library}:{folder}", "name": "2026"}
+    [(config,)] = await env.harness.sql("SELECT config FROM data_sources WHERE id = :id", id=source["id"])
+    assert config["drive_id"] == library
+
+    for bad, code in [
+        (f"site:{site}", "not_a_folder"),  # a site is opened, never chosen
+        ("site:unknown.example,1,2", "folder_not_found"),
+        (f"item:{library}:{file_id}", "not_a_folder"),
+        ("item:b!unknown:01X", "folder_not_found"),
+        ("drive:a/b", "invalid_folder_id"),
+        ("x" * 513, "string_too_long"),
+    ]:
+        response = await env.admin.patch(patch, json={"folder_id": bad})
+        assert response.status_code == 422, (bad, response.text)
+        assert response.json()["errors"][0]["code"] == code, bad
+
+
+async def test_validate_reports_the_account_and_the_folder(env: Env) -> None:
+    source = await connected_source(env)
+    library = env.microsoft.drive("Documents", site=env.microsoft.site("Legal"))
+    folder = env.microsoft.folder(library, "Contracts")
+    await env.admin.patch(f"{URL}/{source['id']}", json={"folder_id": f"item:{library}:{folder}"})
+    validate = f"{URL}/{source['id']}/validate"
+    report = (await env.admin.post(validate)).json()
+    assert (report["status"], report["account_label"], report["folder_accessible"]) == (
+        "ok",
+        "Graph Bot <graph-bot@contoso.example>",
+        True,
+    )
+    env.microsoft.delete(library, folder)
+    report = (await env.admin.post(validate)).json()
+    assert (report["status"], report["error_code"], report["folder_accessible"]) == (
+        "failed",
+        "folder_not_found",
+        False,
+    )
+
+
+async def test_rotated_refresh_tokens_replace_the_stored_one(env: Env) -> None:
+    source = await connected_source(env)
+    env.microsoft.site("Legal")
+    for _ in range(3):  # Microsoft rotates on every refresh: each call uses the token stored by the last
+        assert (await env.admin.get(f"{URL}/{source['id']}/browse")).status_code == 200
+    [current] = env.microsoft.refresh_tokens
+    rows = await env.harness.sql(
+        "SELECT s.ciphertext FROM secret_references s "
+        "JOIN data_source_credentials c ON c.secret_ref_id = s.id"
+    )
+    assert len(rows) == 1
+    assert current.encode() not in bytes(rows[0][0])
+
+
+@pytest.mark.parametrize("error", ["invalid_grant", "interaction_required"])
+async def test_a_dead_grant_marks_the_source_revoked(env: Env, error: str) -> None:
+    source = await connected_source(env)
+    env.microsoft.refresh_error = error
+    env.microsoft.revoke_all()  # consent withdrawn or sessions revoked in Entra
+    problem(await env.admin.get(f"{URL}/{source['id']}/browse"), 409, "connector_auth_revoked")
+    shown = (await env.admin.get(f"{URL}/{source['id']}")).json()
+    assert (shown["status"], shown["credentials"]["status"]) == ("error", "revoked")

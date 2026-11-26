@@ -1,20 +1,15 @@
-"""Google Drive v3 as a :class:`DataSourceConnector` (ADR-020 §4, §5, §8). Plain HTTP through
-``SafeHttpClient`` with the ``connector`` purpose; no Google SDK.
+"""Google Drive v3 as a :class:`DataSourceConnector` (ADR-020 §4, §5, §8). Plain HTTP through the shared
+:class:`ConnectorTransport` (retries, bounded downloads); no Google SDK.
 
-- Every call carries the access token the caller obtained; it is never stored or logged.
-- ``429`` and the rate-limit reasons of ``403``, ``5xx`` and network failures are retried with exponential
-  backoff and jitter (``Retry-After`` first), up to ``max_attempts`` per request; the rest fails at once.
-- Downloads follow redirects only to the connector's download hosts, ``https`` only, ``Authorization`` is
-  dropped on another host (``SafeHttpClient``); the size limit applies to the whole stream.
-- Response bodies are parsed strictly and never logged: they contain file names and account data.
+Every call carries the access token the caller obtained; it is never stored or logged. ``429`` and the
+rate-limit reasons of ``403`` are retried like ``5xx`` (``google_common.api_error`` makes them retryable).
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import random
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from datetime import datetime
 from typing import Any, Final
 from urllib.parse import quote
@@ -26,34 +21,22 @@ from plummy.application.sources.ports import (
     BrowseKind,
     BrowsePage,
     ChangesPage,
-    ConnectorAccessTokenRejectedError,
     ConnectorCapabilities,
     ConnectorCursorInvalidError,
-    ConnectorEgressDeniedError,
     ConnectorError,
     ConnectorFileTooLargeError,
     ConnectorInvalidResponseError,
-    ConnectorRateLimitedError,
-    ConnectorTransientError,
     RemoteChange,
     RemoteItem,
     RemoteKind,
     RemotePage,
     SourceLocation,
 )
-from plummy.core.network.errors import EgressDeniedError, ResponseTooLargeError
-from plummy.core.network.policy import EgressPurpose
 from plummy.domain.knowledge import DataSourceType
 from plummy.domain.secrets import SecretValue
 from plummy.infrastructure.http.safe_client import SafeHttpClient
-from plummy.infrastructure.integrations.sources.google_common import (
-    MAX_JSON_BYTES,
-    PROVIDER_TYPE,
-    TIMEOUT,
-    GoogleEndpoints,
-    api_error,
-    json_object,
-)
+from plummy.infrastructure.integrations.sources.connector_http import ConnectorTransport, Sleep
+from plummy.infrastructure.integrations.sources.google_common import PROVIDER_TYPE, GoogleEndpoints, api_error
 
 logger = logging.getLogger(__name__)
 
@@ -78,10 +61,6 @@ MAX_SHARED_DRIVES: Final = 100  # the top level of the picker shows the first pa
 MAX_ID_LENGTH: Final = 256
 MAX_NAME_LENGTH: Final = 1024
 MAX_TOKEN_LENGTH: Final = 2048
-MAX_BACKOFF_SECONDS: Final = 60.0
-DOWNLOAD_TIMEOUT: Final = httpx.Timeout(120.0, connect=10.0)
-
-Sleep = Callable[[float], Awaitable[None]]
 
 
 def _quote(value: str) -> str:
@@ -208,12 +187,10 @@ class GoogleDriveConnector:
         max_attempts: int = 5,
         sleep: Sleep = asyncio.sleep,
     ) -> None:
-        if max_attempts < 1:
-            raise ValueError("max_attempts must be at least 1")
-        self._http = http
         self._endpoints = endpoints or GoogleEndpoints()
-        self._max_attempts = max_attempts
-        self._sleep = sleep
+        self._transport = ConnectorTransport(
+            http, provider_type=PROVIDER_TYPE, api_error=api_error, max_attempts=max_attempts, sleep=sleep
+        )
 
     @property
     def source_type(self) -> DataSourceType:
@@ -232,51 +209,6 @@ class GoogleDriveConnector:
     def _url(self, path: str) -> str:
         return f"{self._endpoints.api_url}/drive/v3/{path}"
 
-    @staticmethod
-    def _headers(access_token: SecretValue) -> dict[str, str]:
-        return {"Authorization": f"Bearer {access_token.reveal()}", "Accept": "application/json"}
-
-    def _delay(self, attempt: int, error: ConnectorError) -> float:
-        if isinstance(error, ConnectorRateLimitedError) and error.retry_after_seconds is not None:
-            return min(MAX_BACKOFF_SECONDS, error.retry_after_seconds)
-        base = min(MAX_BACKOFF_SECONDS / 2, 2.0 ** (attempt - 1))
-        return base * random.uniform(0.5, 1.5)  # noqa: S311 - jitter, not security
-
-    def _retry(self, attempt: int, error: ConnectorError) -> bool:
-        return (
-            error.retryable
-            and not isinstance(error, ConnectorAccessTokenRejectedError)
-            and attempt < self._max_attempts
-        )
-
-    async def _get_once(
-        self,
-        access_token: SecretValue,
-        path: str,
-        params: Mapping[str, str],
-        on_error: Callable[[httpx.Response], ConnectorError] | None,
-    ) -> dict[str, Any]:
-        try:
-            response = await self._http.request(
-                "GET",
-                self._url(path),
-                purpose=EgressPurpose.CONNECTOR,
-                provider_type=PROVIDER_TYPE,
-                headers=self._headers(access_token),
-                params=params,
-                timeout=TIMEOUT,
-                max_response_bytes=MAX_JSON_BYTES,
-            )
-        except EgressDeniedError:
-            raise ConnectorEgressDeniedError() from None
-        except ResponseTooLargeError:
-            raise ConnectorInvalidResponseError("response too large") from None
-        except httpx.HTTPError as exc:
-            raise ConnectorTransientError(type(exc).__name__) from None
-        if response.status_code != 200:
-            raise (on_error(response) if on_error else api_error(response))
-        return json_object(response)
-
     async def _get(
         self,
         access_token: SecretValue,
@@ -284,15 +216,7 @@ class GoogleDriveConnector:
         params: Mapping[str, str],
         on_error: Callable[[httpx.Response], ConnectorError] | None = None,
     ) -> dict[str, Any]:
-        attempt = 0
-        while True:
-            attempt += 1
-            try:
-                return await self._get_once(access_token, path, params, on_error)
-            except ConnectorError as exc:
-                if not self._retry(attempt, exc):
-                    raise
-                await self._sleep(self._delay(attempt, exc))
+        return await self._transport.get_json(access_token, self._url(path), params, on_error)
 
     # --- reading --------------------------------------------------------------------------------------------
 
@@ -430,38 +354,7 @@ class GoogleDriveConnector:
         if item.size is not None and item.size > max_bytes:
             raise ConnectorFileTooLargeError()
         url, params = self._download_request(item)
-        attempt, started = 0, False
-        while True:
-            attempt += 1
-            try:
-                async with self._http.stream(
-                    "GET",
-                    url,
-                    purpose=EgressPurpose.CONNECTOR,
-                    provider_type=PROVIDER_TYPE,
-                    headers={"Authorization": f"Bearer {access_token.reveal()}"},
-                    params=params,
-                    timeout=DOWNLOAD_TIMEOUT,
-                    max_response_bytes=max_bytes,
-                    redirects=self._endpoints.redirects,
-                ) as response:
-                    if response.status_code != 200:
-                        await response.aread()
-                        raise api_error(response)
-                    async for chunk in response.aiter_bytes():
-                        started = True
-                        yield chunk
-                    return
-            except EgressDeniedError:
-                raise ConnectorEgressDeniedError() from None
-            except ResponseTooLargeError:
-                raise ConnectorFileTooLargeError() from None
-            except httpx.HTTPError as exc:
-                error: ConnectorError = ConnectorTransientError(type(exc).__name__)
-                if started or not self._retry(attempt, error):
-                    raise error from None
-            except ConnectorError as exc:
-                if started or not self._retry(attempt, exc):
-                    raise
-                error = exc
-            await self._sleep(self._delay(attempt, error))
+        async for chunk in self._transport.download(
+            access_token, url, params, max_bytes=max_bytes, redirects=self._endpoints.redirects
+        ):
+            yield chunk

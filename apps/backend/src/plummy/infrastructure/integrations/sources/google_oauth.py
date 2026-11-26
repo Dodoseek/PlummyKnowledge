@@ -28,14 +28,12 @@ from plummy.core.network.policy import EgressPurpose
 from plummy.domain.knowledge import DataSourceType
 from plummy.domain.secrets import SecretValue
 from plummy.infrastructure.http.safe_client import SafeHttpClient
+from plummy.infrastructure.integrations.sources.connector_http import MAX_JSON_BYTES, TIMEOUT, json_object
 from plummy.infrastructure.integrations.sources.google_common import (
     DRIVE_READONLY_SCOPE,
-    MAX_JSON_BYTES,
     PROVIDER_TYPE,
-    TIMEOUT,
     GoogleEndpoints,
     api_error,
-    json_object,
 )
 
 logger = logging.getLogger(__name__)

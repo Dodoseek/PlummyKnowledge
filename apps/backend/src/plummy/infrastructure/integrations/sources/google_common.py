@@ -6,12 +6,9 @@ and is then discarded: it may contain file names or addresses. Nothing from a re
 
 from __future__ import annotations
 
-import email.utils
 import json
-import math
-import time
 from dataclasses import dataclass
-from typing import Any, Final
+from typing import Final
 
 import httpx
 
@@ -28,11 +25,10 @@ from plummy.application.sources.ports import (
 )
 from plummy.core.instance_config import GoogleDriveEndpoints
 from plummy.core.network.policy import RedirectPolicy
+from plummy.infrastructure.integrations.sources.connector_http import retry_after
 
 PROVIDER_TYPE: Final = "google_drive"
 DRIVE_READONLY_SCOPE: Final = "https://www.googleapis.com/auth/drive.readonly"
-MAX_JSON_BYTES: Final = 4 * 1024 * 1024
-TIMEOUT: Final = httpx.Timeout(30.0, connect=10.0)
 _RATE_REASONS: Final = frozenset({"rateLimitExceeded", "userRateLimitExceeded"})
 _QUOTA_REASONS: Final = frozenset({"dailyLimitExceeded", "quotaExceeded", "storageQuotaExceeded"})
 _TOO_LARGE_REASONS: Final = frozenset({"exportSizeLimitExceeded"})
@@ -61,31 +57,6 @@ class GoogleEndpoints:
     @property
     def redirects(self) -> RedirectPolicy:
         return RedirectPolicy(hosts=self.download_hosts)
-
-
-def json_object(response: httpx.Response) -> dict[str, Any]:
-    try:
-        data = json.loads(response.content)
-    except (ValueError, UnicodeDecodeError):
-        raise ConnectorInvalidResponseError("not JSON") from None
-    if not isinstance(data, dict):
-        raise ConnectorInvalidResponseError("not a JSON object")
-    return data
-
-
-def retry_after(response: httpx.Response) -> float | None:
-    value = response.headers.get("retry-after")
-    if value is None:
-        return None
-    value = value.strip()
-    if value.isdigit():
-        return float(value)
-    try:
-        moment = email.utils.parsedate_to_datetime(value)
-    except (TypeError, ValueError):
-        return None
-    seconds = moment.timestamp() - time.time()
-    return max(0.0, seconds) if math.isfinite(seconds) else None
 
 
 def _reasons(response: httpx.Response) -> set[str]:
