@@ -122,7 +122,7 @@ services:
   # The bootstrap volume is mounted read-only so that the global setup can create the first administrator.
   e2e:
     profiles: [e2e]
-    image: mcr.microsoft.com/playwright:v1.64.1-noble
+    image: mcr.microsoft.com/playwright:v1.65.1-noble
     working_dir: /e2e
     command: ["sh", "-c", "npm ci --no-audit --no-fund && npx tsc --noEmit && npx playwright test"]
     environment:
