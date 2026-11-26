@@ -38,6 +38,8 @@
 | [ADR-019](0019-answer-generation-in-api-process.md) | Answer Generation in the API Process | Accepted | 2026-11-25 |
 | [ADR-020](0020-google-drive-connector.md) | Google Drive Connector | Accepted | 2026-11-26 |
 | [ADR-021](0021-microsoft-365-connector.md) | Microsoft 365 Connector | Accepted | 2026-11-26 |
+| [ADR-022](0022-s3-compatible-storage.md) | S3-Compatible Document Storage | Accepted | 2026-11-26 |
+| [ADR-023](0023-production-deployment.md) | Production Deployment with Docker Compose | Accepted | 2026-11-26 |
 
 ADR-001…004 оформляют решения, уже зафиксированные в blueprint v1.0; новых решений они не вводят. ADR-012 изменяет
 блупринт: инсталляция принадлежит одной организации (multi-tenancy упразднена); ADR-005…008, 010, 011 содержат

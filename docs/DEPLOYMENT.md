@@ -4,7 +4,7 @@
 |---|---|
 | Статус | v0.3 — среда разработки и первоначальная настройка реализованы (Фазы 1–3, §0, §6); production-профиль — целевая модель Фазы 11 |
 | Источник | [PROJECT_BLUEPRINT.md](PROJECT_BLUEPRINT.md) §3, §5, §8, §11, §13 (Фазы 1, 11) |
-| Решения | [ADR-006](adr/0006-initial-setup-and-system-configuration.md), [ADR-007](adr/0007-network-access-and-local-llm.md), [ADR-011](adr/0011-database-roles-and-extensions.md), [ADR-013](adr/0013-auth-session-strategy.md) |
+| Решения | [ADR-006](adr/0006-initial-setup-and-system-configuration.md), [ADR-007](adr/0007-network-access-and-local-llm.md), [ADR-011](adr/0011-database-roles-and-extensions.md), [ADR-013](adr/0013-auth-session-strategy.md), [ADR-022](adr/0022-s3-compatible-storage.md), [ADR-023](adr/0023-production-deployment.md) |
 | Связанные документы | [ARCHITECTURE.md §4, §10, §12](ARCHITECTURE.md), [SECURITY_MODEL.md](SECURITY_MODEL.md) |
 
 Разделы §0 и §6 описывают то, что реализовано. Остальные имена переменных, сервисов, volumes и CLI-команд — **[Proposed]**;
@@ -80,7 +80,7 @@
 | `CONFIG_FILE` | — (пустой allowlist) | TOML-файл Instance Settings со структурой, сейчас `[[network.allowlist]]` ([ADR-007](adr/0007-network-access-and-local-llm.md), §7.3); ≤ 256 КБ, невалидный файл → отказ старта |
 | `WORKER_CONCURRENCY` | `2` (dev compose) | Число процессов Celery worker (флаг `--concurrency` в команде сервиса, не настройка приложения) |
 | `INGESTION_MEMORY_LIMIT` | `4g` (dev compose) | `mem_limit` контейнера `worker-ingestion` (Compose, не настройка приложения) |
-| `STORAGE_BACKEND` | `local` | Пока только `local`; S3-compatible — Фаза 11 |
+| `STORAGE_BACKEND` | `local` | `local`; `s3` — с шага 11.1 ([ADR-022](adr/0022-s3-compatible-storage.md): `S3_ENDPOINT_URL`, `S3_BUCKET`, `S3_REGION`, `S3_PREFIX`, `S3_ACCESS_KEY_ID[_FILE]`, `S3_SECRET_ACCESS_KEY[_FILE]`) |
 | `STORAGE_PATH` | `/var/lib/plummy/storage` | Корень storage (области `quarantine` и `documents`); заменяет черновые `PLUMMY_STORAGE_PATH`, `PLUMMY_QUARANTINE_PATH` |
 | `QUARANTINE_TTL` | `86400` (24 ч) | Срок хранения файлов в quarantine до cleanup; от 10 мин до 7 дней |
 | `UPLOAD_MAX_BYTES` | `52428800` (50 МБ) | Наибольший принимаемый upload (проверяется при потоковой записи); от 1 КБ до 2 ГБ; заменяет черновое `PLUMMY_UPLOAD_MAX_BYTES` |
@@ -167,7 +167,7 @@ docker compose down --volumes
 | БД | `PLUMMY_DATABASE_URL_FILE`, `PLUMMY_DB_POOL_SIZE` | да |
 | Redis | `PLUMMY_REDIS_URL_FILE` | да |
 | Шифрование | `SECRETS_KEYRING_FILE` (key ring с `key_id`, реализовано, §0; заменяет черновое `PLUMMY_SECRETS_KEY_FILE`) | **да, хранится вне БД и отдельно от backup** |
-| Storage | `STORAGE_BACKEND`, `STORAGE_PATH`, `QUARANTINE_TTL` (реализовано, §0); `PLUMMY_S3_ENDPOINT`, `PLUMMY_S3_BUCKET`, `PLUMMY_S3_ACCESS_KEY_FILE`, `PLUMMY_S3_SECRET_KEY_FILE` — Фаза 11 | частично |
+| Storage | `STORAGE_BACKEND`, `STORAGE_PATH`, `QUARANTINE_TTL` (реализовано, §0); `S3_ENDPOINT_URL`, `S3_BUCKET`, `S3_REGION`, `S3_PREFIX`, `S3_ACCESS_KEY_ID_FILE`, `S3_SECRET_ACCESS_KEY_FILE` — шаг 11.1, [ADR-022](adr/0022-s3-compatible-storage.md) | частично |
 | Setup | `SETUP_MODE` (`web` \| `cli_only`), `BOOTSTRAP_DIR`, `BOOTSTRAP_TOKEN_TTL` (реализовано, §0) | — |
 | Безопасность | `CORS_ORIGINS`, `SESSION_IDLE_TTL`, `SESSION_ABSOLUTE_TTL`, `SESSION_COOKIE_SECURE` (реализовано, §0); лимиты rate limit (пока константы, ADR-013 §4) | — |
 | Лимиты | `UPLOAD_MAX_BYTES`, `CHAT_GENERATION_TIMEOUT_SECONDS` (реализовано, §0); лимиты страниц/распаковки/времени парсинга — пока константы `ParseLimits`; одновременные генерации (2 на пользователя) — константа ([ADR-019](adr/0019-answer-generation-in-api-process.md)) | — |
@@ -353,6 +353,10 @@ Client secret Entra имеет срок действия: продлите ег�
 
 ## 8. TLS и Nginx
 
+Целевая конфигурация — [ADR-023](adr/0023-production-deployment.md) §4–§5 (шаг 11.2): `compose.prod.yaml`,
+сертификат администратора в `deploy/prod/certs/`, CSP со `style-src 'self' 'unsafe-inline'` только для стилей.
+
+
 - TLS терминируется в Nginx; HSTS; security headers (SECURITY_MODEL.md §12).
 - Для SSE: отключённая буферизация ответа, увеличенный read timeout, корректная передача `X-Accel-Buffering: no`.
 - Лимит размера тела запроса согласован с `UPLOAD_MAX_BYTES`.
@@ -368,6 +372,11 @@ Client secret Entra имеет срок действия: продлите ег�
 - Resource limits (CPU/память) обязательны для worker-сервисов, особенно `worker-ingestion` (§8 п.6).
 
 ## 10. Backup и restore (§8 п.10)
+
+Процедура — [ADR-023](adr/0023-production-deployment.md) §6 (шаг 11.3): `deploy/scripts/backup.sh` (дамп БД, затем
+зеркало бакета, манифест; key ring и bootstrap token не входят), `maintenance export-deletions` на исходной БД,
+`deploy/scripts/restore.sh` и `maintenance reapply-deletions` на восстановленной.
+
 
 - Backup: PostgreSQL (логический или физический) + object storage, согласованные по времени; ключ шифрования —
   отдельно.

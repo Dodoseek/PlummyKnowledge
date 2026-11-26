@@ -349,7 +349,9 @@ class StorageProvider(Protocol):
 
 `StorageArea`: `quarantine` (временная, ограниченные права, cleanup, §8 п.8) и `documents`. Ключи генерирует
 сервер (UUID-based); имя файла пользователя **никогда** не используется как путь (§12: malicious filenames не
-выходят из storage). Реализации: local filesystem (`STORAGE_BACKEND=local`, реализована), S3-compatible (MinIO) — Фаза 11.
+выходят из storage). Реализации: local filesystem (`STORAGE_BACKEND=local`, реализована), S3-compatible (MinIO, AWS S3) — Фаза 11
+([ADR-022](adr/0022-s3-compatible-storage.md): подпись SigV4 на `httpx` через `SafeHttpClient`, `If-None-Match: *`
+против перезаписи, загрузка через временный файл, `local_path` — скачивание во временный файл).
 
 ### 8.6 `DataSourceConnector` (§7)
 
@@ -610,8 +612,10 @@ sequenceDiagram
 ## 12. Deployment (§3, §13 Фазы 1, 11)
 
 - **Development:** Docker Compose — PostgreSQL+pgvector, Redis, backend, worker, frontend; healthchecks (§13 Фаза 1).
-- **Production:** Compose profiles, Nginx TLS, production secrets и resource limits, S3-compatible storage/MinIO,
-  backup/restore, upgrades, retention, worker scaling, admin jobs/sync dashboard и troubleshooting (§13 Фаза 11).
+- **Production:** отдельный `compose.prod.yaml` ([ADR-023](adr/0023-production-deployment.md)): prod-образы, Nginx
+  (TLS, security headers, CSP, SSE), Docker secrets, resource limits, сети `public`/`app`/`data`/`egress`, profile
+  `minio`; S3-compatible storage ([ADR-022](adr/0022-s3-compatible-storage.md)); backup/restore с повторным
+  применением удалений, upgrades, retention, worker scaling, admin jobs/sync dashboard и troubleshooting (§13 Фаза 11).
 - Миграции Alembic выполняются отдельным шагом/командой до запуска новой версии API; readiness не проходит, пока
   миграции не применены. **[Proposed]**
 - Обновления — по SemVer (§13 Фаза 13); миграции проверяются на чистой БД и upgrade path (§20).

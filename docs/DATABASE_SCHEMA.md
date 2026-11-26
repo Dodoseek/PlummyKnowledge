@@ -701,7 +701,7 @@ Blueprint требует **определить** lifecycle и сроки; ко�
 | Chunks | Исключаются из retrieval немедленно; удаляются purge-job | Вместе с версией |
 | Embeddings | Как chunks; при смене profile старые удаляются после переключения | Вместе с версией/profile |
 | Chat history | Удаление диалога пользователем → soft delete, purge | Без автоудаления в MVP; настраиваемо |
-| Audit logs | Не удаляются пользователем | 1 год |
+| Audit logs | Не удаляются пользователем | 1 год (retention-job — Фаза 12: нужна отдельная роль БД, [ADR-023](adr/0023-production-deployment.md) §7) |
 | Credentials | При disconnect/revoke — немедленное удаление `secret_references` | — |
 | Quarantine/temp | Cleanup после обработки или по TTL (`scheduler`, раз в час) | 24 часа (`QUARANTINE_TTL`) |
 | Источник (`data_sources`) | Документы — lifecycle документа; credentials — сразу | — |

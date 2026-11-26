@@ -252,6 +252,11 @@ security gate (проверки безопасности **внутри** фаз
 - S3-compatible storage и MinIO; Compose profiles, Nginx TLS, production secrets/resource limits.
 - Backup/restore, upgrades, retention, worker scaling; сегментация сетей и egress-фильтрация ([DEPLOYMENT.md](DEPLOYMENT.md)).
 - Admin jobs/sync dashboard и troubleshooting.
+- Решения — [ADR-022](adr/0022-s3-compatible-storage.md) (S3: SigV4 на `httpx`, без SDK) и
+  [ADR-023](adr/0023-production-deployment.md) (`compose.prod.yaml`, Nginx, CSP со `style-src 'unsafe-inline'`,
+  backup и повторное применение удалений; retention audit logs — Фаза 12). Шаги: 11.0 ADR и спецификации; 11.1
+  S3 StorageProvider; 11.2 production-стек и smoke в CI; 11.3 backup/restore, upgrade path, drill; 11.4 отмена jobs
+  и страница `/admin/jobs`; 11.5 retention версий, масштабирование, security gate. Выполнен 11.0.
 - **Security gate:** backup/restore drill; проверка lifecycle удаления; ключ шифрования хранится отдельно от backup.
 
 ### Фаза 12 — Security hardening (§13)

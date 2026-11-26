@@ -1,0 +1,153 @@
+# ADR-023: Production Deployment with Docker Compose
+
+- **Status:** Accepted
+- **Date:** 2026-11-26 (утверждено владельцем проекта вместе с планом Фазы 11: CSP `style-src 'self' 'unsafe-inline'`,
+  retention audit logs — Фаза 12)
+
+## Context
+
+До Фазы 11 есть только dev-стек (`compose.yaml`): Vite dev server, `uvicorn --reload`, исходники в bind mounts,
+учётные данные по умолчанию, без TLS, CSP и Nginx. В Dockerfile backend и frontend уже есть таргеты `prod`,
+`ingestion` и `dist`, но они нигде не используются. [ADR-003](0003-technology-stack.md) фиксирует Docker Compose и
+Nginx; [DEPLOYMENT.md](../DEPLOYMENT.md) §5–§10 описывает целевую модель (volumes, сети, TLS, backup), но многое в ней
+помечено [Proposed]. [SECURITY_MODEL.md §12](../SECURITY_MODEL.md) оставил открытым, как совместить CSP со стилями
+Chakra UI/emotion; §16.2 — как повторно применить удаления после restore.
+
+## Decision
+
+### 1. Отдельный `compose.prod.yaml`
+
+- Самостоятельный файл (не overlay на `compose.yaml`): dev-файл содержит bind mounts, порты `127.0.0.1` и значения
+  по умолчанию, которые в production недопустимы. Запуск: `docker compose -f compose.prod.yaml --env-file
+  deploy/prod/.env up -d`.
+- Образы — только prod-таргеты: `backend`/`worker`/`scheduler`/`migrate` из `prod`, `worker-ingestion` из `ingestion`,
+  `nginx` — свой таргет со статикой frontend из `dist` и конфигурацией `deploy/nginx/`. Код в контейнеры не
+  монтируется; файловые системы приложений — `read_only` с `tmpfs` для `/tmp`.
+- `APP_ENV=production`; `migrate` — одноразовый шаг (`alembic upgrade head`, `setup init-token`), без
+  `secrets init-keyring` (key ring создаёт администратор, §3).
+- Profile `minio` включает встроенный MinIO и `minio-init` (бакет, пользователь приложения с политикой только на
+  этот бакет); без него используется внешний S3 ([ADR-022](0022-s3-compatible-storage.md)). PostgreSQL и Redis входят
+  в стек; внешний управляемый PostgreSQL — через override-файл (DEPLOYMENT).
+- Resource limits (`cpus`, `mem_limit`, `pids_limit`) у каждого сервиса; значения по умолчанию задаются переменными.
+- Healthchecks у всех долгоживущих сервисов; `restart: unless-stopped`, кроме `migrate` и `minio-init`.
+- Масштабирование: `backend` и `worker` — любое число реплик, `worker-ingestion` — по памяти, `scheduler` — ровно один.
+
+### 2. Сети
+
+| Сеть | `internal` | Участники |
+|---|---|---|
+| `public` | нет | `nginx` (единственный сервис с опубликованными портами 80/443) |
+| `app` | да, фиксированная подсеть | `nginx`, `backend` |
+| `data` | да, фиксированная подсеть | `backend`, `worker`, `worker-ingestion`, `scheduler`, `migrate`, `postgres`, `redis`, `minio` |
+| `egress` | нет | `backend`, `worker` (LLM, embeddings, коннекторы — через `SafeHttpClient`) |
+
+`worker-ingestion`, `scheduler`, `postgres`, `redis` и `minio` выхода в интернет не имеют. Локальная модель
+подключается сетью `llm` по DEPLOYMENT §7.3. Фильтрация metadata endpoints на хосте (`DOCKER-USER`) остаётся
+обязанностью администратора (DEPLOYMENT §7.2).
+
+### 3. Секреты
+
+- Все секреты — Docker secrets (файлы `0400` в `deploy/prod/secrets/`, каталог в `.gitignore`): `SECRET_KEY_FILE`,
+  `DATABASE_URL_FILE`, `REDIS_URL_FILE`, `SECRETS_KEYRING_FILE`, `S3_*_FILE`, OAuth client secrets, пароли
+  `postgres`, роли приложения, Redis и MinIO.
+- Скрипт `deploy/prod/init-secrets.sh` один раз генерирует случайные значения (не перезаписывает существующие файлы)
+  и key ring; значения не печатаются.
+- Redis требует пароль (`requirepass` из секрета); PostgreSQL — роли по [ADR-011](0011-database-roles-and-extensions.md).
+- Сервис получает только свои секреты: `worker-ingestion` — БД, Redis, S3; `scheduler` — только Redis и БД; key ring —
+  только `backend` и `worker`.
+
+### 4. Nginx
+
+- TLS 1.2+ с сертификатом администратора (`deploy/prod/certs/`); HTTP → `301` на HTTPS; HSTS `max-age=31536000`
+  (без `preload` по умолчанию). Получение сертификата (ACME) — вне стека, описано в DEPLOYMENT.
+- Статика SPA с fallback на `index.html`; `/api/` проксируется на `backend` с `X-Forwarded-For $remote_addr`
+  (перезапись, не дописывание) и `X-Forwarded-Proto https`; `backend` доверяет `X-Forwarded-For` только с адреса
+  Nginx в сети `app` (`FORWARDED_ALLOW_IPS`).
+- SSE (`/api/v1/chat/stream`): `proxy_buffering off`, `proxy_read_timeout` больше `CHAT_GENERATION_TIMEOUT_SECONDS`.
+- `client_max_body_size` немного больше `UPLOAD_MAX_BYTES`; `proxy_request_buffering off` для upload.
+- Swagger UI выключен (`API_DOCS_ENABLED` пусто в production); `server_tokens off`.
+
+### 5. Security headers и CSP
+
+```
+Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';
+  img-src 'self' data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none';
+  frame-ancestors 'none'; form-action 'self'
+X-Content-Type-Options: nosniff
+Referrer-Policy: no-referrer
+Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Resource-Policy: same-origin
+```
+
+`'unsafe-inline'` разрешён **только** для стилей: emotion вставляет `<style>` во время работы, а nonce потребовал бы
+генерировать HTML на сервере для каждого запроса. Скрипты — только `'self'`, без `'unsafe-inline'` и
+`'unsafe-eval'`. Ответы API дополнительно сохраняют свои заголовки (`Cache-Control: no-store` приватных ответов).
+OAuth-провайдеры открываются переходом верхнего уровня, а не из `form-action`/`connect-src`.
+
+### 6. Backup, restore и повторное применение удалений
+
+- `deploy/scripts/backup.sh`: `pg_dump --format=custom` под ролью приложения, затем зеркало бакета (`mc mirror`) в
+  каталог с меткой времени UTC и манифестом (версия приложения, ревизия Alembic, время начала дампа). Key ring и
+  bootstrap token в backup **не** попадают — скрипт отказывается работать, если они оказались в целевом каталоге.
+  Шифрование и вынос копии — обязанность администратора (DEPLOYMENT описывает `age`/`gpg`).
+- Порядок «сначала БД, потом объекты» гарантирует, что объекты всех документов, живых на момент дампа, есть в копии,
+  кроме удалённых после дампа — а их удаляет следующий шаг restore.
+- Удаления после момента дампа записаны только в audit исходной БД. Перед restore (если исходная БД доступна —
+  повреждение данных, откат) администратор выполняет на ней `python -m plummy.cli maintenance export-deletions
+  --since <время дампа из манифеста> --output deletions.json`: идентификаторы и типы из событий `document.deleted`,
+  `kb.deleted`, `data_source.deleted`, `data_source.disconnected` и `conversation.deleted`, без содержимого.
+- `deploy/scripts/restore.sh` на чистую инсталляцию (пустые volumes): `pg_restore`, зеркало объектов обратно,
+  `migrate` (upgrade до текущей версии), затем `maintenance reapply-deletions --input deletions.json` — те же use
+  cases удаления, что у API (soft delete, purge, удаление credentials), от имени системного действия с audit
+  `maintenance.deletion_reapplied`. Повтор идемпотентен. Restore без файла удалений требует явного
+  `--no-deletions` и предупреждает, что удаления после дампа не применены: если исходная БД потеряна целиком, окно
+  равно интервалу между backup (DEPLOYMENT рекомендует частоту).
+- Restore drill — job CI: backup → удаление документа → `down -v` → restore → reapply → проверка входа, поиска,
+  цитаты и того, что удалённый документ не находится.
+- Обновление: backup → `migrate` новой версии → перезапуск сервисов → readiness. CI проверяет upgrade path: БД,
+  созданная миграциями предыдущего релиза, обновляется до head.
+
+### 7. Retention
+
+Purge устаревших версий документов (хранить последние 3 `outdated`, DATABASE_SCHEMA §8) — задача `maintenance`
+Фазы 11. Retention audit logs (1 год) откладывается до Фазы 12: роль приложения не имеет `DELETE` на `audit_logs`,
+нужна отдельная роль БД и решение о ней.
+
+## Alternatives
+
+- **Profiles в одном `compose.yaml`.** Отклонено: dev-сервисы с bind mounts и значениями по умолчанию оставались бы в
+  том же файле, ошибка выбора profile запускала бы небезопасную конфигурацию.
+- **Kubernetes/Helm.** Вне MVP ([PRODUCT_SPEC.md](../PRODUCT_SPEC.md)); Compose остаётся целевой платформой до 1.0.
+- **CSP с nonce для стилей.** Требует SSR или `sub_filter` с генерацией nonce в Nginx и настройку кэша emotion;
+  отложено, пересматривается в Фазе 12.
+- **Физический backup PostgreSQL (`pg_basebackup`, PITR).** Сложнее для одного хоста; DEPLOYMENT упоминает его как
+  вариант для управляемых БД. Логический дамп достаточен для MVP-объёмов.
+
+## Consequences
+
+- Два compose-файла поддерживаются параллельно; CI поднимает оба (dev — тесты и E2E, prod — smoke и restore drill).
+- Администратор отвечает за TLS-сертификат, фильтрацию egress на хосте, шифрование и вынос backup.
+- `'unsafe-inline'` в `style-src` допускает внедрение стилей при XSS в разметку; защита от XSS по-прежнему на
+  React-экранировании и Markdown без сырого HTML.
+
+## Security considerations
+
+- Единственная точка входа — Nginx; `backend` недоступен с хоста.
+- Секреты не передаются переменными окружения, только файлами; `docker inspect` их не показывает.
+- Key ring хранится и резервируется отдельно от backup БД; restore без key ring восстанавливает всё, кроме
+  сохранённых секретов (их вводят заново), что документировано.
+- Security gate Фазы 11: restore drill, проверка lifecycle удаления, key ring вне backup, заголовки и CSP проверяются
+  в CI.
+
+## Implementation notes
+
+Шаги 11.2 (compose, Nginx, секреты, сети, smoke в CI), 11.3 (backup/restore, reapply-deletions, upgrade path,
+drill), 11.5 (retention, security gate).
+
+## Related documents
+
+[ADR-003](0003-technology-stack.md) · [ADR-006](0006-initial-setup-and-system-configuration.md) ·
+[ADR-007](0007-network-access-and-local-llm.md) · [ADR-011](0011-database-roles-and-extensions.md) ·
+[ADR-013](0013-auth-session-strategy.md) · [ADR-016](0016-secret-encryption.md) · [ADR-022](0022-s3-compatible-storage.md) ·
+[DEPLOYMENT.md](../DEPLOYMENT.md) · [SECURITY_MODEL.md §12, §16](../SECURITY_MODEL.md)

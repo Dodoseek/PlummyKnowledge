@@ -448,7 +448,8 @@ OpenAI/Anthropic). Полный алгоритм — в ADR-007; здесь — 
 - **TLS** терминируется в Nginx; HTTP → HTTPS redirect; HSTS.
 - **Security headers:** `Content-Security-Policy` (`default-src 'self'; script-src 'self'; object-src 'none';
   base-uri 'none'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data:; connect-src 'self'`;
-  стили Chakra UI/emotion требуют nonce или `style-src 'self' 'unsafe-inline'` — решить при реализации),
+  `style-src 'self' 'unsafe-inline'` — только для стилей emotion/Chakra UI, скрипты без `'unsafe-inline'`;
+  решение и полный набор заголовков — [ADR-023](adr/0023-production-deployment.md) §5, Фаза 11),
   `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Permissions-Policy`, `Cross-Origin-Opener-Policy: same-origin`.
 - **XSS:** React-экранирование по умолчанию; `dangerouslySetInnerHTML` запрещён без санитизации; содержимое
   документов и ответы модели рендерятся как недоверенные данные. Реализовано (Фаза 8): ответ — Markdown без сырого
@@ -530,8 +531,10 @@ OpenAI/Anthropic). Полный алгоритм — в ADR-007; здесь — 
 - Ключ шифрования секретов хранится и резервируется **отдельно** от backup БД; bootstrap token в backup не нужен.
 - Backup шифруется и имеет ограниченный доступ; влияние backup retention документируется: удалённые данные остаются
   в backup до истечения их срока (§8).
-- После восстановления из backup повторно применяются удаления, выполненные после момента backup (по audit log), до
-  открытия доступа пользователям **[Proposed]**.
+- После восстановления из backup повторно применяются удаления, выполненные после момента backup, до открытия
+  доступа пользователям: `maintenance export-deletions` на исходной БД и `maintenance reapply-deletions` на
+  восстановленной ([ADR-023](adr/0023-production-deployment.md) §6, Фаза 11). Если исходная БД потеряна, окно
+  потерянных удалений равно интервалу между backup.
 - Backup/restore drills и проверка lifecycle удаления — регулярно и перед релизом (§8 п.10, §20). Процедура —
   [DEPLOYMENT.md](DEPLOYMENT.md).
 
