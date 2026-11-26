@@ -433,13 +433,12 @@ async def revoke_token(client: OAuthClient | None, token: SecretValue | None, so
     if client is None or token is None:
         return False
     try:
-        await client.revoke(token)
+        return await client.revoke(token)
     except ConnectorError as exc:
         logger.warning(
             "token revocation failed", extra={"data_source_id": str(source_id), "error_code": exc.code}
         )
         return False
-    return True
 
 
 class DisconnectDataSource:
@@ -696,7 +695,7 @@ class CompleteOAuth:
         if grant.refresh_token is None:
             await revoke_token(oauth, grant.access_token, source.id)
             raise _OAuthFailedError("oauth_no_refresh_token")
-        if not set(oauth.required_scopes) <= set(grant.granted_scopes):
+        if not oauth.has_required_scopes(grant.granted_scopes):
             await revoke_token(oauth, grant.refresh_token, source.id)
             raise _OAuthFailedError("oauth_scope_missing")
         try:

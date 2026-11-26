@@ -5,7 +5,7 @@ client, the store of pending authorizations and the typed connector errors. Adap
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -117,6 +117,11 @@ class OAuthClient(Protocol):
     @property
     def required_scopes(self) -> tuple[str, ...]: ...
 
+    def has_required_scopes(self, granted: Sequence[str]) -> bool:
+        """Whether the scopes the provider actually granted cover :attr:`required_scopes` (providers spell
+        granted scopes their own way)."""
+        ...
+
     def authorization_url(self, *, state: str, code_challenge: str, redirect_uri: str) -> str: ...
 
     async def exchange_code(
@@ -125,7 +130,10 @@ class OAuthClient(Protocol):
 
     async def refresh(self, refresh_token: SecretValue) -> OAuthGrant: ...
 
-    async def revoke(self, token: SecretValue) -> None: ...
+    async def revoke(self, token: SecretValue) -> bool:
+        """Revokes the token at the provider; ``False`` when the provider has no way to revoke one token
+        (Microsoft, ADR-021 §3): the caller then only removes it locally."""
+        ...
 
     async def account_label(self, access_token: SecretValue) -> str | None:
         """Who granted the access, for the UI (personal data: never written to logs or audit)."""
@@ -196,6 +204,17 @@ class RemotePage:
 class BrowseKind(StrEnum):
     FOLDER = "folder"
     SHARED_DRIVE = "shared_drive"
+    SITE = "site"  # a SharePoint site: opened to list its libraries, never chosen (ADR-021 §6)
+    DRIVE = "drive"  # a document library or a OneDrive: its root can be chosen as the folder
+
+
+@dataclass(frozen=True, slots=True)
+class SourceLocation:
+    """Where a source syncs (ADR-021 §8): the chosen folder and, for providers whose change feed belongs to
+    one drive (Microsoft Graph), that drive. Google's feed covers the account and ignores ``drive_id``."""
+
+    folder_id: str
+    drive_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -262,11 +281,13 @@ class DataSourceConnector(Protocol):
         """One page of the direct, non-trashed children of a folder (recursion belongs to the caller)."""
         ...
 
-    async def start_cursor(self, access_token: SecretValue) -> str:
+    async def start_cursor(self, access_token: SecretValue, location: SourceLocation) -> str:
         """The change cursor of "now", taken before a full listing."""
         ...
 
-    async def get_changes(self, access_token: SecretValue, cursor: str) -> ChangesPage: ...
+    async def get_changes(
+        self, access_token: SecretValue, location: SourceLocation, cursor: str
+    ) -> ChangesPage: ...
 
     def download(
         self, access_token: SecretValue, item: RemoteItem, *, max_bytes: int

@@ -146,14 +146,16 @@ async def test_exchange_refresh_and_revoke_against_the_fake() -> None:
         )
         assert grant.refresh_token is not None
         assert grant.granted_scopes == ("https://www.googleapis.com/auth/drive.readonly",)
+        assert client.has_required_scopes(grant.granted_scopes)
+        assert not client.has_required_scopes(("https://www.googleapis.com/auth/drive.file",))
         assert await client.account_label(grant.access_token) == "Drive Bot <drive-bot@example.com>"
         refreshed = await client.refresh(grant.refresh_token)
         assert refreshed.refresh_token is not None
         assert refreshed.refresh_token.reveal() == grant.refresh_token.reveal()  # Google keeps it
-        await client.revoke(grant.refresh_token)
+        assert await client.revoke(grant.refresh_token) is True
         with pytest.raises(ConnectorAuthRevokedError):
             await client.refresh(grant.refresh_token)
-        await client.revoke(grant.refresh_token)  # already revoked: not an error
+        assert await client.revoke(grant.refresh_token) is True  # already revoked: not an error
         for request in server.requests:  # secrets only in bodies, never in URLs
             assert CLIENT_SECRET not in request.target
             assert grant.refresh_token.reveal() not in request.target

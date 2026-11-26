@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from collections.abc import Sequence
 from typing import Final
 from urllib.parse import urlencode
 
@@ -65,6 +66,9 @@ class GoogleOAuthClient:
     @property
     def required_scopes(self) -> tuple[str, ...]:
         return (DRIVE_READONLY_SCOPE,)
+
+    def has_required_scopes(self, granted: Sequence[str]) -> bool:
+        return DRIVE_READONLY_SCOPE in granted
 
     def authorization_url(self, *, state: str, code_challenge: str, redirect_uri: str) -> str:
         query = urlencode(
@@ -162,12 +166,12 @@ class GoogleOAuthClient:
             expires_in_seconds=grant.expires_in_seconds,
         )
 
-    async def revoke(self, token: SecretValue) -> None:
+    async def revoke(self, token: SecretValue) -> bool:
         response = await self._post_form(self._endpoints.revoke_url, {"token": token.reveal()})
         if response.status_code == 200:
-            return
+            return True
         if response.status_code == 400:
-            return  # already invalid: nothing left to revoke
+            return True  # already invalid: nothing left to revoke
         raise ConnectorTransientError(f"status {response.status_code}")
 
     async def account_label(self, access_token: SecretValue) -> str | None:

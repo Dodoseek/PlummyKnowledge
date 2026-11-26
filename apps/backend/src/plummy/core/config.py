@@ -10,12 +10,13 @@ Invalid configuration stops the process with a diagnostic that never contains se
 from __future__ import annotations
 
 import os
+import re
 import secrets
 from datetime import timedelta
 from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated, Any, Self
+from typing import Annotated, Any, Final, Self
 from urllib.parse import urlsplit
 
 from pydantic import Field, PrivateAttr, SecretStr, ValidationError, field_validator, model_validator
@@ -43,11 +44,16 @@ MIN_QUARANTINE_TTL = timedelta(minutes=10)
 MAX_QUARANTINE_TTL = timedelta(days=7)
 
 # Secret fields that may also be provided as ``<NAME>_FILE`` (path to a file with the value).
+_MULTI_TENANT_ALIASES: Final = frozenset({"common", "organizations", "consumers"})
+_TENANT_GUID: Final = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+_TENANT_DOMAIN: Final = re.compile(r"(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}")
+
 FILE_SECRET_FIELDS: tuple[str, ...] = (
     "database_url",
     "redis_url",
     "secret_key",
     "google_oauth_client_secret",
+    "microsoft_oauth_client_secret",
 )
 
 
@@ -184,6 +190,10 @@ class Settings(BaseSettings):
     # PUBLIC_URL + /api/v1/data-sources/oauth/callback; without PUBLIC_URL the connector is not configured.
     google_oauth_client_id: str | None = Field(default=None, max_length=256)
     google_oauth_client_secret: SecretStr | None = None
+    # Entra ID app of the Microsoft 365 connector (ADR-021 §2): all three or none; one tenant only.
+    microsoft_oauth_tenant_id: str | None = Field(default=None, max_length=256)
+    microsoft_oauth_client_id: str | None = Field(default=None, max_length=256)
+    microsoft_oauth_client_secret: SecretStr | None = None
 
     _secret_key_generated: bool = PrivateAttr(default=False)
 
@@ -243,6 +253,21 @@ class Settings(BaseSettings):
             raise ValueError("wildcard '*' is not allowed; list explicit origins")
         return list(dict.fromkeys(_validate_origin(origin) for origin in value))
 
+    @field_validator("microsoft_oauth_tenant_id")
+    @classmethod
+    def _check_microsoft_tenant(cls, value: str | None) -> str | None:
+        # One organization's directory (ADR-021 §2): a GUID or a domain; never the multi-tenant aliases.
+        if value is None:
+            return None
+        value = value.strip().lower()
+        if value in _MULTI_TENANT_ALIASES:
+            raise ValueError(
+                "MICROSOFT_OAUTH_TENANT_ID must be one tenant, not common/organizations/consumers"
+            )
+        if not (_TENANT_GUID.fullmatch(value) or _TENANT_DOMAIN.fullmatch(value)):
+            raise ValueError("MICROSOFT_OAUTH_TENANT_ID must be a tenant GUID or a domain name")
+        return value
+
     @field_validator("public_url")
     @classmethod
     def _check_public_url(cls, value: str | None) -> str | None:
@@ -299,6 +324,16 @@ class Settings(BaseSettings):
     def _check_environment_policy(self) -> Self:
         if (self.google_oauth_client_id is None) != (self.google_oauth_client_secret is None):
             raise ValueError("GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET must be set together")
+        microsoft = (
+            self.microsoft_oauth_tenant_id,
+            self.microsoft_oauth_client_id,
+            self.microsoft_oauth_client_secret,
+        )
+        if any(value is not None for value in microsoft) and any(value is None for value in microsoft):
+            raise ValueError(
+                "MICROSOFT_OAUTH_TENANT_ID, MICROSOFT_OAUTH_CLIENT_ID and MICROSOFT_OAUTH_CLIENT_SECRET "
+                "must be set together"
+            )
         if self.session_absolute_ttl < self.session_idle_ttl:
             raise ValueError("SESSION_ABSOLUTE_TTL must not be shorter than SESSION_IDLE_TTL")
         if self.app_env is AppEnv.PRODUCTION:
@@ -337,6 +372,10 @@ class Settings(BaseSettings):
         return self.google_oauth_client_id is not None and self.public_url is not None
 
     @property
+    def microsoft_365_configured(self) -> bool:
+        return self.microsoft_oauth_client_id is not None and self.public_url is not None
+
+    @property
     def oauth_redirect_uri(self) -> str | None:
         """The exact redirect URI registered with the provider (ADR-020 §1)."""
         if self.public_url is None:
@@ -373,6 +412,7 @@ class Settings(BaseSettings):
             "quarantine_ttl_seconds": int(self.quarantine_ttl.total_seconds()),
             "upload_max_bytes": self.upload_max_bytes,
             "google_drive_configured": self.google_drive_configured,
+            "microsoft_365_configured": self.microsoft_365_configured,
         }
 
 

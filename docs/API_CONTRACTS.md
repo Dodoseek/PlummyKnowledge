@@ -940,7 +940,9 @@ Endpoints для **изменения** Instance Settings и allowlist **не с
   },
   "connectors": {
     "google_drive": { "configured": true,
-                      "redirect_uri": "https://kb.example.test/api/v1/data-sources/oauth/callback" }
+                      "redirect_uri": "https://kb.example.test/api/v1/data-sources/oauth/callback" },
+    "microsoft_365": { "configured": false,
+                       "redirect_uri": "https://kb.example.test/api/v1/data-sources/oauth/callback" }
   }
 }
 ```
@@ -949,6 +951,8 @@ Endpoints для **изменения** Instance Settings и allowlist **не с
 записи `[[network.allowlist]]` из `CONFIG_FILE` ([ADR-007](adr/0007-network-access-and-local-llm.md)), пустой
 список по умолчанию. `connectors.google_drive` — задан ли OAuth client (`GOOGLE_OAUTH_CLIENT_ID` и секрет) и
 redirect URI для регистрации в Google Cloud ([ADR-020](adr/0020-google-drive-connector.md)); секрет не возвращается.
+`connectors.microsoft_365` — то же для приложения Entra ID (`MICROSOFT_OAUTH_TENANT_ID`, `MICROSOFT_OAUTH_CLIENT_ID`
+и секрет, [ADR-021](adr/0021-microsoft-365-connector.md)); redirect URI общий, ни секрет, ни tenant не возвращаются.
 
 Дополнительные разделы (**[Proposed]**, по мере появления лимитов, SMTP и storage):
 

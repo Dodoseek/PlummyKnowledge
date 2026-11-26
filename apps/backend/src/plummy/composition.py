@@ -165,6 +165,8 @@ from plummy.infrastructure.integrations.ai.factory import HttpProviderGateway
 from plummy.infrastructure.integrations.sources.google_common import GoogleEndpoints
 from plummy.infrastructure.integrations.sources.google_drive import GoogleDriveConnector
 from plummy.infrastructure.integrations.sources.google_oauth import GoogleOAuthClient
+from plummy.infrastructure.integrations.sources.microsoft_common import MicrosoftEndpoints
+from plummy.infrastructure.integrations.sources.microsoft_oauth import MicrosoftOAuthClient
 from plummy.infrastructure.parsing.isolated import IsolatedParser
 from plummy.infrastructure.parsing.text import PlainTextParser
 from plummy.infrastructure.queue.celery_queue import CeleryJobQueue
@@ -563,13 +565,14 @@ def _platform_addresses(settings: Settings) -> list[tuple[str, IPAddress]]:
 
 
 def load_config(settings: Settings) -> InstanceConfig:
-    """CONFIG_FILE; replacement Google endpoints are refused in production (ADR-020 §2)."""
+    """CONFIG_FILE; replacement provider endpoints are refused in production (ADR-020 §2, ADR-021 §2)."""
     config = load_instance_config(settings.config_file)
-    if settings.is_production and config.google_drive is not None:
-        raise ConfigurationError(
-            "Invalid configuration: CONFIG_FILE: [connectors.google_drive] "
-            "is not allowed when APP_ENV=production"
-        )
+    for name, section in (("google_drive", config.google_drive), ("microsoft_365", config.microsoft_365)):
+        if settings.is_production and section is not None:
+            raise ConfigurationError(
+                f"Invalid configuration: CONFIG_FILE: [connectors.{name}] "
+                "is not allowed when APP_ENV=production"
+            )
     return config
 
 
@@ -582,6 +585,19 @@ def oauth_clients(settings: Settings, http: SafeHttpClient) -> dict[DataSourceTy
             client_id=settings.google_oauth_client_id,
             client_secret=SecretValue(settings.google_oauth_client_secret.get_secret_value()),
             endpoints=GoogleEndpoints.from_config(load_config(settings).google_drive),
+        )
+    if (
+        settings.microsoft_oauth_tenant_id is not None
+        and settings.microsoft_oauth_client_id is not None
+        and settings.microsoft_oauth_client_secret is not None
+    ):
+        clients[DataSourceType.MICROSOFT_365] = MicrosoftOAuthClient(
+            http,
+            client_id=settings.microsoft_oauth_client_id,
+            client_secret=SecretValue(settings.microsoft_oauth_client_secret.get_secret_value()),
+            endpoints=MicrosoftEndpoints.for_tenant(
+                settings.microsoft_oauth_tenant_id, load_config(settings).microsoft_365
+            ),
         )
     return clients
 
@@ -622,6 +638,7 @@ def instance_settings_view(
             keys=len(cipher.key_ids) if cipher else 0,
         ),
         google_drive_configured=settings.google_drive_configured,
+        microsoft_365_configured=settings.microsoft_365_configured,
         oauth_redirect_uri=settings.oauth_redirect_uri,
         network_allowlist=tuple(
             AllowlistEntryView(

@@ -166,6 +166,25 @@ credentials `revoked`, источник `error`, `connector_auth_revoked`.
 Шаги 10.0–10.4 roadmap: 10.0 ADR и спецификации; 10.1 Instance Settings, OAuth Entra, обобщение портов и API;
 10.2 адаптер Graph (picker, листинг, загрузка); 10.3 синхронизация через Delta Query; 10.4 UI, E2E и security gate.
 
+10.1 (выполнен):
+
+- `Settings`: `microsoft_oauth_tenant_id`/`_client_id`/`_client_secret` (секрет — и через `_FILE`), все три или ни
+  одного; tenant приводится к нижнему регистру и должен быть GUID или доменом, `common`/`organizations`/`consumers`
+  отклоняются при старте. `microsoft_365_configured` требует ещё `PUBLIC_URL`.
+- `CONFIG_FILE`: `[connectors.microsoft_365]` с ключами `auth_url`, `token_url`, `api_url`, `download_hosts`
+  (без `revoke_url`); в production секция — ошибка конфигурации, как и `[connectors.google_drive]`.
+- `MicrosoftOAuthClient` (`infrastructure/integrations/sources/microsoft_oauth.py`): authority одного tenant,
+  PKCE S256, `prompt=select_account`, scopes передаются и в token-запросах; ротация refresh token;
+  `invalid_grant`/`interaction_required`/`unauthorized_client` при refresh → источник `revoked`; метка учётной
+  записи из `/me`. Отсутствие отзыва выражено в порте OAuth: `OAuthClient.revoke` возвращает `bool`, у Microsoft —
+  `False` без сетевого вызова, и disconnect пишет `revoked_at_provider: false` в audit (флаг
+  `ConnectorCapabilities.revoke` коннектора 10.2 будет тем же `false`, но disconnect от коннектора не зависит).
+- Проверка scopes перенесена в `OAuthClient.has_required_scopes`: у Google — точное совпадение, у Microsoft —
+  без префикса `https://graph.microsoft.com/` и без учёта регистра.
+- Порты: `SourceLocation` в `start_cursor`/`get_changes` (Google его игнорирует), `BrowseKind.SITE`/`DRIVE`.
+- Тесты: `tests/fake_microsoft.py` (секрет клиента, одноразовые коды, PKCE, ротация), unit
+  `test_microsoft_oauth.py`, integration `test_microsoft_sources_api.py` на PostgreSQL и Redis.
+
 ## Related documents
 
 [ADR-020](0020-google-drive-connector.md) · [ADR-006](0006-initial-setup-and-system-configuration.md) ·

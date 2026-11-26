@@ -24,6 +24,7 @@ from plummy.application.sources.ports import (
     ConnectorTransientError,
     RemoteItem,
     RemoteKind,
+    SourceLocation,
 )
 from plummy.core.instance_config import build_egress_policy, parse_instance_config
 from plummy.domain.secrets import SecretValue
@@ -43,6 +44,7 @@ from tests.fake_http import FakeHttpServer, Reply, serve
 
 TOKEN = "access-test-token"
 ACCESS = SecretValue(TOKEN)
+LOCATION = SourceLocation(folder_id="folder-1")
 DOC = "application/vnd.google-apps.document"
 
 
@@ -241,7 +243,7 @@ async def test_changes_page_until_finished(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(google_drive, "LIST_PAGE_SIZE", 2)
     async with drive() as env:
         google = env.google
-        cursor = await env.connector.start_cursor(ACCESS)
+        cursor = await env.connector.start_cursor(ACCESS, LOCATION)
         kept = google.add("kept.txt", content=b"x")
         gone = google.add("gone.txt", content=b"y")
         trashed = google.add("trashed.txt", content=b"z")
@@ -249,9 +251,9 @@ async def test_changes_page_until_finished(monkeypatch: pytest.MonkeyPatch) -> N
         google.change(kept)
         google.change(gone, removed=True)
         google.change(trashed)
-        first = await env.connector.get_changes(ACCESS, cursor)
-        second = await env.connector.get_changes(ACCESS, first.cursor)
-        idle = await env.connector.get_changes(ACCESS, second.cursor)
+        first = await env.connector.get_changes(ACCESS, LOCATION, cursor)
+        second = await env.connector.get_changes(ACCESS, LOCATION, first.cursor)
+        idle = await env.connector.get_changes(ACCESS, LOCATION, second.cursor)
     assert not first.finished
     assert second.finished
     changes = first.changes + second.changes
@@ -268,7 +270,7 @@ async def test_changes_page_until_finished(monkeypatch: pytest.MonkeyPatch) -> N
 async def test_an_unknown_cursor_needs_a_reconciliation() -> None:
     async with drive() as env:
         with pytest.raises(ConnectorCursorInvalidError):
-            await env.connector.get_changes(ACCESS, "999")
+            await env.connector.get_changes(ACCESS, LOCATION, "999")
 
 
 # --- downloads ----------------------------------------------------------------------------------------------
@@ -352,7 +354,7 @@ async def test_retries_stop_after_max_attempts() -> None:
     async with drive(max_attempts=2) as env:
         env.google.api_failures += [Reply.json({}, status=429), Reply.json({}, status=429)]
         with pytest.raises(ConnectorRateLimitedError):
-            await env.connector.start_cursor(ACCESS)
+            await env.connector.start_cursor(ACCESS, LOCATION)
     assert len(env.sleeps) == 1
 
 
@@ -379,7 +381,7 @@ async def test_errors_that_are_not_retried(reply: Reply, error: type[Exception])
     async with drive() as env:
         env.google.api_failures.append(reply)
         with pytest.raises(error):
-            await env.connector.start_cursor(ACCESS)
+            await env.connector.start_cursor(ACCESS, LOCATION)
     assert env.sleeps == []
 
 
@@ -395,7 +397,7 @@ async def test_network_failure_is_transient() -> None:
     endpoints = GoogleEndpoints.from_config(parse_instance_config(connector_config(9).encode()).google_drive)
     connector = GoogleDriveConnector(http, endpoints, max_attempts=2, sleep=sleep)
     with pytest.raises(ConnectorTransientError):
-        await connector.start_cursor(ACCESS)
+        await connector.start_cursor(ACCESS, LOCATION)
     await http.aclose()
     assert len(sleeps) == 1
 
@@ -404,7 +406,7 @@ async def test_an_endpoint_without_an_allowlist_entry_is_refused() -> None:
     http = SafeHttpClient(build_egress_policy(parse_instance_config(b"")))
     connector = GoogleDriveConnector(http, GoogleEndpoints(api_url="http://127.0.0.1:9"))
     with pytest.raises(ConnectorEgressDeniedError):
-        await connector.start_cursor(ACCESS)
+        await connector.start_cursor(ACCESS, LOCATION)
     await http.aclose()
 
 

@@ -64,6 +64,7 @@ from plummy.application.sources.ports import (
     RemoteItem,
     RemoteKind,
     RemotePage,
+    SourceLocation,
 )
 from plummy.application.storage import (
     StorageArea,
@@ -144,6 +145,15 @@ class _Run:
     purge: list[UUID] = field(default_factory=list)
 
 
+def location_of(source: DataSource) -> SourceLocation:
+    """The folder a source syncs and its drive (ADR-021 §8); the job only runs with a folder chosen."""
+    drive_id = source.config.get("drive_id")
+    return SourceLocation(
+        folder_id=str(source.config["folder_id"]),
+        drive_id=drive_id if isinstance(drive_id, str) and drive_id else None,
+    )
+
+
 def _root_path(root: str) -> str:
     return f"/{root}/"
 
@@ -152,9 +162,15 @@ class _Drive:
     """The connector with the job's access token: refreshed once more when the API refuses it (``401``)."""
 
     def __init__(
-        self, connector: DataSourceConnector, oauth: OAuthClient, tokens: AccessTokens, source_id: UUID
+        self,
+        connector: DataSourceConnector,
+        oauth: OAuthClient,
+        tokens: AccessTokens,
+        source_id: UUID,
+        location: SourceLocation,
     ) -> None:
         self.connector, self._oauth, self._tokens, self._source_id = connector, oauth, tokens, source_id
+        self.location = location
         self._token: SecretValue | None = None
 
     async def _access(self, *, fresh: bool = False) -> SecretValue:
@@ -177,10 +193,10 @@ class _Drive:
         )
 
     async def start_cursor(self) -> str:
-        return await self._call(self.connector.start_cursor)
+        return await self._call(lambda token: self.connector.start_cursor(token, self.location))
 
     async def get_changes(self, cursor: str) -> ChangesPage:
-        return await self._call(lambda token: self.connector.get_changes(token, cursor))
+        return await self._call(lambda token: self.connector.get_changes(token, self.location, cursor))
 
     async def download(self, item: RemoteItem, *, max_bytes: int) -> AsyncIterator[bytes]:
         stream = self.connector.download(await self._access(), item, max_bytes=max_bytes)
@@ -260,7 +276,8 @@ class RunSyncJob:
         run = started
         try:
             oauth, connector = provider_of(self._clients, self._connectors, run.source)
-            await self._sync(run, _Drive(connector, oauth, self._tokens, run.source.id))
+            drive = _Drive(connector, oauth, self._tokens, run.source.id, location_of(run.source))
+            await self._sync(run, drive)
         except _StoppedError:
             return await self._after_stop(run)
         except ConnectorNotConfiguredError as exc:

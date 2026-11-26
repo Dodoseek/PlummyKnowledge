@@ -1,8 +1,8 @@
 """Instance configuration file (``CONFIG_FILE``, TOML): settings that are too structured for environment
 variables. Like all Instance Settings it is read at startup and never changed through the API (ADR-006).
 
-The outbound network allowlist (ADR-007) and, outside production only, the Google endpoints of the Drive
-connector (ADR-020 §2, for end-to-end tests with a fake server)::
+The outbound network allowlist (ADR-007) and, outside production only, the endpoints of the Google Drive and
+Microsoft 365 connectors (ADR-020 §2, ADR-021 §2, for end-to-end tests with fake servers)::
 
     [[network.allowlist]]
     name           = "local-ollama"
@@ -17,6 +17,12 @@ connector (ADR-020 §2, for end-to-end tests with a fake server)::
     revoke_url     = "http://fake-google:8080/revoke"
     api_url        = "http://fake-google:8080"
     download_hosts = []                         # hosts a download may redirect to (https only)
+
+    [connectors.microsoft_365]                  # the same rules (ADR-021 §2); Microsoft has no revoke_url
+    auth_url       = "http://fake-microsoft:8080/tenant/oauth2/v2.0/authorize"
+    token_url      = "http://fake-microsoft:8080/tenant/oauth2/v2.0/token"
+    api_url        = "http://fake-microsoft:8080/v1.0"
+    download_hosts = []
 """
 
 from __future__ import annotations
@@ -54,9 +60,20 @@ class GoogleDriveEndpoints:
 
 
 @dataclass(frozen=True, slots=True)
+class Microsoft365Endpoints:
+    """Replacement Microsoft endpoints (test environments only, ADR-021 §2); no revoke endpoint exists."""
+
+    auth_url: str
+    token_url: str
+    api_url: str
+    download_hosts: frozenset[str]
+
+
+@dataclass(frozen=True, slots=True)
 class InstanceConfig:
     allowlist: tuple[AllowlistEntry, ...] = ()
     google_drive: GoogleDriveEndpoints | None = None
+    microsoft_365: Microsoft365Endpoints | None = None
 
 
 def _fail(message: str) -> ConfigurationError:
@@ -133,14 +150,15 @@ def _parse_entry(raw: Any, index: int) -> AllowlistEntry:
 
 
 _GOOGLE_KEYS: Final = ("auth_url", "token_url", "revoke_url", "api_url", "download_hosts")
+_MICROSOFT_KEYS: Final = ("auth_url", "token_url", "api_url", "download_hosts")
 
 
-def _parse_google_drive(raw: Any) -> GoogleDriveEndpoints:
-    where = "connectors.google_drive"
-    if not isinstance(raw, dict) or set(raw) != set(_GOOGLE_KEYS):
-        raise _fail(f"[{where}] must have exactly: {', '.join(_GOOGLE_KEYS)}")
+def _parse_endpoints(raw: Any, where: str, keys: tuple[str, ...]) -> tuple[dict[str, str], frozenset[str]]:
+    """The URLs of a ``[connectors.<type>]`` section (``keys`` ends with ``download_hosts``)."""
+    if not isinstance(raw, dict) or set(raw) != set(keys):
+        raise _fail(f"[{where}] must have exactly: {', '.join(keys)}")
     urls: dict[str, str] = {}
-    for key in _GOOGLE_KEYS[:4]:
+    for key in keys[:-1]:
         value = raw[key]
         if not isinstance(value, str):
             raise _fail(f"{where}.{key} must be a string")
@@ -154,7 +172,17 @@ def _parse_google_drive(raw: Any) -> GoogleDriveEndpoints:
         RedirectPolicy(hosts=hosts)
     except ValueError:
         raise _fail(f"{where}.download_hosts must be host names or *.suffix patterns") from None
+    return urls, hosts
+
+
+def _parse_google_drive(raw: Any) -> GoogleDriveEndpoints:
+    urls, hosts = _parse_endpoints(raw, "connectors.google_drive", _GOOGLE_KEYS)
     return GoogleDriveEndpoints(download_hosts=hosts, **urls)
+
+
+def _parse_microsoft_365(raw: Any) -> Microsoft365Endpoints:
+    urls, hosts = _parse_endpoints(raw, "connectors.microsoft_365", _MICROSOFT_KEYS)
+    return Microsoft365Endpoints(download_hosts=hosts, **urls)
 
 
 def parse_instance_config(data: bytes) -> InstanceConfig:
@@ -176,10 +204,11 @@ def parse_instance_config(data: bytes) -> InstanceConfig:
     if len(set(names)) != len(names):
         raise _fail("network.allowlist names must be unique")
     connectors = document.get("connectors", {})
-    if not isinstance(connectors, dict) or set(connectors) - {"google_drive"}:
-        raise _fail("[connectors] may contain only 'google_drive'")
+    if not isinstance(connectors, dict) or set(connectors) - {"google_drive", "microsoft_365"}:
+        raise _fail("[connectors] may contain only 'google_drive' and 'microsoft_365'")
     google_drive = _parse_google_drive(connectors["google_drive"]) if "google_drive" in connectors else None
-    return InstanceConfig(allowlist=entries, google_drive=google_drive)
+    microsoft = _parse_microsoft_365(connectors["microsoft_365"]) if "microsoft_365" in connectors else None
+    return InstanceConfig(allowlist=entries, google_drive=google_drive, microsoft_365=microsoft)
 
 
 def load_instance_config(path: Path | None) -> InstanceConfig:

@@ -48,6 +48,7 @@ class ConnectorSettings(BaseModel):
 
 class ConnectorsSettings(BaseModel):
     google_drive: ConnectorSettings
+    microsoft_365: ConnectorSettings
 
 
 class InstanceSettingsResponse(BaseModel):
@@ -94,6 +95,9 @@ async def get_instance_settings(context: Reader, resources: ResourcesDep) -> Ins
         connectors=ConnectorsSettings(
             google_drive=ConnectorSettings(
                 configured=view.google_drive_configured, redirect_uri=view.oauth_redirect_uri
-            )
+            ),
+            microsoft_365=ConnectorSettings(
+                configured=view.microsoft_365_configured, redirect_uri=view.oauth_redirect_uri
+            ),
         ),
     )

@@ -39,6 +39,7 @@ from plummy.application.sources.ports import (
     RemoteItem,
     RemoteKind,
     RemotePage,
+    SourceLocation,
 )
 from plummy.core.network.errors import EgressDeniedError, ResponseTooLargeError
 from plummy.core.network.policy import EgressPurpose
@@ -363,14 +364,19 @@ class GoogleDriveConnector:
         items = tuple(parse_item(raw) for raw in _list(data, "files"))
         return RemotePage(items, _token(data, "nextPageToken"))
 
-    async def start_cursor(self, access_token: SecretValue) -> str:
+    async def start_cursor(self, access_token: SecretValue, location: SourceLocation) -> str:
+        del location  # the Changes API covers the whole account (ADR-020 §8)
         data = await self._get(access_token, "changes/startPageToken", {"supportsAllDrives": "true"})
         cursor = _token(data, "startPageToken")
         if cursor is None:
             raise ConnectorInvalidResponseError("no startPageToken")
         return cursor
 
-    async def get_changes(self, access_token: SecretValue, cursor: str) -> ChangesPage:
+    async def get_changes(
+        self, access_token: SecretValue, location: SourceLocation, cursor: str
+    ) -> ChangesPage:
+        del location
+
         def on_error(response: httpx.Response) -> ConnectorError:
             if response.status_code in (400, 404):
                 return ConnectorCursorInvalidError()  # the request is fixed but for the token
