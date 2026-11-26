@@ -113,6 +113,11 @@ class StorageProvider(Protocol):
 
     async def exists(self, area: StorageArea, key: StorageKey) -> bool: ...
 
+    def keys(self, area: StorageArea) -> AsyncIterator[StorageKey]:
+        """Every object of ``area`` in this storage's layout, in no particular order (backup, ADR-023 §6).
+        Anything else that shares the location is never listed."""
+        ...
+
     async def purge_expired(self, area: StorageArea, older_than: datetime) -> int:
         """Remove objects last modified before ``older_than``; returns how many were removed."""
         ...

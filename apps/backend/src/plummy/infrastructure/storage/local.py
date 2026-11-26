@@ -151,6 +151,25 @@ class LocalFileStorage:
     async def delete(self, area: StorageArea, key: StorageKey) -> None:
         await asyncio.to_thread(_unlink_quietly, self._path(area, key))
 
+    async def keys(self, area: StorageArea) -> AsyncIterator[StorageKey]:
+        for key in await asyncio.to_thread(self._keys, self._root / StorageArea(area).value):
+            yield key
+
+    @staticmethod
+    def _keys(directory: Path) -> list[StorageKey]:
+        found: list[StorageKey] = []
+        if directory.is_symlink() or not directory.is_dir():
+            return found
+        for shard in directory.iterdir():
+            if shard.is_symlink() or not shard.is_dir():
+                continue
+            for entry in shard.iterdir():
+                if entry.is_symlink() or not entry.is_file() or entry.name[-2:] != shard.name:
+                    continue
+                with suppress(ValueError):
+                    found.append(StorageKey(entry.name))
+        return found
+
     async def purge_expired(self, area: StorageArea, older_than: datetime) -> int:
         return await asyncio.to_thread(
             self._purge, self._root / StorageArea(area).value, older_than.timestamp()

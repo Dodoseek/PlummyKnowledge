@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Final
 from uuid import UUID
 
@@ -291,28 +292,12 @@ class DeleteKnowledgeBase:
     async def execute(self, context: SecurityContext, client: ClientInfo, kb_id: UUID) -> DeletionResult:
         context.require(Permission.KNOWLEDGE_BASES_MANAGE)
         now = self._clock.now()
-        tokens: list[tuple[DataSource, SecretValue | None]] = []
         async with self._uow() as uow:
             kb = await uow.knowledge_bases.get_for_update(kb_id)
             if kb is None:
                 raise NotFoundError(KB_NOT_FOUND)
-            documents: list[UUID] = []
-            # The upload source and every external source of the knowledge base go with it (ADR-020 §6);
-            # external credentials are deleted now and revoked at the provider after the commit.
-            for source in await uow.data_sources.linked_to(kb.id):
-                documents += await uow.documents.mark_deleted_in_source(
-                    source.id, DeletionReason.KB_DELETED, at=now
-                )
-                if source.is_external:
-                    if self._vault is not None:
-                        _, token = await drop_credentials(uow, self._vault, source.id)
-                        tokens.append((source, token))
-                    await uow.sync_jobs.cancel_active(source.id, error_code="kb_deleted", at=now)
-                await uow.data_sources.mark_deleted(source.id, at=now)
-            cancelled = await uow.ingestion_jobs.cancel_unfinished(
-                documents, CANCELLED_BY_KB_DELETION, at=now
-            )
-            await uow.knowledge_bases.mark_deleted(kb.id, at=now)
+            deletion = await delete_knowledge_base_in(uow, kb, self._vault, now=now)
+            documents, cancelled = deletion.documents, deletion.jobs_cancelled
             await uow.audit.record(
                 by_user(
                     context,
@@ -324,17 +309,51 @@ class DeleteKnowledgeBase:
                 )
             )
             await uow.commit()
-        for source, token in tokens:
-            await revoke_token(self._clients.get(source.type), token, source.id)
-        for document_id in documents:
-            try:
-                await self._queue.enqueue_purge(document_id)
-            except JobQueueUnavailableError:
-                logger.warning(
-                    "purge not published, broker unavailable", extra={"knowledge_base_id": str(kb_id)}
-                )
-                break  # the sweep purges the rest
+        await finish_knowledge_base_deletion(deletion, self._queue, self._clients, kb_id)
         return DeletionResult(len(documents), cancelled)
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeBaseDeletion:
+    documents: list[UUID]
+    jobs_cancelled: int
+    tokens: list[tuple[DataSource, SecretValue | None]]
+
+
+async def delete_knowledge_base_in(
+    uow: UnitOfWork, kb: KnowledgeBase, vault: SecretVault | None, *, now: datetime
+) -> KnowledgeBaseDeletion:
+    """Delete a locked, live knowledge base inside the caller's transaction: the upload source and every
+    external source go with it (ADR-020 §6), external credentials are deleted now (revoked at the provider
+    after the commit by :func:`finish_knowledge_base_deletion`). Shared by the API and ``maintenance
+    reapply-deletions`` (ADR-023 §6)."""
+    tokens: list[tuple[DataSource, SecretValue | None]] = []
+    documents: list[UUID] = []
+    for source in await uow.data_sources.linked_to(kb.id):
+        documents += await uow.documents.mark_deleted_in_source(source.id, DeletionReason.KB_DELETED, at=now)
+        if source.is_external:
+            if vault is not None:
+                _, token = await drop_credentials(uow, vault, source.id)
+                tokens.append((source, token))
+            await uow.sync_jobs.cancel_active(source.id, error_code="kb_deleted", at=now)
+        await uow.data_sources.mark_deleted(source.id, at=now)
+    cancelled = await uow.ingestion_jobs.cancel_unfinished(documents, CANCELLED_BY_KB_DELETION, at=now)
+    await uow.knowledge_bases.mark_deleted(kb.id, at=now)
+    return KnowledgeBaseDeletion(documents, cancelled, tokens)
+
+
+async def finish_knowledge_base_deletion(
+    deletion: KnowledgeBaseDeletion, queue: JobQueue, clients: OAuthClients, kb_id: UUID
+) -> None:
+    """After the commit: revoke the external tokens, publish the purges (the sweep covers a broker outage)."""
+    for source, token in deletion.tokens:
+        await revoke_token(clients.get(source.type), token, source.id)
+    for document_id in deletion.documents:
+        try:
+            await queue.enqueue_purge(document_id)
+        except JobQueueUnavailableError:
+            logger.warning("purge not published, broker unavailable", extra={"knowledge_base_id": str(kb_id)})
+            break  # the sweep purges the rest
 
 
 @dataclass(frozen=True, slots=True)

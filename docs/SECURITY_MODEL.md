@@ -440,6 +440,7 @@ OpenAI/Anthropic). Полный алгоритм — в ADR-007; здесь — 
 | KB и документы | `kb.created`, `kb.updated`, `kb.deleted`, `kb.source.attached`, `kb.source.detached`, `kb.reindex.requested`, `document.uploaded`, `document.deleted`, `document.reindex.requested` |
 | Ассистенты и чат | `assistant.created`, `assistant.updated`, `assistant.deleted`, `conversation.deleted` |
 | Jobs | `job.retried`, `job.cancelled` |
+| Обслуживание (CLI на сервере, `actor_type = system`) | `maintenance.deletions_exported`, `maintenance.deletion_reapplied` (§16.2) |
 | Безопасность | Отказы доступа (`outcome = denied`) на чувствительных операциях; срабатывание rate limit на login; `network.egress.denied` |
 | Опционально (открытый вопрос 6) | `document.viewed`, `audit.viewed` |
 
@@ -533,8 +534,11 @@ OpenAI/Anthropic). Полный алгоритм — в ADR-007; здесь — 
   в backup до истечения их срока (§8).
 - После восстановления из backup повторно применяются удаления, выполненные после момента backup, до открытия
   доступа пользователям: `maintenance export-deletions` на исходной БД и `maintenance reapply-deletions` на
-  восстановленной ([ADR-023](adr/0023-production-deployment.md) §6, Фаза 11). Если исходная БД потеряна, окно
-  потерянных удалений равно интервалу между backup.
+  восстановленной ([ADR-023](adr/0023-production-deployment.md) §6, реализовано в шаге 11.3): документы, KB,
+  источники (удаление и отключение), диалоги, пользователи. Файл удалений содержит только идентификаторы, типы и время.
+  `restore.sh` применяет их до запуска Nginx. Прочие изменения после backup (отключение пользователя, отзыв ролей,
+  доступа и сессий, смена пароля) не применяются автоматически: экспорт считает их для ручной проверки. Если исходная
+  БД потеряна, окно потерянных удалений и отзывов равно интервалу между backup.
 - Backup/restore drills и проверка lifecycle удаления — регулярно и перед релизом (§8 п.10, §20). Процедура —
   [DEPLOYMENT.md](DEPLOYMENT.md).
 

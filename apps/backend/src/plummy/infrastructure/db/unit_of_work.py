@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from datetime import datetime
 from types import TracebackType
 from typing import Any, Self
@@ -68,7 +68,7 @@ from plummy.domain.ai import (
     TestStatus,
 )
 from plummy.domain.assistants import Assistant, AssistantRetrieval, AssistantStatus
-from plummy.domain.audit import AuditEntry
+from plummy.domain.audit import AuditEntry, AuditOutcome, AuditRecord
 from plummy.domain.documents import (
     DeletionReason,
     Document,
@@ -723,6 +723,35 @@ class SqlAuditLog:
             )
         )
         await self._db.flush()
+
+    async def successful_since(self, since: datetime, actions: Collection[str]) -> list[AuditRecord]:
+        rows = await self._db.execute(
+            select(
+                AuditLogModel.action,
+                AuditLogModel.target_type,
+                AuditLogModel.target_id,
+                AuditLogModel.created_at,
+            )
+            .where(
+                AuditLogModel.action.in_(list(actions)),
+                AuditLogModel.outcome == AuditOutcome.SUCCESS.value,
+                AuditLogModel.created_at >= since,
+            )
+            .order_by(AuditLogModel.created_at, AuditLogModel.id)
+        )
+        return [AuditRecord(row.action, row.target_type, row.target_id, row.created_at) for row in rows]
+
+    async def count_successful_since(self, since: datetime, actions: Collection[str]) -> dict[str, int]:
+        rows = await self._db.execute(
+            select(AuditLogModel.action, func.count())
+            .where(
+                AuditLogModel.action.in_(list(actions)),
+                AuditLogModel.outcome == AuditOutcome.SUCCESS.value,
+                AuditLogModel.created_at >= since,
+            )
+            .group_by(AuditLogModel.action)
+        )
+        return {str(action): int(count) for action, count in rows.all()}
 
 
 def _secret(row: SecretReferenceModel) -> SecretRecord:

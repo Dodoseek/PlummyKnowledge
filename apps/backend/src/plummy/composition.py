@@ -12,6 +12,7 @@ import tempfile
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -81,6 +82,8 @@ from plummy.application.knowledge.use_cases import (
     UpdateKnowledgeBase,
 )
 from plummy.application.knowledge.vector_index import EnsureVectorIndex
+from plummy.application.maintenance.deletions import ExportDeletions, ReapplyDeletions
+from plummy.application.maintenance.objects import ExportObjects, ImportObjects
 from plummy.application.ports import Clock, PasswordHasher, SecretCipher
 from plummy.application.providers.embedding_profiles import (
     CreateEmbeddingProfile,
@@ -912,6 +915,56 @@ class EvaluationServices:
 
     async def aclose(self) -> None:
         await self.resources.aclose()
+
+
+class RestoreTask(StrEnum):
+    EXPORT_DELETIONS = "export-deletions"
+    REAPPLY_DELETIONS = "reapply-deletions"
+    OBJECTS = "objects"
+
+
+@dataclass(frozen=True, slots=True)
+class RestoreServices:
+    """``python -m plummy.cli maintenance`` (ADR-023 §6), built for one task. Exporting deletions needs only
+    the database (it runs on the source instance before a restore); objects need only the storage;
+    reapplying deletions uses the application's resources: the job queue for purges, the key ring and the
+    OAuth clients to drop and revoke credentials."""
+
+    export_deletions: ExportDeletions | None = None
+    reapply_deletions: ReapplyDeletions | None = None
+    export_objects: ExportObjects | None = None
+    import_objects: ImportObjects | None = None
+    engine: AsyncEngine | None = None
+    storage: DocumentStorage | None = None
+    resources: Resources | None = None
+
+    async def aclose(self) -> None:
+        if self.resources is not None:
+            await self.resources.aclose()
+        if self.engine is not None:
+            await self.engine.dispose()
+        if self.storage is not None:
+            await self.storage.aclose()
+
+
+def build_restore_services(settings: Settings, *, task: RestoreTask) -> RestoreServices:
+    clock = SystemClock()
+    if task is RestoreTask.EXPORT_DELETIONS:
+        engine = create_engine(settings, application_name="plummy-maintenance")
+        uow = SqlAlchemyUnitOfWorkFactory(create_session_factory(engine))
+        return RestoreServices(export_deletions=ExportDeletions(uow, clock), engine=engine)
+    if task is RestoreTask.OBJECTS:
+        storage = create_storage(settings)
+        return RestoreServices(
+            export_objects=ExportObjects(storage), import_objects=ImportObjects(storage), storage=storage
+        )
+    resources = build_resources(settings)
+    uow = SqlAlchemyUnitOfWorkFactory(resources.session_factory)
+    clients = oauth_clients(settings, resources.http)
+    return RestoreServices(
+        reapply_deletions=ReapplyDeletions(uow, resources.jobs, clock, resources.secrets, clients),
+        resources=resources,
+    )
 
 
 def build_evaluation_services(settings: Settings) -> EvaluationServices:

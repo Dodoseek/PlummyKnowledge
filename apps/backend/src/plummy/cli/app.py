@@ -10,6 +10,10 @@
     secrets status                show the key ring and how many secrets use each key
     secrets rotate                re-encrypt all secrets with the primary key (safe to repeat)
     eval run                      retrieval evaluation of a dataset through upload, workers and search
+    maintenance export-deletions  on the source database: deletions since a backup, to a new file
+    maintenance reapply-deletions on a restored instance: delete again what the file lists (idempotent)
+    maintenance export-objects    every stored object as a tar archive (file or stdout)
+    maintenance import-objects    store the objects of such an archive (existing ones are kept)
 
 Secrets are never accepted as arguments (they would end up in shell history and ``ps``) and never printed:
 passwords are read with a hidden prompt or from stdin (``--password-stdin``), and the bootstrap token is only
@@ -20,18 +24,23 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import getpass
 import json
+import os
 import sys
 import time
-from collections.abc import Callable, Coroutine, Sequence
+from collections import Counter
+from collections.abc import Callable, Coroutine, Mapping, Sequence
+from datetime import datetime
 from pathlib import Path
-from typing import Any, TextIO
+from typing import IO, Any, Protocol, TextIO
 from uuid import UUID
 
 from plummy.application.errors import ApplicationError, InvalidInputError
 from plummy.application.evaluation.dataset import DatasetError, parse_dataset
 from plummy.application.evaluation.runner import DEFAULT_KS, EvalOptions, operator_context
+from plummy.application.maintenance.deletions import DeletionExport, DeletionsFileError
 from plummy.application.retrieval.model import (
     DEFAULT_KEYWORD_WEIGHT,
     DEFAULT_RRF_K,
@@ -45,8 +54,11 @@ from plummy.application.setup.validation import AdministratorInput
 from plummy.composition import (
     CliServices,
     EvaluationServices,
+    RestoreServices,
+    RestoreTask,
     build_cli_services,
     build_evaluation_services,
+    build_restore_services,
 )
 from plummy.core.config import ConfigurationError, Settings, get_settings
 from plummy.domain.secrets import is_valid_key_id
@@ -63,6 +75,12 @@ from plummy.workers.tasks.system import MAX_SIMULATED_FAILURES, PING_TASK
 
 ServicesFactory = Callable[[Settings], CliServices]
 EvaluationFactory = Callable[[Settings], EvaluationServices]
+
+
+class MaintenanceFactory(Protocol):
+    def __call__(self, settings: Settings, *, task: RestoreTask) -> RestoreServices: ...
+
+
 CeleryAppFactory = Callable[[Settings], Any]
 
 
@@ -112,6 +130,34 @@ def _parser() -> argparse.ArgumentParser:
     generate.add_argument("--key-id", type=_key_id, help="id of the new key (default: today's date)")
     secrets_commands.add_parser("status", help="key ring and number of secrets per key")
     secrets_commands.add_parser("rotate", help="re-encrypt secrets that are not on the primary key")
+    maintenance = groups.add_parser("maintenance", help="backup and restore (ADR-023 §6)")
+    maintenance_commands = maintenance.add_subparsers(dest="command", required=True)
+    export = maintenance_commands.add_parser(
+        "export-deletions", help="on the source database: deletions since the dump, for a restored instance"
+    )
+    export.add_argument(
+        "--since",
+        required=True,
+        type=_aware_time,
+        help="the dump's start time (manifest), ISO 8601 with offset",
+    )
+    export.add_argument("--output", required=True, type=Path, help="new file (mode 0600) or - for stdout")
+    reapply = maintenance_commands.add_parser(
+        "reapply-deletions", help="on the restored instance, after migrate: delete again what was deleted"
+    )
+    reapply.add_argument(
+        "--input", required=True, type=Path, help="the file written by export-deletions, or - for stdin"
+    )
+    export_objects = maintenance_commands.add_parser(
+        "export-objects", help="every stored object (documents, quarantine) as a tar archive"
+    )
+    export_objects.add_argument(
+        "--output", required=True, type=Path, help="new file (mode 0600) or - for stdout"
+    )
+    import_objects = maintenance_commands.add_parser(
+        "import-objects", help="store the objects of an export-objects archive (existing ones are kept)"
+    )
+    import_objects.add_argument("--input", required=True, type=Path, help="the archive, or - for stdin")
     evaluation = groups.add_parser("eval", help="retrieval evaluation (docs/evaluation/)")
     eval_commands = evaluation.add_subparsers(dest="command", required=True)
     run = eval_commands.add_parser(
@@ -219,6 +265,136 @@ async def _eval_run(
     else:
         await asyncio.to_thread(args.output.write_text, text, encoding="utf-8")
         print(f"report written to {args.output}", file=err)
+
+
+def _aware_time(value: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            "expected an ISO 8601 time, e.g. 2026-11-26T03:00:00+00:00"
+        ) from None
+    if parsed.tzinfo is None:
+        raise argparse.ArgumentTypeError("the time needs a UTC offset, e.g. 2026-11-26T03:00:00+00:00")
+    return parsed
+
+
+def _write_new_file(path: Path, content: str) -> None:
+    """Create ``path`` with mode 0600; an existing file is never overwritten."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as file:
+        file.write(content)
+
+
+def _print_counts(title: str, counts: Mapping[str, int], out: TextIO) -> None:
+    print(f"{title}: {sum(counts.values())}", file=out)
+    for action in sorted(counts):
+        print(f"  {action}: {counts[action]}", file=out)
+
+
+def _print_review(not_reapplied: Mapping[str, int], out: TextIO) -> None:
+    if not_reapplied:
+        _print_counts(
+            "WARNING: changes after the dump that are not reapplied (review them in the source audit log)",
+            not_reapplied,
+            out,
+        )
+
+
+def _binary_sink(path: Path, out: TextIO) -> contextlib.AbstractContextManager[IO[bytes]]:
+    """``-`` is standard output (binary); a path is a new file with mode 0600, never overwritten."""
+    if str(path) == "-":
+        return contextlib.nullcontext(out.buffer)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    return os.fdopen(fd, "wb")
+
+
+def _binary_source(path: Path, stdin: TextIO) -> contextlib.AbstractContextManager[IO[bytes]]:
+    if str(path) == "-":
+        return contextlib.nullcontext(stdin.buffer)
+    return path.open("rb")
+
+
+def _built[T](value: T | None) -> T:
+    if value is None:  # pragma: no cover - the factory builds what the task needs
+        raise CliError("this maintenance task is not available")
+    return value
+
+
+async def _maintenance(
+    args: argparse.Namespace,
+    settings: Settings,
+    out: TextIO,
+    err: TextIO,
+    stdin: TextIO,
+    factory: MaintenanceFactory,
+) -> None:
+    """Reports go to stderr, so ``--output -`` / ``--input -`` can carry the data through a pipe (the backup
+    scripts run these commands in the containers, whose filesystems are read-only)."""
+    export: DeletionExport | None = None
+    if args.command == "reapply-deletions":
+        # Read and validate the file before connecting to anything.
+        try:
+            if str(args.input) == "-":
+                text = await asyncio.to_thread(stdin.read)
+            else:
+                text = await asyncio.to_thread(args.input.read_text, encoding="utf-8")
+            export = DeletionExport.from_json(text)
+        except DeletionsFileError as exc:
+            raise CliError(f"{args.input}: {exc}") from None
+    elif (
+        args.command in ("export-deletions", "export-objects")
+        and str(args.output) != "-"
+        and await asyncio.to_thread(args.output.exists)
+    ):
+        raise CliError(f"{args.output} exists; choose a new file")
+    task = {
+        "export-deletions": RestoreTask.EXPORT_DELETIONS,
+        "reapply-deletions": RestoreTask.REAPPLY_DELETIONS,
+        "export-objects": RestoreTask.OBJECTS,
+        "import-objects": RestoreTask.OBJECTS,
+    }[args.command]
+    services = factory(settings, task=task)
+    try:
+        match args.command:
+            case "reapply-deletions":
+                export = _built(export)
+                report = await _built(services.reapply_deletions).execute(export)
+                print(f"Deletions since {export.since.isoformat()}:", file=err)
+                _print_counts("applied", report.applied, err)
+                _print_counts("already deleted or absent", report.skipped, err)
+                if report.refused:
+                    _print_counts(
+                        "refused (the last active administrator is never deleted)", report.refused, err
+                    )
+                _print_review(export.not_reapplied, err)
+            case "export-deletions":
+                exported = await _built(services.export_deletions).execute(args.since)
+                if str(args.output) == "-":
+                    print(exported.to_json(), file=out)
+                else:
+                    await asyncio.to_thread(_write_new_file, args.output, exported.to_json())
+                _print_counts(
+                    f"Deletions since {exported.since.isoformat()} written to {args.output}",
+                    Counter(item.action for item in exported.deletions),
+                    err,
+                )
+                _print_review(exported.not_reapplied, err)
+            case "export-objects":
+                with _binary_sink(args.output, out) as sink:
+                    objects = await _built(services.export_objects).execute(sink)
+                _print_counts("Objects exported", objects.stored, err)
+            case "import-objects":
+                with _binary_source(args.input, stdin) as source:
+                    objects = await _built(services.import_objects).execute(source)
+                _print_counts("Objects stored", objects.stored, err)
+                _print_counts("already present, kept", objects.kept, err)
+                if objects.rejected:
+                    raise CliError(
+                        f"{objects.rejected} archive entries are not stored objects and were skipped"
+                    )
+    finally:
+        await services.aclose()
 
 
 def _key_id(value: str) -> str:
@@ -386,6 +562,7 @@ def main(
     *,
     services_factory: ServicesFactory = build_cli_services,
     evaluation_factory: EvaluationFactory = build_evaluation_services,
+    maintenance_factory: MaintenanceFactory = build_restore_services,
     celery_app_factory: CeleryAppFactory = create_celery_app,
     settings: Settings | None = None,
     stdout: TextIO | None = None,
@@ -404,6 +581,9 @@ def main(
             return 0
         if args.group == "worker":
             _worker_check(args, resolved, out, celery_app_factory)
+            return 0
+        if args.group == "maintenance":
+            asyncio.run(_maintenance(args, resolved, out, err, inp, maintenance_factory))
             return 0
         if args.group == "eval":
             asyncio.run(_eval_run(args, resolved, out, err, evaluation_factory))

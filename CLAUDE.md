@@ -52,7 +52,8 @@ Delta Query), общий транспорт `connector_http.py`, выбор пр
 `deploy/e2e/fake_microsoft.py`. Фаза 11 (идёт, [ADR-022](docs/adr/0022-s3-compatible-storage.md),
 [ADR-023](docs/adr/0023-production-deployment.md)): S3 storage (SigV4 на httpx, versitygw), `compose.prod.yaml` с
 Nginx/TLS/CSP, секретами файлами (`deploy/prod/init-secrets.sh`), `PROCESS_ROLE` и CI-smoke
-(`deploy/prod/smoke/`). Application Settings ещё нет ([DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md)).
+(`deploy/prod/smoke/`); backup/restore (`deploy/scripts/`, CLI `maintenance`: объекты через `StorageProvider`,
+повторное применение удалений после backup), restore drill и upgrade path с `v0.4.0` в CI. Application Settings ещё нет ([DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md)).
 Не начинать Google OAuth, Microsoft Graph и сложный RAG до стабильного запуска каркаса.
 
 ## Приоритет источников
@@ -266,6 +267,15 @@ docker compose build worker-ingestion                          # образ с D
 docker compose run --rm --no-deps worker-ingestion pytest -p no:cacheprovider tests/ingestion tests/unit/test_isolated_parser.py
 python3 scripts/check_secrets.py                               # secret scan всех tracked-файлов
 python3 -m unittest discover -s scripts/tests                  # тесты scripts/
+```
+
+Backup и restore production-стека ([DEPLOYMENT.md §10](docs/DEPLOYMENT.md)):
+
+```bash
+sh deploy/scripts/backup.sh /srv/plummy-backups
+docker compose -f compose.prod.yaml --env-file deploy/prod/.env exec -T backend python -m plummy.cli \
+  maintenance export-deletions --since <dump_started_at> --output - > deletions.json   # на исходной инсталляции
+sh deploy/scripts/restore.sh /srv/plummy-backups/plummy-<время> --deletions deletions.json
 ```
 
 Оценка retrieval ([docs/evaluation/](docs/evaluation/README.md); индексация набора расходует токены

@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Статус | v0.4 — среда разработки, первоначальная настройка (Фазы 1–3, §0, §6) и production-стек (шаг 11.2, §1–§2, §4–§5, §7.1, §8) реализованы; backup/restore — шаг 11.3 |
+| Статус | v0.4 — среда разработки, первоначальная настройка (Фазы 1–3, §0, §6) и production-стек (шаг 11.2, §1–§2, §4–§5, §7.1, §8), обновление и backup/restore (шаг 11.3, §9–§10) реализованы |
 | Источник | [PROJECT_BLUEPRINT.md](PROJECT_BLUEPRINT.md) §3, §5, §8, §11, §13 (Фазы 1, 11) |
 | Решения | [ADR-006](adr/0006-initial-setup-and-system-configuration.md), [ADR-007](adr/0007-network-access-and-local-llm.md), [ADR-011](adr/0011-database-roles-and-extensions.md), [ADR-013](adr/0013-auth-session-strategy.md), [ADR-022](adr/0022-s3-compatible-storage.md), [ADR-023](adr/0023-production-deployment.md) |
 | Связанные документы | [ARCHITECTURE.md §4, §10, §12](ARCHITECTURE.md), [SECURITY_MODEL.md](SECURITY_MODEL.md) |
@@ -238,10 +238,10 @@ docker compose -f compose.prod.yaml --env-file deploy/prod/.env run --rm migrate
 
 | Volume | Содержимое | Backup | Примечание |
 |---|---|---|---|
-| `postgres-data` | БД, векторы, audit | **Да** | Основной источник истины |
-| `s3-data` | Бакеты встроенного S3-сервера (оригиналы, extracted text, quarantine) | **Да** (бакет, шаг 11.3) | С внешним S3 — его backup |
+| `postgres-data` | БД, векторы, audit | **Да** (`pg_dump`, §10) | Основной источник истины |
+| `s3-data` | Бакеты встроенного S3-сервера (оригиналы, extracted text, quarantine) | **Да** (через `objects.tar`, §10) | Не копировать файлы volume: метаданные в xattrs |
 | `s3-iam` | Учётные записи встроенного S3-сервера | Нет | Пересоздаётся `s3-init` из секретов |
-| `storage-data` | Документы при `STORAGE_BACKEND=local` | **Да** | Только один хост |
+| `storage-data` | Документы при `STORAGE_BACKEND=local` | **Да** (через `objects.tar`, §10) | Только один хост |
 | `redis-data` | Очереди и кэш | Нет | Состояние jobs восстанавливается из БД |
 | `bootstrap-data` | Файл bootstrap token (`0600`, каталог `0700`) | Нет | Монтируется только в `migrate`, не в `backend`; после настройки файл удаляет следующий запуск `init-token` |
 | `deploy/prod/secrets/` | Секреты и key ring (каталог хоста) | **Key ring — отдельно** от backup данных | §4 |
@@ -421,25 +421,75 @@ Client secret Entra имеет срок действия: продлите ег�
 
 - `GET /api/v1/health/live`, `GET /api/v1/health/ready` используются healthcheck Compose; readiness не проходит, пока
   не применены миграции.
-- Обновление: backup → `migrate` новой версии → перезапуск `api`/worker → проверка readiness. Миграции проверены на
-  upgrade path (§20).
+- Обновление (реализовано, шаг 11.3): backup (§10) → `git checkout` новой версии → `docker compose up -d --build
+  --wait` (сервис `migrate` применяет миграции до head, остальные ждут его завершения) → проверка readiness, входа и
+  поиска. Откат — restore из backup, сделанного перед обновлением: миграции вниз не поддерживаются.
+- Upgrade path проверяется в CI (job «Production stack»): схему создают миграции предыдущего релиза (`UPGRADE_FROM`,
+  сейчас `v0.4.0`), затем стек текущего коммита мигрирует её до head и проходит весь smoke-сценарий и restore drill.
 - Масштабирование: число реплик `api` и concurrency worker настраиваются независимо; DB pool ограничен на процесс
   (§11).
 - Resource limits (CPU/память) обязательны для worker-сервисов, особенно `worker-ingestion` (§8 п.6).
 
-## 10. Backup и restore (§8 п.10)
+## 10. Backup и restore (реализовано, шаг 11.3)
 
-Процедура — [ADR-023](adr/0023-production-deployment.md) §6 (шаг 11.3): `deploy/scripts/backup.sh` (дамп БД, затем
-зеркало бакета, манифест; key ring и bootstrap token не входят), `maintenance export-deletions` на исходной БД,
-`deploy/scripts/restore.sh` и `maintenance reapply-deletions` на восстановленной.
+Решение — [ADR-023](adr/0023-production-deployment.md) §6. Скрипты работают из корня репозитория с
+`compose.prod.yaml` и `deploy/prod/.env` (или с заданными `COMPOSE_FILE`/`COMPOSE_ENV_FILES`); стек должен быть
+запущен.
 
+**Backup** — `sh deploy/scripts/backup.sh /srv/plummy-backups` создаёт каталог `plummy-<время UTC>/` (режим `0700`):
 
-- Backup: PostgreSQL (логический или физический) + object storage, согласованные по времени; ключ шифрования —
-  отдельно.
-- Restore drill регулярно и перед релизом: восстановление на чистую инсталляцию, readiness, проверка входа, поиска и
-  цитат.
-- После restore повторно применить удаления, выполненные после момента backup (SECURITY_MODEL.md §16.2).
-- Влияние backup retention на удалённые данные документируется для администратора (§8).
+| Файл | Содержимое |
+|---|---|
+| `database.dump` | `pg_dump --format=custom` базы приложения под ролью приложения |
+| `objects.tar` | все объекты storage (`documents/`, `quarantine/`) через `StorageProvider`: одинаково для local, встроенного S3 и внешнего S3 |
+| `manifest.json` | версия, ревизия Alembic, `dump_started_at`, SHA-256 обоих файлов |
+
+- Сначала БД, потом объекты: объекты всех документов, живых на момент дампа, есть в копии.
+- **Key ring (`deploy/prod/secrets/keyring.json`) и bootstrap token в backup не входят** — скрипт отказывается
+  завершиться, если они попали в каталог. Key ring копируется отдельно, хранится отдельно от backup; без него
+  сохранённые API-ключи и OAuth-токены не расшифровать (их придётся ввести заново).
+- Шифрование и вынос копии — обязанность администратора, например:
+  `tar -C /srv/plummy-backups -cf - plummy-<время> | age -r <recipient> > plummy-<время>.tar.age`. Частота backup —
+  не реже раза в сутки: при потере исходной БД удаления после последнего backup вернутся (ниже).
+- Объекты storage не копируются как файлы volume: встроенный S3-сервер хранит метаданные объекта (ETag, тип,
+  контрольные суммы) в xattrs, которые обычный архив теряет; через порт storage метаданные пересоздаются при `put`.
+
+**Удаления после backup.** Всё, что удалено после дампа (документы, KB, источники и их отключение, диалоги,
+пользователи), после restore вернулось бы. Пока исходная инсталляция доступна, на ней:
+
+```bash
+docker compose -f compose.prod.yaml --env-file deploy/prod/.env exec -T backend \
+  python -m plummy.cli maintenance export-deletions --since <dump_started_at из manifest.json> --output - > deletions.json
+```
+
+Файл содержит только идентификаторы, типы и время (формат `plummy-deletions/1`) и счётчик изменений, которые не
+применяются автоматически (отключение пользователя, отзыв роли и доступа к KB, смена пароля, отзыв сессий и т. п.):
+их администратор просматривает в audit исходной инсталляции и повторяет вручную.
+
+**Restore** — на чистую инсталляцию (новый хост или `docker compose down --volumes`) с теми же секретами,
+прежде всего key ring:
+
+```bash
+sh deploy/scripts/restore.sh /srv/plummy-backups/plummy-<время> --deletions deletions.json
+```
+
+Порядок: проверка SHA-256 → PostgreSQL и Redis → проверка, что БД пуста (иначе отказ) → `pg_restore` (без записей
+расширений: их ставит initdb, ADR-011) → storage, `migrate` (upgrade до текущей версии) и API → `maintenance
+import-objects` (существующие объекты не перезаписываются, повтор безопасен) → `maintenance reapply-deletions` → все
+остальные сервисы, включая Nginx. Удаления применяются **до** того, как Nginx откроет доступ пользователям; каждое —
+теми же use cases, что у API, от имени системы с audit `maintenance.deletion_reapplied`; уже удалённое пропускается,
+удаление последнего администратора отклоняется. Без файла удалений нужен явный `--no-deletions`.
+
+После restore: вход, поиск и цитата в чате; при потере key ring — повторный ввод секретов провайдеров и
+переподключение источников.
+
+**Restore drill** — job CI «Production stack» при каждом push: `smoke.py run` (два документа) → `backup.sh` →
+`smoke.py delete-document` → `export-deletions` → `down --volumes` → `restore.sh` → `smoke.py verify-restore`
+(удалённый документ — 404 и не находится поиском, сохранённый находится и переиндексируется из восстановленного
+объекта, ответ с проверенной цитатой). Вручную — перед каждым обновлением на копии.
+
+**Backup retention.** Удалённые данные остаются в backup до истечения его срока хранения (SECURITY_MODEL §16.2):
+срок хранения копий администратор выбирает с учётом этого.
 
 ## 11. Troubleshooting
 

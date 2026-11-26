@@ -23,7 +23,14 @@ from plummy.application.errors import (
     SelfModificationError,
 )
 from plummy.application.pagination import Page, PageRequest
-from plummy.application.ports import Clock, UniqueViolationError, UnitOfWork, UnitOfWorkFactory, UserQuery
+from plummy.application.ports import (
+    Clock,
+    SetChange,
+    UniqueViolationError,
+    UnitOfWork,
+    UnitOfWorkFactory,
+    UserQuery,
+)
 from plummy.application.security import ClientInfo, SecurityContext
 from plummy.application.setup.validation import validate_email
 from plummy.core.ids import new_id
@@ -281,6 +288,22 @@ class UpdateUser:
         return result
 
 
+async def delete_user_in(
+    uow: UnitOfWork, user: User, *, by: UUID | None, now: datetime
+) -> tuple[int, SetChange[str]]:
+    """Soft delete of a locked, live user inside the caller's transaction (after ``lock_administrators``):
+    refused for the last active administrator. Shared by the API and ``maintenance reapply-deletions``
+    (ADR-023 §6). Returns the number of revoked sessions and the removed roles."""
+    await _ensure_another_administrator(uow, user)
+    user.deleted_at = now
+    await uow.users.update(user, at=now)
+    revoked = await uow.sessions.revoke_all_for_user(user.id, reason=SessionRevokeReason.ADMIN, at=now)
+    await uow.activations.delete(user.id)
+    await uow.groups.remove_user_from_all(user.id)
+    removed = await uow.roles.set_user_roles(user.id, frozenset(), granted_by=by)
+    return revoked, removed
+
+
 class DeleteUser:
     """Soft delete: sign-in impossible, sessions revoked, memberships and roles removed, email freed."""
 
@@ -295,15 +318,7 @@ class DeleteUser:
         async with self._uow() as uow:
             await uow.roles.lock_administrators()
             user = await _load_user(uow, user_id, for_update=True)
-            await _ensure_another_administrator(uow, user)
-            user.deleted_at = now
-            await uow.users.update(user, at=now)
-            revoked = await uow.sessions.revoke_all_for_user(
-                user.id, reason=SessionRevokeReason.ADMIN, at=now
-            )
-            await uow.activations.delete(user.id)
-            await uow.groups.remove_user_from_all(user.id)
-            removed = await uow.roles.set_user_roles(user.id, frozenset(), granted_by=context.user_id)
+            revoked, removed = await delete_user_in(uow, user, by=context.user_id, now=now)
             await uow.audit.record(
                 by_user(
                     context,

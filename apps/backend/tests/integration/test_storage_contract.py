@@ -106,7 +106,7 @@ def make_s3(
 def bucket() -> str:
     if S3_URL is None:
         pytest.skip("S3_TEST_URL is not set")
-    assert root_request("PUT", f"/{BUCKET}") == 200
+    assert root_request("PUT", f"/{BUCKET}") in (200, 409)  # 409: created by another module
     return BUCKET
 
 
@@ -289,3 +289,48 @@ async def test_wrong_credentials_are_unavailable(bucket: str, tmp_path: Path) ->
     with pytest.raises(StorageUnavailableError):
         await S3StorageCheck(wrong).check()
     await wrong.aclose()
+
+
+async def test_keys_lists_the_objects_of_one_area(storage: Storage) -> None:
+    quarantined, documents = StorageKey.new(), {StorageKey.new(), StorageKey.new()}
+    await storage.put(Q, quarantined, stream(b"q"))
+    for key in documents:
+        await storage.put(D, key, stream(b"d"))
+    assert {key async for key in storage.keys(D)} == documents
+    assert [key async for key in storage.keys(Q)] == [quarantined]
+    await storage.delete(Q, quarantined)
+    assert [key async for key in storage.keys(Q)] == []
+
+
+async def test_local_keys_ignore_foreign_entries(tmp_path: Path) -> None:
+    root = tmp_path / "storage"
+    root.mkdir(mode=0o700)
+    storage = LocalFileStorage(root)
+    key = StorageKey.new()
+    await storage.put(D, key, stream(b"x"))
+    shard = root / "documents" / key.value[-2:]
+    (shard / "notes.txt").write_text("not an object")
+    (shard / ("0" * 32)).write_text("wrong shard")  # a valid key name in the wrong shard
+    (shard / StorageKey.new().value[:-2]).mkdir()
+    (root / "documents" / "zz").symlink_to(tmp_path)
+    assert [found async for found in storage.keys(D)] == [key]
+
+
+async def test_s3_keys_follow_pages_and_skip_foreign_objects(bucket: str, tmp_path: Path) -> None:
+    prefix = f"t{secrets.token_hex(6)}/"
+    storage = make_s3(tmp_path, prefix=prefix)
+    keys = {StorageKey.new() for _ in range(5)}
+    for key in keys:
+        await storage.put(Q, key, stream(b"x"))
+    await make_s3(tmp_path, prefix=f"{prefix}quarantine/").put(Q, StorageKey.new(), stream(b"foreign"))
+    original = storage._send
+
+    async def small_pages(method: str, path: str, **kwargs: object) -> httpx.Response:
+        params = kwargs.get("params")
+        if isinstance(params, dict) and "list-type" in params:
+            kwargs["params"] = {**params, "max-keys": "2"}
+        return await original(method, path, **kwargs)  # type: ignore[arg-type]
+
+    storage._send = small_pages  # type: ignore[method-assign]
+    assert {key async for key in storage.keys(Q)} == keys
+    await storage.aclose()

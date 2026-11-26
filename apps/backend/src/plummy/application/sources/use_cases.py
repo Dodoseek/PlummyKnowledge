@@ -456,16 +456,9 @@ class DisconnectDataSource:
         async with self._uow() as uow:
             source, kb_id = await _visible(uow, context, source_id, KbAccessLevel.MANAGE, lock=True)
             _external(source)
-            credentials, token = await drop_credentials(uow, self._vault, source.id)
-            cancelled = await uow.sync_jobs.cancel_active(
-                source.id, error_code=CANCELLED_BY_DISCONNECT, at=now
-            )
-            source.status = DataSourceStatus.DISCONNECTED
-            source.next_sync_at = None
-            source.sync_cursor = None
-            await uow.data_sources.save(source, at=now)
+            disconnection = await disconnect_source_in(uow, self._vault, source, now=now)
             await uow.commit()
-        revoked = await revoke_token(self._clients.get(source.type), token, source.id)
+        revoked = await revoke_token(self._clients.get(source.type), disconnection.token, source.id)
         async with self._uow() as uow:
             await uow.audit.record(
                 by_user(
@@ -475,9 +468,9 @@ class DisconnectDataSource:
                     target_type="data_source",
                     target_id=source.id,
                     details={
-                        "had_credentials": credentials is not None,
+                        "had_credentials": disconnection.had_credentials,
                         "revoked_at_provider": revoked,
-                        "sync_jobs_cancelled": cancelled,
+                        "sync_jobs_cancelled": disconnection.sync_jobs_cancelled,
                     },
                 )
             )
@@ -504,16 +497,7 @@ class DeleteDataSource:
         async with self._uow() as uow:
             source, kb_id = await _visible(uow, context, source_id, KbAccessLevel.MANAGE, lock=True)
             _external(source)
-            _, token = await drop_credentials(uow, self._vault, source.id)
-            await uow.sync_jobs.cancel_active(source.id, error_code=CANCELLED_BY_SOURCE_DELETION, at=now)
-            documents = await uow.documents.mark_deleted_in_source(
-                source.id, DeletionReason.SOURCE_DELETED, at=now
-            )
-            cancelled = await uow.ingestion_jobs.cancel_unfinished(
-                documents, CANCELLED_BY_SOURCE_DELETION, at=now
-            )
-            await uow.data_sources.detach(source.id)
-            await uow.data_sources.mark_deleted(source.id, at=now)
+            deletion = await delete_source_in(uow, self._vault, source, now=now)
             await uow.audit.record(
                 by_user(
                     context,
@@ -523,22 +507,71 @@ class DeleteDataSource:
                     target_id=source.id,
                     details={
                         "knowledge_base_id": str(kb_id),
-                        "documents": len(documents),
-                        "jobs_cancelled": cancelled,
+                        "documents": len(deletion.documents),
+                        "jobs_cancelled": deletion.jobs_cancelled,
                     },
                 )
             )
             await uow.commit()
-        await revoke_token(self._clients.get(source.type), token, source.id)
-        for document_id in documents:
-            try:
-                await self._queue.enqueue_purge(document_id)
-            except JobQueueUnavailableError:
-                logger.warning(
-                    "purge not published, broker unavailable", extra={"data_source_id": str(source_id)}
-                )
-                break  # the sweep purges the rest
-        return len(documents)
+        await finish_source_deletion(deletion, self._queue, self._clients, source)
+        return len(deletion.documents)
+
+
+@dataclass(frozen=True, slots=True)
+class Disconnection:
+    had_credentials: bool
+    token: SecretValue | None  # to revoke at the provider after the commit
+    sync_jobs_cancelled: int
+
+
+async def disconnect_source_in(
+    uow: UnitOfWork, vault: SecretVault, source: DataSource, *, now: datetime
+) -> Disconnection:
+    """Inside the caller's transaction, on a locked external source: credentials deleted, sync stopped.
+    Shared by the API and ``maintenance reapply-deletions`` (ADR-023 §6)."""
+    credentials, token = await drop_credentials(uow, vault, source.id)
+    cancelled = await uow.sync_jobs.cancel_active(source.id, error_code=CANCELLED_BY_DISCONNECT, at=now)
+    source.status = DataSourceStatus.DISCONNECTED
+    source.next_sync_at = None
+    source.sync_cursor = None
+    await uow.data_sources.save(source, at=now)
+    return Disconnection(credentials is not None, token, cancelled)
+
+
+@dataclass(frozen=True, slots=True)
+class SourceDeletion:
+    token: SecretValue | None
+    documents: list[UUID]
+    jobs_cancelled: int
+
+
+async def delete_source_in(
+    uow: UnitOfWork, vault: SecretVault, source: DataSource, *, now: datetime
+) -> SourceDeletion:
+    """Inside the caller's transaction, on a locked external source: credentials, sync jobs, documents
+    (``source_deleted``) and the source itself. Shared by the API and ``maintenance reapply-deletions``."""
+    _, token = await drop_credentials(uow, vault, source.id)
+    await uow.sync_jobs.cancel_active(source.id, error_code=CANCELLED_BY_SOURCE_DELETION, at=now)
+    documents = await uow.documents.mark_deleted_in_source(source.id, DeletionReason.SOURCE_DELETED, at=now)
+    cancelled = await uow.ingestion_jobs.cancel_unfinished(documents, CANCELLED_BY_SOURCE_DELETION, at=now)
+    await uow.data_sources.detach(source.id)
+    await uow.data_sources.mark_deleted(source.id, at=now)
+    return SourceDeletion(token, documents, cancelled)
+
+
+async def finish_source_deletion(
+    deletion: SourceDeletion, queue: JobQueue, clients: OAuthClients, source: DataSource
+) -> None:
+    """After the commit: revoke the token at the provider and publish the purges."""
+    await revoke_token(clients.get(source.type), deletion.token, source.id)
+    for document_id in deletion.documents:
+        try:
+            await queue.enqueue_purge(document_id)
+        except JobQueueUnavailableError:
+            logger.warning(
+                "purge not published, broker unavailable", extra={"data_source_id": str(source.id)}
+            )
+            break  # the sweep purges the rest
 
 
 class StartOAuth:

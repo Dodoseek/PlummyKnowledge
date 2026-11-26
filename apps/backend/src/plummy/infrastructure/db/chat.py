@@ -134,12 +134,14 @@ class SqlConversationRepository:
             .values(title=title, updated_at=at)
         )
 
-    async def mark_deleted(self, conversation_id: UUID, *, at: datetime) -> None:
-        await self._db.execute(
+    async def mark_deleted(self, conversation_id: UUID, *, at: datetime) -> bool:
+        result = await self._db.execute(
             update(ConversationModel)
             .where(ConversationModel.id == conversation_id, ConversationModel.deleted_at.is_(None))
             .values(deleted_at=at, updated_at=at)
+            .returning(ConversationModel.id)
         )
+        return result.first() is not None
 
     async def touch(self, conversation_id: UUID, *, at: datetime, title: str | None = None) -> None:
         values: dict[str, Any] = {"last_message_at": at, "updated_at": at}

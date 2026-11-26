@@ -284,6 +284,23 @@ class S3Storage:
             if token is None:
                 return removed
 
+    async def keys(self, area: StorageArea) -> AsyncIterator[StorageKey]:
+        prefix = f"{self._prefix}{StorageArea(area).value}/"
+        everything = datetime.max.replace(tzinfo=UTC)
+        token: str | None = None
+        while True:
+            params = {"list-type": "2", "prefix": prefix, "max-keys": "1000"}
+            if token is not None:
+                params["continuation-token"] = token
+            response = await self._send("GET", f"/{self._bucket}", params=params)
+            if response.status_code != 200:
+                raise self._unexpected(response, "list")
+            found, token = _parse_listing(response.content, _own_key(prefix), everything)
+            for object_key in found:
+                yield StorageKey(object_key.rsplit("/", 1)[1])
+            if token is None:
+                return
+
     async def check_bucket(self) -> None:
         """``HeadBucket`` with these credentials (no write)."""
         response = await self._send("HEAD", f"/{self._bucket}")

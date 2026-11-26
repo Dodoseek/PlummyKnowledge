@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import StrEnum
 from uuid import UUID
 
@@ -79,6 +80,8 @@ class AuditAction(StrEnum):
     DATA_SOURCE_DISCONNECTED = "data_source.disconnected"
     SYNC_REQUESTED = "sync.requested"
     NETWORK_EGRESS_DENIED = "network.egress.denied"
+    MAINTENANCE_DELETIONS_EXPORTED = "maintenance.deletions_exported"
+    MAINTENANCE_DELETION_REAPPLIED = "maintenance.deletion_reapplied"
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,3 +97,13 @@ class AuditEntry:
     ip_address: str | None = None
     user_agent: str | None = None
     details: dict[str, str | int | bool] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class AuditRecord:
+    """A stored event as the maintenance tools read it back: identifiers and time only, no details."""
+
+    action: str
+    target_type: str | None
+    target_id: UUID | None
+    created_at: datetime

@@ -258,7 +258,9 @@ security gate (проверки безопасности **внутри** фаз
   S3 StorageProvider; 11.2 production-стек и smoke в CI; 11.3 backup/restore, upgrade path, drill; 11.4 отмена jobs
   и страница `/admin/jobs`; 11.5 retention версий, масштабирование, security gate. Выполнены 11.0–11.2 (встроенный
   S3-сервер — versitygw вместо MinIO, чьи community-образы больше не публикуются; `compose.prod.yaml`, Nginx с CSP,
-  секреты файлами, `PROCESS_ROLE`, CI-job «Production stack» со smoke через Nginx).
+  секреты файлами, `PROCESS_ROLE`, CI-job «Production stack» со smoke через Nginx) и 11.3 (`deploy/scripts/backup.sh`
+  и `restore.sh`, CLI `maintenance export-deletions`/`reapply-deletions`/`export-objects`/`import-objects`, restore
+  drill и upgrade path с `v0.4.0` в CI).
 - **Security gate:** backup/restore drill; проверка lifecycle удаления; ключ шифрования хранится отдельно от backup.
 
 ### Фаза 12 — Security hardening (§13)

@@ -166,6 +166,20 @@ class ListDocumentVersions:
             return await uow.documents.versions(document_id)
 
 
+async def delete_document_in(uow: UnitOfWork, document_id: UUID, *, now: datetime) -> int:
+    """Delete a live document the caller has locked and is allowed to delete: its unfinished jobs are
+    cancelled and it leaves retrieval at once; the purge follows after the commit. Shared by the API and
+    ``maintenance reapply-deletions`` (ADR-023 §6). Returns the number of cancelled jobs."""
+    cancelled = 0
+    for job in await uow.ingestion_jobs.unfinished_for_document(document_id):
+        job.status, job.error_code, job.error_message = (JobStatus.CANCELLED, CANCELLED_BY_DELETION, None)
+        job.finished_at = now
+        await uow.ingestion_jobs.save(job)
+        cancelled += 1
+    await uow.documents.mark_deleted(document_id, DeletionReason.USER, at=now)
+    return cancelled
+
+
 class DeleteDocument:
     def __init__(self, uow: UnitOfWorkFactory, queue: JobQueue, clock: Clock) -> None:
         self._uow, self._queue, self._clock = uow, queue, clock
@@ -177,17 +191,7 @@ class DeleteDocument:
             await require_document_access(
                 uow, context, await uow.documents.get_for_update(document_id), KbAccessLevel.MANAGE
             )
-            cancelled = 0
-            for job in await uow.ingestion_jobs.unfinished_for_document(document_id):
-                job.status, job.error_code, job.error_message = (
-                    JobStatus.CANCELLED,
-                    CANCELLED_BY_DELETION,
-                    None,
-                )
-                job.finished_at = now
-                await uow.ingestion_jobs.save(job)
-                cancelled += 1
-            await uow.documents.mark_deleted(document_id, DeletionReason.USER, at=now)
+            cancelled = await delete_document_in(uow, document_id, now=now)
             await uow.audit.record(
                 by_user(
                     context,

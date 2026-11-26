@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from types import TracebackType
@@ -14,7 +14,7 @@ from plummy.application.pagination import Page, PageRequest
 from plummy.application.retrieval.model import ChunkHit, RetrievalScope
 from plummy.domain.ai import AIProvider, EmbeddingProfile, ModelConfig, TestStatus
 from plummy.domain.assistants import Assistant
-from plummy.domain.audit import AuditEntry
+from plummy.domain.audit import AuditEntry, AuditRecord
 from plummy.domain.chat import Conversation, GenerationRun, Message, MessageCitation, MessageStatus
 from plummy.domain.documents import (
     DeletionReason,
@@ -302,6 +302,14 @@ class InstanceStateRepository(Protocol):
 class AuditLog(Protocol):
     async def record(self, entry: AuditEntry) -> None: ...
 
+    async def successful_since(self, since: datetime, actions: Collection[str]) -> list[AuditRecord]:
+        """Successful events of ``actions`` at or after ``since``, oldest first."""
+        ...
+
+    async def count_successful_since(self, since: datetime, actions: Collection[str]) -> dict[str, int]:
+        """Number of successful events per action at or after ``since`` (actions without events omitted)."""
+        ...
+
 
 # --- secrets at rest (ADR-016) ---------------------------------------------------------------------------
 
@@ -552,7 +560,9 @@ class ConversationRepository(Protocol):
 
     async def rename(self, conversation_id: UUID, title: str, *, at: datetime) -> None: ...
 
-    async def mark_deleted(self, conversation_id: UUID, *, at: datetime) -> None: ...
+    async def mark_deleted(self, conversation_id: UUID, *, at: datetime) -> bool:
+        """``False`` when the conversation is absent or already deleted."""
+        ...
 
     async def touch(self, conversation_id: UUID, *, at: datetime, title: str | None = None) -> None:
         """A new message: ``last_message_at`` (and the title, when given) move on."""

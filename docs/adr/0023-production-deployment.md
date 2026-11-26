@@ -87,8 +87,9 @@ OAuth-провайдеры открываются переходом верхн�
 
 ### 6. Backup, restore и повторное применение удалений
 
-- `deploy/scripts/backup.sh`: `pg_dump --format=custom` под ролью приложения, затем зеркало бакета в
-  каталог с меткой времени UTC и манифестом (версия приложения, ревизия Alembic, время начала дампа). Key ring и
+- `deploy/scripts/backup.sh`: `pg_dump --format=custom` под ролью приложения, затем архив объектов storage
+  (`maintenance export-objects`, см. Implementation notes 11.3) в каталог с меткой времени UTC и манифестом (версия
+  приложения, ревизия Alembic, время начала дампа, SHA-256). Key ring и
   bootstrap token в backup **не** попадают — скрипт отказывается работать, если они оказались в целевом каталоге.
   Шифрование и вынос копии — обязанность администратора (DEPLOYMENT описывает `age`/`gpg`).
 - Порядок «сначала БД, потом объекты» гарантирует, что объекты всех документов, живых на момент дампа, есть в копии,
@@ -96,8 +97,9 @@ OAuth-провайдеры открываются переходом верхн�
 - Удаления после момента дампа записаны только в audit исходной БД. Перед restore (если исходная БД доступна —
   повреждение данных, откат) администратор выполняет на ней `python -m plummy.cli maintenance export-deletions
   --since <время дампа из манифеста> --output deletions.json`: идентификаторы и типы из событий `document.deleted`,
-  `kb.deleted`, `data_source.deleted`, `data_source.disconnected` и `conversation.deleted`, без содержимого.
-- `deploy/scripts/restore.sh` на чистую инсталляцию (пустые volumes): `pg_restore`, зеркало объектов обратно,
+  `kb.deleted`, `data_source.deleted`, `data_source.disconnected`, `conversation.deleted` и `user.deleted`, без
+  содержимого.
+- `deploy/scripts/restore.sh` на чистую инсталляцию (пустые volumes): `pg_restore`, объекты обратно,
   `migrate` (upgrade до текущей версии), затем `maintenance reapply-deletions --input deletions.json` — те же use
   cases удаления, что у API (soft delete, purge, удаление credentials), от имени системного действия с audit
   `maintenance.deletion_reapplied`. Повтор идемпотентен. Restore без файла удалений требует явного
@@ -171,6 +173,35 @@ drill), 11.5 (retention, security gate).
   взаимно гасились; теперь такой вектор получает ненулевой компонент.
 - Вне 11.2: OAuth client secrets коннекторов подключаются override-файлом (DEPLOYMENT §4); внешний управляемый
   PostgreSQL — override-файлом с `database_url` (без сервиса `postgres`).
+
+**Шаг 11.3 (реализовано).**
+
+- **Объекты — через `StorageProvider`, а не зеркалом бакета (уточнение §6).** versitygw хранит метаданные объекта
+  (ETag, content type, контрольные суммы) в xattrs файлов volume: `tar` volume их теряет, а `mc mirror` потребовал бы
+  ещё одного образа с доступом к S3. `python -m plummy.cli maintenance export-objects --output -` пишет в stdout tar
+  (PAX) с записями `documents/<key>` и `quarantine/<key>` (новый метод порта `keys(area)`; ключи — только имена
+  storage, никогда имена файлов пользователей); `import-objects --input -` принимает только такие обычные файлы и не
+  перезаписывает существующие объекты. Одинаково работает для local, встроенного S3 и внешнего S3 и не требует
+  доступа к volume с хоста (read-only контейнеры, uid сервисов).
+- **`user.deleted` тоже применяется повторно** (в §6 его не было): удалённый после backup пользователь иначе вернулся
+  бы со своими сессиями и диалогами. Защита последнего администратора действует и здесь — такое удаление
+  отклоняется (`refused`) с сообщением администратору.
+- Изменения после дампа, которые не являются удалениями (отключение пользователя, изменение пользователя, отзыв роли,
+  доступа к KB и сессий, смена и сброс пароля, изменение групп, удаление ассистента, провайдера, модели, ротация
+  секретов), не применяются автоматически: `export-deletions` считает их в `not_reapplied`, CLI выводит счётчики для
+  ручной проверки по audit исходной инсталляции.
+- Use cases удаления разделены на «часть в транзакции» (`delete_document_in`, `delete_knowledge_base_in`,
+  `delete_source_in`, `disconnect_source_in`, `delete_user_in`) и «действия после commit» (purge, отзыв токена); API и
+  `reapply-deletions` вызывают одни и те же функции. Каждое удаление — отдельная транзакция с audit
+  `maintenance.deletion_reapplied` (`actor_type=system`, details: исходное действие и время). Экспорт записывает
+  `maintenance.deletions_exported`. API для этих операций нет — только CLI на сервере.
+- `restore.sh` отбрасывает из списка `pg_restore` записи `EXTENSION` и комментарии к ним: расширения ставит initdb под
+  bootstrap superuser (ADR-011), а роль приложения не может их комментировать. Restore отказывается работать на
+  непустой БД. Удаления применяются после старта API, но до старта Nginx.
+- CI: restore drill (DEPLOYMENT §10) и upgrade path — схему создаёт `alembic upgrade head` образа тега `UPGRADE_FROM`
+  (`v0.4.0`), затем стек коммита мигрирует её и проходит smoke и drill. Новых миграций после `0016` пока нет, поэтому
+  сейчас upgrade path проверяет совместимость кода с схемой релиза; данные релиза не создаются (у `v0.4.0` нет
+  production-стека).
 
 ## Related documents
 
