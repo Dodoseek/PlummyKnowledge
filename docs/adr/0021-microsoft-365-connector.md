@@ -205,6 +205,16 @@ credentials `revoked`, источник `error`, `connector_auth_revoked`.
 - Picker: верхний уровень — `/me/drive` (без лицензии OneDrive — только сайты) и первые 100 из `/sites?search=*`;
   сайт → его библиотеки; библиотека или папка → вложенные папки со страницами по `$skiptoken`.
 
+10.3 (выполнен): sync engine Фазы 9 не менялся — `SourceLocation` даёт ему drive, а область папки, удаления по
+`external_id`, папки с документами и reconciliation работают на delta Graph как на Changes API. Проверено на
+фейковом Graph (`tests/integration/test_microsoft_sync.py`): начальная синхронизация от `token=latest` до обхода,
+синхронизация всей библиотеки, изменения содержимого, переименования, удаления, выход файла и папки из области и
+возврат папки, удалённая папка с документами (в журнале delta только сама папка) → reconciliation, `410`, чужой или
+подделанный курсор → reconciliation без запроса по нему, `429` с `Retry-After` → повтор задания, ротация refresh
+token между заданиями, `invalid_grant`/`interaction_required` → `connector_auth_revoked`, поиск до и после
+удаления файла. Удалённая выбранная папка: задание `failed` с `connector_not_found`, документы не удаляются
+массово, `validate` показывает `folder_not_found` — как у Google.
+
 ## Related documents
 
 [ADR-020](0020-google-drive-connector.md) · [ADR-006](0006-initial-setup-and-system-configuration.md) ·

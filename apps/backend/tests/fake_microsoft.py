@@ -137,10 +137,32 @@ class FakeMicrosoft:
         self.items[(drive_id, item_id)].update(updates)
         self.log[drive_id].append(item_id)
 
-    def delete(self, drive_id: str, item_id: str) -> None:
+    def set_content(self, drive_id: str, item_id: str, content: bytes) -> None:
+        """New content: a new hash and size, and a change in the log."""
         resource = self.items[(drive_id, item_id)]
-        self.items[(drive_id, item_id)] = {"id": item_id, "deleted": {"state": "deleted"}, "_was": resource}
-        self.contents.pop((drive_id, item_id), None)
+        self.contents[(drive_id, item_id)] = content
+        resource["size"] = len(content)
+        resource["file"]["hashes"]["quickXorHash"] = base64.b64encode(hashlib.sha1(content).digest()).decode()  # noqa: S324
+        self.log[drive_id].append(item_id)
+
+    def delete(self, drive_id: str, item_id: str) -> None:
+        """Deletes an item and everything under it; only the item itself is in the log (the worst case of
+        Graph, which need not report each child of a deleted folder)."""
+        doomed = [item_id]
+        while doomed:
+            current = doomed.pop()
+            resource = self.items[(drive_id, current)]
+            self.items[(drive_id, current)] = {
+                "id": current,
+                "deleted": {"state": "deleted"},
+                "_was": resource,
+            }
+            self.contents.pop((drive_id, current), None)
+            doomed.extend(
+                child
+                for (drive, child), value in self.items.items()
+                if drive == drive_id and value.get("parentReference", {}).get("id") == current
+            )
         self.log[drive_id].append(item_id)
 
     def authorize(self, authorization_url: str) -> tuple[str, str]:

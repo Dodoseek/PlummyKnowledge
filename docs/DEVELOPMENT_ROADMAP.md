@@ -238,7 +238,7 @@ security gate (проверки безопасности **внутри** фаз
 - Решения — [ADR-021](adr/0021-microsoft-365-connector.md): delegated `Files.Read.All` + `Sites.Read.All`, один
   tenant, без SDK; отзыв у провайдера невозможен — disconnect локальный. Шаги: 10.0 ADR и спецификации; 10.1
   Instance Settings, OAuth Entra, обобщение портов и API; 10.2 адаптер Graph; 10.3 синхронизация через Delta Query;
-  10.4 UI, E2E и security gate. Выполнены 10.0–10.2.
+  10.4 UI, E2E и security gate. Выполнены 10.0–10.3.
 - **Security gate:** как в Фазе 9; предупреждение о широте `Files.Read.All`.
 - **Выход:** **релиз 0.4.0**.
 
