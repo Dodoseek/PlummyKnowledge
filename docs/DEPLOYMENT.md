@@ -341,7 +341,7 @@ docker compose -f compose.prod.yaml --env-file deploy/prod/.env run --rm migrate
 `migration_database_url` и создаёт новый `database_url`) → `sudo sh deploy/scripts/split-db-roles.sh` (создаёт
 runtime-роль суперпользователем контейнера `postgres` через локальный сокет; повтор безопасен) → `docker compose …
 up -d --build --wait`. Для внешнего PostgreSQL вместо скрипта выполнить `CREATE ROLE plummy_app …`, `REVOKE` и
-`GRANT CONNECT` из п.1. CI проверяет этот путь с `v0.4.0` (§9).
+`GRANT CONNECT` из п.1. С 1.0.0 обновление с версий до 0.5.0 — через 0.5.0 ([ADR-025](adr/0025-semver-and-contract-stability.md) §4).
 
 **Retention журнала аудита** (1 год, `AUDIT_RETENTION_DAYS`) — задача хоста, не `scheduler`: удалять записи
 может только владелец схемы. Пример systemd timer (или строка cron с той же командой):
@@ -480,8 +480,8 @@ Client secret Entra имеет срок действия: продлите ег�
 - Обновление (реализовано, шаг 11.3): backup (§10) → `git checkout` новой версии → `docker compose up -d --build
   --wait` (сервис `migrate` применяет миграции до head, остальные ждут его завершения) → проверка readiness, входа и
   поиска. Откат — restore из backup, сделанного перед обновлением: миграции вниз не поддерживаются.
-- Upgrade path проверяется в CI (job «Production stack»): БД предыдущего релиза (`UPGRADE_FROM`, сейчас `v0.4.0`)
-  с одной ролью, схему создают его миграции; затем `split-db-roles.sh` (§6.1), стек текущего коммита мигрирует её
+- Upgrade path проверяется в CI (job «Production stack»): схему БД предыдущего релиза (`UPGRADE_FROM`, сейчас
+  `v0.5.0`) создают его миграции; `split-db-roles.sh` (§6.1) на ней ничего не меняет; стек текущего коммита мигрирует её
   до head и проходит весь smoke-сценарий, проверки ролей (`checks.sh`) и restore drill.
 
 ### 9.1 Масштабирование (шаг 11.5)

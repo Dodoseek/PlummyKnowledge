@@ -319,7 +319,9 @@ security gate (проверки безопасности **внутри** фаз
   [Proposed]), 13.2 (`CHANGELOG.md`, `version.py notes`, `release.yml`; GitHub Releases для v0.1.0, v0.4.0, v0.5.0),
   13.3 (README на английском с диаграммами, `README.ru.md`), 13.4 (руководства администратора `docs/guides/`),
   13.5 (руководства разработчика провайдеров и коннекторов), 13.6 (CODE_OF_CONDUCT, CONTRIBUTING и SECURITY на
-  английском, шаблоны), 13.7 (демо `compose.demo.yaml` с проверкой в CI).
+  английском, шаблоны), 13.7 (демо `compose.demo.yaml` с проверкой в CI), 13.8 (release gate 1.0.0 —
+  [SECURITY_MODEL.md §19.2](SECURITY_MODEL.md); upgrade path в CI с `v0.5.0`).
+- **Фаза 13 завершена;** выпуск 1.0.0 — по решению владельца (`version.py set 1.0.0-dev.1`, затем `release`).
 - **Выход:** **релиз 1.0.0** — стабильные contracts и production readiness (§19).
 
 ## 3. Релизы (§19)

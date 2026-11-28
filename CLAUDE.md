@@ -11,9 +11,9 @@ PlummyKnowledge — open-source **self-hosted** платформа корпор�
 Лицензия — Apache License 2.0. Одна инсталляция принадлежит **одной** организации и работает на её серверах или в её
 облаке: multi-tenancy, сущности Organization и `organization_id` нет ([ADR-012](docs/adr/0012-single-organization-deployment.md)).
 
-**Текущее состояние:** Фазы 1–12 roadmap завершены (Foundation, Bootstrap & Authentication, Users & RBAC, AI providers
+**Текущее состояние:** Фазы 1–13 roadmap завершены (Foundation, Bootstrap & Authentication, Users & RBAC, AI providers
 & network policy, Local document ingestion, Retrieval & RAG evaluation, Knowledge Bases & Assistants, Chat UI &
-streaming, Google Drive, Microsoft 365, Production deployment, Security hardening); выпущены релизы 0.1.0, 0.4.0 и 0.5.0 (теги `v0.1.0`, `v0.4.0`, `v0.5.0`; 0.2.0 и 0.3.0 отдельно не
+streaming, Google Drive, Microsoft 365, Production deployment, Security hardening, Open-source release); выпущены релизы 0.1.0, 0.4.0 и 0.5.0 (теги `v0.1.0`, `v0.4.0`, `v0.5.0`; 0.2.0 и 0.3.0 отдельно не
 выпускались). Backend:
 FastAPI, Pydantic Settings, SQLAlchemy async, Alembic (`vector`/`citext`, users, activation tokens, groups,
 RBAC-каталог и назначения ролей, sessions, audit_logs), Redis (rate limit, брокер Celery), health live/ready; Celery
@@ -62,7 +62,8 @@ audit `maintenance prune-audit`; threat model пересмотрена (SECURITY
 матрица ролей (`tests/route_inventory.py`, SECURITY_MODEL §3.6) — новый маршрут нужно внести в таблицу;
 трассировка SC-01…SC-09 (`tests/security_scenarios.py`); враждебные файлы (`unsafe_content` при DTD в OOXML); общий
 лимит `general`, сквозной тест логов, журнал аудита `GET /audit/events` и страница `/admin/audit`; Trivy для
-образов production-стека (`deploy/scripts/scan-images.sh`, исключения — `deploy/trivy/`). Фаза 13 (Open-source release) начата: [ADR-025](docs/adr/0025-semver-and-contract-stability.md) — публичный контракт 1.x,
+образов production-стека (`deploy/scripts/scan-images.sh`, исключения — `deploy/trivy/`). Фаза 13 (Open-source release) завершена, release gate 1.0.0 пройден (SECURITY_MODEL §19.2; выпуск — по решению
+владельца): [ADR-025](docs/adr/0025-semver-and-contract-stability.md) — публичный контракт 1.x,
 ломающие изменения только в major, deprecation, CHANGELOG; snapshot OpenAPI (`apps/backend/tests/contract/`) и проверка
 совместимости `scripts/openapi_compat.py` — изменение API обновляет snapshot и API_CONTRACTS в том же коммите;
 нереализованное в API_CONTRACTS помечено **Вне 1.0**. CHANGELOG и workflow GitHub Release — шаг 13.2; README на

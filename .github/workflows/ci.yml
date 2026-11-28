@@ -185,7 +185,7 @@ jobs:
       COMPOSE_PROJECT_NAME: plummy-prod
       COMPOSE_FILE: compose.prod.yaml:deploy/prod/smoke/compose.smoke.yaml
       COMPOSE_PROFILES: s3
-      UPGRADE_FROM: v0.4.0
+      UPGRADE_FROM: v0.5.0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -209,17 +209,16 @@ jobs:
           PLUMMY_TLS_KEY=$RUNNER_TEMP/privkey.pem
           EOF
           echo "COMPOSE_ENV_FILES=$RUNNER_TEMP/prod.env" >> "$GITHUB_ENV"
-      # Upgrade path (ADR-023 §6, ADR-024 §5): a database of the previous release has one role, the schema
-      # owner, and its schema is created by that release's migrations. The administrator's one-time step adds
-      # the runtime role; the stack of this commit then migrates to head and the whole scenario runs on top.
-      - name: Upgrade path, part 1 (database of the previous release, then split-db-roles.sh)
+      # Upgrade path (ADR-023 §6, ADR-025 §4): the schema of the previous release, created by that release's
+      # migrations as the schema owner; the stack of this commit then migrates it to head and the whole scenario
+      # runs on top. Older installations upgrade through 0.5.0 (split-db-roles.sh); the script must stay a no-op
+      # on a database that already has the runtime role.
+      - name: Upgrade path, part 1 (database of the previous release; split-db-roles.sh is a no-op)
         run: |
           git worktree add --detach "$RUNNER_TEMP/previous" "$UPGRADE_FROM"
           docker build --quiet --file "$RUNNER_TEMP/previous/apps/backend/Dockerfile" --target prod \
             --tag "plummy-upgrade-from:$UPGRADE_FROM" "$RUNNER_TEMP/previous"
           docker compose up --detach --wait postgres
-          docker compose exec -T postgres psql -X -q -v ON_ERROR_STOP=1 -U postgres -d postgres \
-            -c 'REVOKE ALL ON DATABASE plummy FROM plummy_app' -c 'DROP ROLE plummy_app'
           docker run --rm --network "${COMPOSE_PROJECT_NAME}_data" --user 10001 \
             --env APP_ENV=development --env REDIS_URL=redis://redis:6379/0 \
             --volume "$PWD/deploy/prod/secrets/migration_database_url:/run/secrets/database_url:ro" \

@@ -31,6 +31,8 @@ separately.
 
 ### Changed
 
+- Upgrades to 1.0.0 are supported from 0.5.0; older installations upgrade to 0.5.0 first. CI checks the upgrade
+  from 0.5.0.
 - `compose.prod.yaml` passes `SESSION_IDLE_TTL`, `SESSION_ABSOLUTE_TTL` and `RATE_LIMIT_GENERAL_PER_MINUTE` from
   `deploy/prod/.env` to the API (previously only the defaults applied).
 - `docs/API_CONTRACTS.md` is the 1.0 contract candidate. Parts that are not implemented are marked as outside

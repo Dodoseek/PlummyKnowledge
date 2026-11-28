@@ -765,6 +765,38 @@ Backend-тесты всех сценариев запускаются одной
 
 Решение о выпуске 0.5.0 (`python3 scripts/version.py release`) принимает владелец проекта (ADR-009).
 
+### 19.2 Release gate 1.0.0 (шаг 13.8)
+
+Прогон 2026-11-28 на коммите шага 13.7 (`0293192`) и рабочей копии 13.8. Код приложения после 0.5.0 не менялся:
+Фаза 13 — контракт, документация, релизный процесс и демо. Пункты — PROJECT_BLUEPRINT §20 и критерии ADR-025.
+
+| Пункт | Результат | Чем подтверждено |
+|---|---|---|
+| Миграции на чистой БД и upgrade path | ✓ | Integration-тесты на чистой БД; CI «Production stack»: схема `v0.5.0` → миграции до head → smoke и restore drill (ADR-025 §4); `split-db-roles.sh` на ней ничего не меняет |
+| Нет известных critical/high issues | ✓ | Threat model (§17) без изменений с 0.5.0; Trivy, pip-audit, npm audit — CI на `0293192` зелёный; `npm audit --omit=dev` локально — 0 уязвимостей |
+| Изоляция KB и пользователей, permission tests | ✓ | Backend полностью: 1817 passed, 3 skipped (живые тесты провайдеров, только с ключами); SC-01…SC-09 — 55 passed; E2E (CI) |
+| Secrets не попадают в logs и ответы API | ✓ | Как в §19.1 (`test_log_canaries.py`, write-only секреты, `checks.sh`); демо пишет пароль администратора только в файл `0600` |
+| Upload/parser limits, идемпотентность ingestion | ✓ | Как в §19.1; CI «Ingestion» на `0293192` |
+| Удалённые документы исключены из retrieval | ✓ | `test_documents_api.py`, `test_retrieval.py`, restore drill |
+| Citations валидируются backend | ✓ | `test_chat_stream.py`, SC-08; CI «Demo» и smoke требуют, чтобы все цитаты ответа были выданы backend |
+| Backup/restore | ✓ | Restore drill в CI «Production stack» |
+| Docker images, healthchecks и CI | ✓ | CI на `0293192`: все jobs зелёные, включая «Demo»; frontend локально — 193 passed, lint, typecheck, format, build |
+| README, `.env.example`, changelog, LICENSE, NOTICE | ✓ | README на английском с диаграммами и `README.ru.md`, руководства `docs/guides/`, CHANGELOG (`Unreleased` заполнен), CODE_OF_CONDUCT, CONTRIBUTING, SECURITY; LICENSE и NOTICE без изменений |
+| Стабильный контракт (ADR-025) | ✓ | API_CONTRACTS без [Proposed], нереализованное помечено «Вне 1.0»; snapshot OpenAPI и проверка совместимости в CI; `release.yml` публикует GitHub Release из CHANGELOG |
+
+Решения и ограничения гейта:
+
+- Вне контракта 1.0 (API_CONTRACTS): `Idempotency-Key`, заголовки `RateLimit-*`, Application Settings, сброс
+  пароля по email, пользовательские роли, маршруты `sources` у KB, `acl_acknowledged` (предупреждение об ACL
+  источника), событие `audit.viewed`. Их добавление после 1.0 — minor-изменения.
+- Открытые вопросы §20 (RLS, antivirus, nonce в CSP) и сроки исключений Trivy для pgvector — как в §19.1.
+- Обновление на 1.0.0 поддерживается с 0.5.0; с более ранних версий — через 0.5.0.
+
+Перед выпуском владелец задаёт цель `python3 scripts/version.py set 1.0.0-dev.1` (иначе `release` выпустит
+0.6.0), затем `python3 scripts/version.py release`; `Unreleased` CHANGELOG станет разделом 1.0.0, пуш тега
+создаст GitHub Release. После выпуска: SECURITY.md (поддерживаемые версии 1.0.x), статус README, `UPGRADE_FROM`
+остаётся `v0.5.0` до следующего релиза.
+
 ## 20. Открытые вопросы
 
 1. RLS как второй рубеж доступа на уровне KB (планируемый ADR). Разделение ролей БД
