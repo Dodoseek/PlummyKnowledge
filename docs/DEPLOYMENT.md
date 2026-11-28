@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Статус | v0.4 — среда разработки, первоначальная настройка (Фазы 1–3, §0, §6) и production-стек (шаг 11.2, §1–§2, §4–§5, §7.1, §8), обновление и backup/restore (шаг 11.3, §9–§10) реализованы |
+| Статус | v0.5 — среда разработки, первоначальная настройка (Фазы 1–3, §0, §6) и production-стек (шаг 11.2, §1–§2, §4–§5, §7.1, §8), обновление и backup/restore (шаг 11.3, §9–§10) реализованы |
 | Источник | [PROJECT_BLUEPRINT.md](PROJECT_BLUEPRINT.md) §3, §5, §8, §11, §13 (Фазы 1, 11) |
 | Решения | [ADR-006](adr/0006-initial-setup-and-system-configuration.md), [ADR-007](adr/0007-network-access-and-local-llm.md), [ADR-011](adr/0011-database-roles-and-extensions.md), [ADR-024](adr/0024-database-owner-and-runtime-roles.md), [ADR-013](adr/0013-auth-session-strategy.md), [ADR-022](adr/0022-s3-compatible-storage.md), [ADR-023](adr/0023-production-deployment.md) |
 | Связанные документы | [ARCHITECTURE.md §4, §10, §12](ARCHITECTURE.md), [SECURITY_MODEL.md](SECURITY_MODEL.md) |
