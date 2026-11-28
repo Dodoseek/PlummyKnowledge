@@ -63,7 +63,9 @@ audit `maintenance prune-audit`; threat model пересмотрена (SECURITY
 трассировка SC-01…SC-09 (`tests/security_scenarios.py`); враждебные файлы (`unsafe_content` при DTD в OOXML); общий
 лимит `general`, сквозной тест логов, журнал аудита `GET /audit/events` и страница `/admin/audit`; Trivy для
 образов production-стека (`deploy/scripts/scan-images.sh`, исключения — `deploy/trivy/`). Фаза 13 (Open-source release) начата: [ADR-025](docs/adr/0025-semver-and-contract-stability.md) — публичный контракт 1.x,
-ломающие изменения только в major, deprecation, CHANGELOG. Application Settings ещё нет ([DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md)).
+ломающие изменения только в major, deprecation, CHANGELOG; snapshot OpenAPI (`apps/backend/tests/contract/`) и проверка
+совместимости `scripts/openapi_compat.py` — изменение API обновляет snapshot и API_CONTRACTS в том же коммите;
+нереализованное в API_CONTRACTS помечено **Вне 1.0**. Application Settings ещё нет ([DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md)).
 Не начинать Google OAuth, Microsoft Graph и сложный RAG до стабильного запуска каркаса.
 
 ## Приоритет источников
@@ -278,6 +280,8 @@ docker compose run --rm --no-deps worker-ingestion pytest -p no:cacheprovider te
 python3 scripts/check_secrets.py                               # secret scan всех tracked-файлов
 sh deploy/scripts/scan-images.sh                               # Trivy: образы compose.prod.yaml (нужно окружение prod)
 python3 -m unittest discover -s scripts/tests                  # тесты scripts/
+docker compose run --rm --no-deps -v "$PWD/apps/backend:/work" -w /work -e UPDATE_OPENAPI_SNAPSHOT=1 backend pytest tests/contract/test_openapi_snapshot.py  # обновить snapshot OpenAPI (tests в контейнере read-only)
+python3 scripts/openapi_compat.py --against-release            # ломающие изменения API против последнего релиза
 ```
 
 Backup и restore production-стека ([DEPLOYMENT.md §10](docs/DEPLOYMENT.md)):

@@ -2,17 +2,20 @@
 
 | | |
 |---|---|
-| Статус | v0.3 — реализованы `health`, `setup`, `auth`, `users`, `groups`, `roles` (чтение), `providers`, `embedding-profiles`, `system`; контракт не стабилен до 1.0.0, §19 |
+| Статус | v1.0 (кандидат) — реализованные группы и SSE образуют публичный контракт 1.x ([ADR-025](adr/0025-semver-and-contract-stability.md)); строки с пометкой **Вне 1.0** не реализованы и в контракт не входят |
 | Источник | [PROJECT_BLUEPRINT.md](PROJECT_BLUEPRINT.md) §5, §6, §10, §12 |
 | Решения | [ADR-005](adr/0005-assistant-access-model.md), [ADR-006](adr/0006-initial-setup-and-system-configuration.md) (группы `setup`, `system`), [ADR-007](adr/0007-network-access-and-local-llm.md), [ADR-008](adr/0008-unified-document-ingestion.md), [ADR-010](adr/0010-api-error-format.md), [ADR-016](adr/0016-secret-encryption.md) |
 | Связанные документы | [ARCHITECTURE.md](ARCHITECTURE.md), [DATABASE_SCHEMA.md](DATABASE_SCHEMA.md), [SECURITY_MODEL.md](SECURITY_MODEL.md) |
 
-**Как читать.** Общие правила (§10), группы endpoints (§10), SSE-события (§5) и требования к цитатам (§6)
-нормативны. Пути, поля DTO, коды ошибок и лимиты — **рабочий проект**; пункты **[Proposed]** требуют
-подтверждения. Любое изменение публичного API требует предварительного ADR (§15).
+**Как читать.** Общие правила, группы endpoints, SSE-события и требования к цитатам нормативны. Реализованные
+пути, поля, коды ошибок, права и лимиты — публичный контракт 1.x: ломающие изменения только в major, устаревание —
+через deprecation ([ADR-025](adr/0025-semver-and-contract-stability.md)). Строки и пункты с пометкой **Вне 1.0** —
+намерение без реализации; их появление в 1.x будет добавлением (minor). Изменение публичного API требует ADR (§15).
 
-Источник истины после начала реализации — OpenAPI-схема, генерируемая FastAPI; этот документ описывает намерение и
-правила, а при расхождении обновляется вместе с кодом.
+Источник истины по полям и схемам — OpenAPI-схема FastAPI (`/api/v1/openapi.json`); её snapshot хранится в
+`apps/backend/tests/contract/openapi.snapshot.json` и сверяется в CI. Совместимость с последним релизом проверяет
+`scripts/tests/test_openapi_compatibility.py`; таблицы этого документа сверяются со snapshot
+(`scripts/tests/test_api_contracts_doc.py`).
 
 ---
 
@@ -97,7 +100,6 @@
 | 404 | `not_found` | Нет ресурса или нет доступа к нему |
 | 405 | `method_not_allowed` | Метод не поддерживается маршрутом; заголовок `Allow` |
 | 409 | `conflict` | Конфликт состояния (уникальность, версия) |
-| 409 | `idempotency_key_mismatch` | Тот же `Idempotency-Key` с другим телом запроса |
 | 409 | `sync_in_progress` | Для источника уже есть активный sync (§7, [ADR-020](adr/0020-google-drive-connector.md)) |
 | 409 | `email_taken` | Email уже занят пользователем, который не удалён |
 | 409 | `group_name_taken` | Имя группы (без учёта регистра) уже занято |
@@ -153,11 +155,17 @@
 
 ### 1.7 Idempotency (§10)
 
-- Для чувствительных повторяемых операций (помечены в таблицах как **Idem**) клиент передаёт
-  `Idempotency-Key: <uuid>`.
-- Тот же ключ + то же тело → возвращается сохранённый результат первой обработки, побочные эффекты не повторяются.
-- Тот же ключ + другое тело → `409 idempotency_key_mismatch`.
-- Ключи привязаны к пользователю и endpoint; срок хранения **[Proposed]** 24 часа.
+Заголовок `Idempotency-Key` — **Вне 1.0**: сервер его не читает (CORS его пропускает, чтобы добавить поддержку в 1.x
+без изменения клиентов). Повтор запроса после сбоя сети безопасен так:
+
+| Операция | Повтор |
+|---|---|
+| `DELETE` ресурса | Первый — `204`; повтор — `404 not_found`: ресурса уже нет |
+| `POST /data-sources/{id}/sync` | Пока sync в очереди или выполняется — `409 sync_in_progress` |
+| `POST …/reindex` | Новый job; версия, уже обработанная с тем же профилем, завершается `skipped_already_processed` без новых chunks (SC-09); лимит `expensive` |
+| `POST /chat/stream` | `client_message_id` из запроса: тот же ID в диалоге → `409 message_already_sent` |
+| `POST /documents` | Каждый upload создаёт новый документ: перед повтором клиент проверяет список документов KB |
+| Создание с уникальным именем или email | Повтор → `409` с кодом занятости (`email_taken`, `…_name_taken`) |
 
 ### 1.8 Сквозные заголовки (§11)
 
@@ -165,9 +173,7 @@
 |---|---|---|
 | `X-Request-ID` | in/out | Correlation ID; генерируется сервером, если не передан; возвращается всегда |
 | `X-CSRF-Token` | in | CSRF для небезопасных методов |
-| `Idempotency-Key` | in | См. §1.7 |
 | `Retry-After` | out | При 429/503 |
-| `RateLimit-Limit`, `RateLimit-Remaining`, `RateLimit-Reset` | out | **[Proposed]** |
 
 ### 1.9 Шаблон описания endpoint (§10)
 
@@ -181,12 +187,13 @@
 | Schemas | Request / response DTO |
 | Ошибки | Коды из §1.5 |
 | Side effects | Создаваемые jobs, отзыв сессий, удаление данных |
-| Idempotency | Да/нет, ключ |
+| Повтор | Что даёт повтор запроса (§1.7) |
 | Audit event | Имя события ([SECURITY_MODEL.md](SECURITY_MODEL.md), раздел 11 «Audit log») или «—» |
 | Rate limits | Лимит или «общий» |
 
 В таблицах ниже: **Scope** — `auth` (нужна сессия), `pub` (без аутентификации);
-**Idem** — требуется `Idempotency-Key`; **RL** — специальный rate limit (см. §5); «—» — нет.
+**Idem** — колонка зарезервирована для `Idempotency-Key` (**Вне 1.0**, §1.7), сейчас везде «—»; **RL** —
+специальный rate limit (см. §5); «—» — нет.
 
 ---
 
@@ -245,8 +252,8 @@
 | DELETE | `/api/v1/auth/sessions/{session_id}` | Отозвать свою сессию — **реализовано** | сессия | auth | — | `auth.session.revoked` | — |
 | POST | `/api/v1/auth/password/change` | Смена пароля; отзыв всех сессий и новая сессия — **реализовано** | сессия | auth | — | `auth.password.changed` | login |
 | POST | `/api/v1/auth/activate` | Активация учётной записи по одноразовой ссылке ([ADR-015](adr/0015-user-activation-links.md)) — **реализовано** | activation token | pub | — | `user.activated` / `user.activation.rejected` | activation |
-| POST | `/api/v1/auth/password/reset-request` | Только при наличии email infrastructure (§5) | — | pub | — | `auth.password.reset_requested` | login |
-| POST | `/api/v1/auth/password/reset` | Только при наличии email infrastructure (§5) | reset token | pub | — | `auth.password.reset` | login |
+| POST | `/api/v1/auth/password/reset-request` | **Вне 1.0.** Только при наличии email infrastructure (§5) | — | pub | — | `auth.password.reset_requested` | login |
+| POST | `/api/v1/auth/password/reset` | **Вне 1.0.** Только при наличии email infrastructure (§5) | reset token | pub | — | `auth.password.reset` | login |
 
 Первоначальная настройка вынесена в группу `setup` (§2.0). Endpoint `/auth/refresh` не существует (ADR-013).
 Автоматической регистрации нет.
@@ -304,8 +311,8 @@
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
-| GET | `/api/v1/settings` | Application Settings: заданные и effective значения, instance-границы | `settings.manage` | auth | — | — | — |
-| PATCH | `/api/v1/settings` | Изменить Application Settings в пределах instance policy | `settings.manage` | auth | — | `settings.updated` | — |
+| GET | `/api/v1/settings` | **Вне 1.0.** Application Settings: заданные и effective значения, instance-границы | `settings.manage` | auth | — | — | — |
+| PATCH | `/api/v1/settings` | **Вне 1.0.** Изменить Application Settings в пределах instance policy | `settings.manage` | auth | — | `settings.updated` | — |
 
 **`PATCH /settings`** ([ADR-006](adr/0006-initial-setup-and-system-configuration.md)): тело — частичный
 `ApplicationSettingsV1`; неизвестные поля → `422`; значение шире instance policy →
@@ -374,7 +381,7 @@
 |---|---|---|---|---|---|---|---|
 | GET | `/api/v1/roles` | `{ items: [{ key, name, description, is_system, permissions }] }` | `roles.read` | auth | — | — | — |
 | GET | `/api/v1/roles/permissions` | `{ items: [{ key, description }] }` | `roles.read` | auth | — | — | — |
-| POST / PATCH / DELETE | `/api/v1/roles[/{id}]` | Пользовательские роли — **не в 0.1.0** **[Proposed]** | `roles.manage` | auth | — | `role.created/updated/deleted` | — |
+| POST / PATCH / DELETE | `/api/v1/roles[/{id}]` | **Вне 1.0.** Пользовательские роли | `roles.manage` | auth | — | `role.created/updated/deleted` | — |
 
 Системные роли (§2) неизменяемы.
 
@@ -482,12 +489,12 @@
 | POST | `/api/v1/data-sources` | Создать внешний источник (`google_drive` \| `microsoft_365`); `upload` через API не создаётся | `data_sources.manage` | auth | — | `data_source.created` | — |
 | GET | `/api/v1/data-sources/{id}` | Карточка: статус, `granted_scopes`, последний sync | `data_sources.read` | auth | — | — | — |
 | PATCH | `/api/v1/data-sources/{id}` | Выбранная папка/site/library, расписание | `data_sources.manage` | auth | — | `data_source.updated` | — |
-| DELETE | `/api/v1/data-sources/{id}` | Удалить источник и его документы по lifecycle | `data_sources.manage` | auth | Idem | `data_source.deleted` | — |
+| DELETE | `/api/v1/data-sources/{id}` | Удалить источник и его документы по lifecycle | `data_sources.manage` | auth | — | `data_source.deleted` | — |
 | POST | `/api/v1/data-sources/{id}/oauth/start` | Начать OAuth (state + PKCE), вернуть `authorization_url` | `data_sources.manage` | auth | — | `data_source.oauth.started` | — |
 | GET | `/api/v1/data-sources/oauth/callback` | Callback провайдера: проверка `state`, обмен кода, шифрование refresh token, redirect в UI | state | pub* | — | `data_source.connected` / `data_source.oauth.failed` | — |
 | POST | `/api/v1/data-sources/{id}/validate` | `validate_connection` (§7) | `data_sources.manage` | auth | — | — | provider_test |
 | GET | `/api/v1/data-sources/{id}/browse` | Folder/site/drive/library picker (`?parent_id=`) | `data_sources.manage` | auth | — | — | general |
-| POST | `/api/v1/data-sources/{id}/sync` | Ручной запуск sync (`mode`: `incremental` \| `reconciliation`) | `data_sources.sync` | auth | Idem | `sync.requested` | sync |
+| POST | `/api/v1/data-sources/{id}/sync` | Ручной запуск sync (`mode`: `incremental` \| `reconciliation`) | `data_sources.sync` | auth | — | `sync.requested` | sync |
 | POST | `/api/v1/data-sources/{id}/disconnect` | Revoke у провайдера + удаление credentials | `data_sources.manage` | auth | — | `data_source.disconnected` | — |
 
 \* Callback не имеет сессионного контекста API в обычном смысле: пользователь восстанавливается из
@@ -587,16 +594,17 @@ UI обязан показывать **фактические** `granted_scopes`
 | POST | `/api/v1/knowledge-bases` | Создать (embedding profile обязателен) | `knowledge_bases.manage` | auth | — | `kb.created` | — |
 | GET | `/api/v1/knowledge-bases/{id}` | Карточка + статусы индексации | KB `read` | auth | — | — | — |
 | PATCH | `/api/v1/knowledge-bases/{id}` | Изменить имя и описание (смена embedding profile пока не поддерживается) | KB `manage` | auth | — | `kb.updated` | — |
-| DELETE | `/api/v1/knowledge-bases/{id}` | Удалить | `knowledge_bases.manage` | auth | Idem | `kb.deleted` | — |
+| DELETE | `/api/v1/knowledge-bases/{id}` | Удалить | `knowledge_bases.manage` | auth | — | `kb.deleted` | — |
 | GET | `/api/v1/knowledge-bases/{id}/access` | Список доступа | KB `manage` | auth | — | — | — |
 | PUT | `/api/v1/knowledge-bases/{id}/access` | Заменить список `{principal_type, principal_id, access_level}` | KB `manage` | auth | — | `kb.access.granted`, `kb.access.revoked` | — |
-| GET | `/api/v1/knowledge-bases/{id}/sources` | Привязанные источники | KB `read` | auth | — | — | — |
-| PUT | `/api/v1/knowledge-bases/{id}/sources/{data_source_id}` | Привязать источник | KB `manage` + `data_sources.read` | auth | — | `kb.source.attached` | — |
-| DELETE | `/api/v1/knowledge-bases/{id}/sources/{data_source_id}` | Отвязать (документы источника исключаются из KB) | KB `manage` | auth | — | `kb.source.detached` | — |
-| POST | `/api/v1/knowledge-bases/{id}/reindex` | Переиндексация KB | KB `manage` | auth | Idem | `kb.reindex.requested` | expensive |
+| GET | `/api/v1/knowledge-bases/{id}/sources` | **Вне 1.0.** Привязанные источники | KB `read` | auth | — | — | — |
+| PUT | `/api/v1/knowledge-bases/{id}/sources/{data_source_id}` | **Вне 1.0.** Привязать источник | KB `manage` + `data_sources.read` | auth | — | `kb.source.attached` | — |
+| DELETE | `/api/v1/knowledge-bases/{id}/sources/{data_source_id}` | **Вне 1.0.** Отвязать (документы источника исключаются из KB) | KB `manage` | auth | — | `kb.source.detached` | — |
+| POST | `/api/v1/knowledge-bases/{id}/reindex` | Переиндексация KB | KB `manage` | auth | — | `kb.reindex.requested` | expensive |
 | POST | `/api/v1/knowledge-bases/{id}/search` | Hybrid-поиск фрагментов без генерации ответа | KB `read` | auth | — | — | search |
 
-Строки `sources` ещё не реализованы (кроме `upload`, других источников пока нет); `Idempotency-Key` не поддерживается.
+Строки `sources` — **Вне 1.0**: внешний источник создаётся сразу для своей KB (`POST /data-sources` с
+`knowledge_base_id`, §2.9), его источники KB перечисляет `GET /data-sources?knowledge_base_id=`.
 
 **KB DTO (`200`/`201`):**
 
@@ -616,7 +624,7 @@ UI обязан показывать **фактические** `granted_scopes`
 источник `upload`. Ошибки поля
 `body.embedding_profile_id` (`422 validation_error`, `errors[].code`): `unknown_embedding_profile`,
 `embedding_profile_not_active`, `dimensions_not_indexable`, `provider_unavailable`; занятое имя —
-`409 knowledge_base_name_taken`. Настройки chunking через API не задаются (**[Proposed]**, всегда значения по
+`409 knowledge_base_name_taken`. Настройки chunking через API не задаются (всегда значения по
 умолчанию — [ARCHITECTURE.md §8.4](ARCHITECTURE.md)).
 
 **Изменение (`PATCH`)** — тело `{name?, description?, embedding_profile_id?}`: меняются только переданные поля,
@@ -679,19 +687,19 @@ Keyword-ветка ищет по **любому** слову запроса (с�
 эксплуатации, провайдер отключён или нет ключа; `mode: keyword` при этом работает), `429 rate_limited`,
 `502 provider_error`, `502 egress_denied`, `504 provider_timeout` (без вывода провайдера).
 
-Привязка источника к KB требует подтверждения, что все участники KB имеют право видеть все документы источника
-(§8 Document ACL); UI показывает предупреждение, API принимает флаг `acl_acknowledged: true` **[Proposed]**.
+Права документов внешнего источника не наследуются (§8 Document ACL, вне MVP): все, у кого есть доступ к KB, видят
+все синхронизированные документы. Отдельное подтверждение при подключении источника (`acl_acknowledged`) — **Вне 1.0**.
 
-### 2.11 `documents` (§5, §6) — реализовано, кроме `Idempotency-Key`
+### 2.11 `documents` (§5, §6) — реализовано
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
 | GET | `/api/v1/documents` | Список; обязательный фильтр `knowledge_base_id`; фильтры `processing_status`, `data_source_id`, `q`; `sort`: `-created_at` (по умолчанию), `created_at`, `filename`, `-filename` | KB `read` | auth | — | — | — |
-| POST | `/api/v1/documents` | Upload (`multipart/form-data`: `knowledge_base_id`, `file`) → quarantine + ingestion job | KB `manage` | auth | Idem | `document.uploaded` | upload |
+| POST | `/api/v1/documents` | Upload (`multipart/form-data`: `knowledge_base_id`, `file`) → quarantine + ingestion job | KB `manage` | auth | — | `document.uploaded` | upload |
 | GET | `/api/v1/documents/{id}` | Карточка: версия, MIME, checksum, размер, source ID, timestamps, processing status | KB `read` | auth | — | — | — |
 | GET | `/api/v1/documents/{id}/versions` | Версии | KB `read` | auth | — | — | — |
-| DELETE | `/api/v1/documents/{id}` | Удаление: немедленное исключение из retrieval + purge job | KB `manage` | auth | Idem | `document.deleted` | — |
-| POST | `/api/v1/documents/{id}/reindex` | Переиндексация | KB `manage` | auth | Idem | `document.reindex.requested` | expensive |
+| DELETE | `/api/v1/documents/{id}` | Удаление: немедленное исключение из retrieval + purge job | KB `manage` | auth | — | `document.deleted` | — |
+| POST | `/api/v1/documents/{id}/reindex` | Переиндексация | KB `manage` | auth | — | `document.reindex.requested` | expensive |
 | GET | `/api/v1/documents/{id}/versions/{version_id}/chunks/{chunk_id}/view` | Защищённый in-app source viewer (§5) | KB `read` | auth | — | — (`document.viewed` не пишется) | — |
 
 **Upload `202`:**
@@ -706,7 +714,7 @@ Keyword-ветка ищет по **любому** слову запроса (с�
 Upload и документы из коннекторов проходят один pipeline ([ADR-008](adr/0008-unified-document-ingestion.md)); HTTP-запрос
 только принимает файл в quarantine и ставит job. Поле `knowledge_base_id` должно идти **перед** `file`: доступ и
 rate limit проверяются до записи первого байта. Каждый upload создаёт **новый** документ (загрузка новой версии
-существующего документа и `Idempotency-Key` — [Proposed], не реализованы). Повторный `reindex` уже обработанной
+существующего документа и `Idempotency-Key` — **Вне 1.0**). Повторный `reindex` уже обработанной
 версии завершается без изменений (`result: skipped_already_processed`).
 
 Ошибки: `413 payload_too_large`, `415 unsupported_media_type` (MVP: PDF, DOCX, XLSX, TXT, CSV, Markdown; в 0.1.0 —
@@ -883,7 +891,7 @@ assistant_unavailable`; `404 not_found` (чужой или несуществу�
 |---|---|---|---|---|---|---|---|
 | GET | `/api/v1/jobs` | Ingestion и sync jobs (`type`, `status`, `knowledge_base_id`, `data_source_id`); `sort`: `-queued_at` (по умолчанию), `queued_at` | `jobs.read` | auth | — | — | — |
 | GET | `/api/v1/jobs/{type}/{id}` | Детали, stage, attempts, redacted error | `jobs.read` | auth | — | — | — |
-| POST | `/api/v1/jobs/{type}/{id}/retry` | Повтор `failed`/`dead` или отменённого администратором ingestion job | `jobs.manage` | auth | Idem | `job.retried` | expensive |
+| POST | `/api/v1/jobs/{type}/{id}/retry` | Повтор `failed`/`dead` или отменённого администратором ingestion job | `jobs.manage` | auth | — | `job.retried` | expensive |
 | POST | `/api/v1/jobs/{type}/{id}/cancel` | Отмена `queued`/`running` | `jobs.manage` | auth | — | `job.cancelled` | — |
 
 `{type}`: `ingestion` \| `sync`. Список без `type` содержит ingestion jobs; `type=sync` — sync jobs (DTO как в ответе
@@ -922,7 +930,7 @@ retry не реализован (повтор того же запроса по�
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
-| GET | `/api/v1/audit/events` | Журнал (`action`, `actor_user_id`, `target_type`, `target_id`, `outcome`, `from`, `to`; `sort` = `-created_at` (по умолчанию) или `created_at`, `limit`, `cursor`) | `audit.read` | auth | — | **[Proposed]** `audit.viewed` | general |
+| GET | `/api/v1/audit/events` | Журнал (`action`, `actor_user_id`, `target_type`, `target_id`, `outcome`, `from`, `to`; `sort` = `-created_at` (по умолчанию) или `created_at`, `limit`, `cursor`) | `audit.read` | auth | — | — (`audit.viewed` — **Вне 1.0**) | general |
 | GET | `/api/v1/audit/events/{id}` | Событие | `audit.read` | auth | — | — | general |
 
 Реализовано (шаг 12.5). Аудит доступен только на чтение; endpoints изменения/удаления событий отсутствуют (`405`).
@@ -975,7 +983,7 @@ redirect URI для регистрации в Google Cloud ([ADR-020](adr/0020-g
 `connectors.microsoft_365` — то же для приложения Entra ID (`MICROSOFT_OAUTH_TENANT_ID`, `MICROSOFT_OAUTH_CLIENT_ID`
 и секрет, [ADR-021](adr/0021-microsoft-365-connector.md)); redirect URI общий, ни секрет, ни tenant не возвращаются.
 
-Дополнительные разделы (**[Proposed]**, по мере появления лимитов, SMTP и storage):
+Дополнительные разделы (**Вне 1.0**; появятся как новые поля — minor, по мере появления лимитов, SMTP и storage):
 
 ```json
 {
@@ -1070,8 +1078,7 @@ data: {"delta":"Перенос возможен "}
 
 1. Перед вызовом модели backend присваивает каждому отобранному chunk временный citation ID (`c1`, `c2`, …),
    действующий только в рамках этой генерации.
-2. Модель получает инструкцию ссылаться только на эти ID в формате `[c1]` (несколько — `[c1][c3]`)
-   **[Proposed]**. Правила — в system-части запроса, chunks — только в экранированном блоке `<documents>`.
+2. Модель получает инструкцию ссылаться только на эти ID в формате `[c1]` (несколько — `[c1][c3]`). Правила — в system-части запроса, chunks — только в экранированном блоке `<documents>`.
 3. Backend буферизует потенциальные маркеры в потоке: валидный ID пропускается в `token` и порождает `citation`
    (один раз на ID); **невалидный ID удаляется** из текста и учитывается в
    `generation_runs.rejected_citation_count`. Групповой маркер `[c1, c3]` разбирается по одному ID и
@@ -1093,7 +1100,7 @@ data: {"delta":"Перенос возможен "}
 
 ---
 
-## 4. Ключевые DTO (черновик)
+## 4. Ключевые DTO (обзор; поля — по OpenAPI-схеме)
 
 ```jsonc
 // KnowledgeBase
@@ -1140,8 +1147,10 @@ data: {"delta":"Перенос возможен "}
 
 ## 5. Rate limits (§5, §8 п.5)
 
-`login`, `setup`, `activation`, `provider_test`, `search`, `chat` и `general` реализованы ([ADR-013](adr/0013-auth-session-strategy.md),
-[ADR-015](adr/0015-user-activation-links.md), шаг 12.5); остальные значения — **[Proposed]** (по умолчанию, настраиваются).
+Все профили реализованы ([ADR-013](adr/0013-auth-session-strategy.md), [ADR-015](adr/0015-user-activation-links.md),
+[ADR-019](adr/0019-answer-generation-in-api-process.md), шаг 12.5). Значения — константы, кроме `general`
+(`RATE_LIMIT_GENERAL_PER_MINUTE`); сами значения в контракт не входят и могут меняться в minor, коды `429
+rate_limited` и `Retry-After` — входят.
 Хранилище счётчиков — Redis; при его недоступности эти endpoints отвечают `503` — кроме `general`, который тогда
 пропускает запросы с предупреждением в логе (он ограничивает только нагрузку; SECURITY_MODEL.md §13).
 
@@ -1150,7 +1159,7 @@ data: {"delta":"Перенос возможен "}
 | `login` | 5/мин и 20/час на IP + email; 30/мин на IP; 10 неудачных попыток за 15 мин на email | IP, SHA-256(email) |
 | `setup` | 5/мин | IP |
 | `activation` | 10/мин | IP |
-| `upload` | 30/мин, суммарный объём 500 МБ/час | пользователь |
+| `upload` | 30/мин (размер файла — `UPLOAD_MAX_BYTES`; лимит объёма в час — **Вне 1.0**) | пользователь |
 | `chat` | 20/мин, не более 2 одновременных генераций (утверждён в [ADR-019](adr/0019-answer-generation-in-api-process.md)) | пользователь |
 | `provider_test` | 10/мин | инсталляция |
 | `sync` | 6/час | источник |
@@ -1180,9 +1189,10 @@ data: {"delta":"Перенос возможен "}
 
 ## 7. Открытые вопросы
 
-1. Хранилище idempotency keys (PostgreSQL / Redis).
-2. Пользовательские роли в MVP.
+1. Хранилище idempotency keys (PostgreSQL / Redis) — при добавлении `Idempotency-Key` в 1.x.
+2. Пользовательские роли — после 1.0.
 3. Нужен ли endpoint скачивания оригинала документа (и с какими заголовками безопасности).
+4. Application Settings (`/settings`) и восстановление пароля по email — после 1.0.
 
 Решено: формат ошибок ([ADR-010](adr/0010-api-error-format.md)), пагинация ([ADR-014](adr/0014-list-pagination.md)),
 создание пользователей ссылкой активации ([ADR-015](adr/0015-user-activation-links.md)), setup и системные настройки ([ADR-006](adr/0006-initial-setup-and-system-configuration.md)), доступ к
