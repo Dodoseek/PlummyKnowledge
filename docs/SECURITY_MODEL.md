@@ -147,6 +147,44 @@ injection; скомпрометированный внешний провайд�
   `group_roles`, `user_groups` и `role_permissions`); отзыв роли, исключение из группы или удаление группы вступают
   в силу со следующего запроса.
 
+### 3.6 Инвентаризация маршрутов (шаг 12.2)
+
+Все маршруты API (88 на шаг 12.2) сведены в проверенную таблицу `apps/backend/tests/route_inventory.py`. В ней для
+каждого метода и пути указан вид доступа и нужное право или уровень доступа к KB. Изменения в таблице проходят
+review как изменения кода.
+
+| Вид | Маршруты | Проверка |
+|---|---|---|
+| Без сессии | `health/*`, `setup/*`, `auth/login`, `auth/logout`, `auth/activate`, `data-sources/oauth/callback` | bootstrap token (§4.5), токен активации (§4.6), OAuth state, привязанный к сессии (§15), или ничего (health) |
+| Своё (`own`) | `auth/me`, `auth/sessions*`, `auth/password/change`, `conversations*`, `chat/*` | Данные владельца сессии, чужие — `404`; диалоги и чат — ещё `chat.use` и доступность ассистента (§6.3). Администратор чужие диалоги тоже не видит |
+| Право (`permission`) | `users*`, `groups*`, `roles*`, `providers*`, `embedding-profiles*`, `data-sources*`, `jobs*`, `system/settings`, `POST`/`DELETE knowledge-bases` | `require_permission` в маршруте (ранний отказ) и повторно в use case; отказ — `403 permission_denied` |
+| Доступ к KB | Остальные `knowledge-bases/*`, `documents/*` | Уровень доступа к KB (§3.4) в use case: без доступа — `404 not_found`, `read` вместо `manage` — `403 permission_denied`; список KB — только доступные |
+| Ассистент | `assistants*` | ADR-005 (§6.3) |
+
+Все маршруты проверяют `Origin` (§4.4); изменяющие маршруты с сессией — ещё CSRF-токен. Права `settings.manage`
+(Application Settings ещё нет) и `audit.read` (до `GET /audit/events`, шаг 12.5) маршрутами пока не используются.
+
+Проверки:
+
+- `tests/unit/test_route_inventory.py`. Тест падает, если:
+  - в приложении есть маршрут без записи в таблице, или в таблице есть запись для несуществующего маршрута;
+  - маршрут без сессии требует сессию, или маршрут с сессией её не требует;
+  - `require_permission` маршрута проверяет не то право, что указано в таблице;
+  - маршрут не проверяет `Origin`;
+  - право из каталога не используется и не зарезервировано с причиной;
+  - системные роли не совпадают с матрицей §3.3.
+- `tests/integration/test_rbac_matrix.py` (настоящие PostgreSQL и Redis):
+  - каждый маршрут с правом проверяется для каждой системной роли и для пользователя без ролей. Второй прогон идёт
+    с отключёнными проверками в маршрутах, поэтому отказывает сам use case (§6.1);
+  - каждый маршрут KB и документов проверяется для прямого `read`, `read` через группу, прямого `manage`,
+    `knowledge_bases.manage` и пользователя без доступа;
+  - чужой диалог, поток чата и сессия отвечают `404` другому пользователю и администратору;
+  - без `chat.use` диалоги и чат отвечают `403`;
+  - без сессии все маршруты, кроме публичных, отвечают `401`;
+  - каждый изменяющий маршрут с сессией, но без CSRF-токена отвечает `403 csrf_failed`.
+
+Найденные расхождения: не найдено.
+
 ## 4. Authentication и сессии ([ADR-013](adr/0013-auth-session-strategy.md))
 
 Требования (§5, §13 Фаза 3): локальная аутентификация, Argon2id, cookies HttpOnly/Secure/SameSite, CSRF strategy,
@@ -556,9 +594,9 @@ append-only обеспечивает runtime-роль без `UPDATE`/`DELETE` �
 
 | Угроза (§8) | Меры (реализовано) | Проверка | Фаза 12 |
 |---|---|---|---|
-| Утечка между KB / пользователями | Контекст из сессии; фильтры доступа к KB, документам и версиям в SQL до retrieval и LLM; jobs заново загружают ресурс и проверяют состояние; `404` без раскрытия существования. RLS нет (§5 п.6, §20) | SC-05, `test_authorization.py`, `test_source_viewer.py`, `test_conversations_api.py`, E2E `access.spec.ts` | 12.2: инвентаризация всех маршрутов и матрица ролей; 12.3: SC-прогон |
+| Утечка между KB / пользователями | Контекст из сессии; фильтры доступа к KB, документам и версиям в SQL до retrieval и LLM; jobs заново загружают ресурс и проверяют состояние; `404` без раскрытия существования. RLS нет (§5 п.6, §20) | SC-05, `test_authorization.py`, `test_rbac_matrix.py` и `test_route_inventory.py` (§3.6), `test_source_viewer.py`, `test_conversations_api.py`, E2E `access.spec.ts` | 12.2 (выполнен): инвентаризация маршрутов и матрица ролей, расхождений нет; 12.3: SC-прогон |
 | Утечка между организациями | Одна организация на инсталляцию (ADR-012): отдельные БД, storage, ключи | Не применимо внутри инсталляции | — |
-| RBAC bypass | `require_permission` и policy в каждом use case, deny by default, frontend не boundary | Negative RBAC tests по модулям (`tests/integration/rbac.py`) | 12.2: тест падает, если маршрут не описан в таблице прав; 401/403 без сессии и CSRF для каждого маршрута |
+| RBAC bypass | `require_permission` и policy в каждом use case, deny by default, frontend не boundary | Negative RBAC tests по модулям (`tests/integration/rbac.py`); инвентаризация и матрица ролей (§3.6) | 12.2 (выполнен): тест падает, если маршрут не описан в таблице прав; `401` без сессии, `403` без права и в use case без проверки маршрута |
 | Потеря управления и эскалация через управление пользователями | Последний активный администратор защищён блокировкой строки роли `admin`; запрет отключать/удалять себя; роли при создании — только с `roles.assign` (§3.1) | Тесты последнего администратора, в том числе параллельные | — |
 | Перехват ссылки активации | Токен во фрагменте URL, только SHA-256 в БД, 72 ч, одноразовость под блокировкой, лимит на IP (ADR-015) | Тесты повторной, параллельной, истёкшей и перевыпущенной активации | — |
 | Утечка API keys / OAuth tokens | AES-256-GCM, key ring вне БД и вне backup, write-only API, redaction ошибок, нет в prompt (ADR-016) | `test_secrets.py`, тесты API провайдеров и источников, E2E: токены фейковых Google/Microsoft не попадают в страницу | 12.5: сквозной тест логов на DEBUG |
@@ -568,7 +606,7 @@ append-only обеспечивает runtime-роль без `UPDATE`/`DELETE` �
 | Archive bombs | Лимиты числа записей, распакованного размера и коэффициента сжатия ZIP | `test_file_inspection.py` | 12.4: вложенные архивы |
 | Prompt injection | Документы — данные в блоке `<documents>`; нет tools; system rules первыми; citation IDs выдаёт и фильтрует backend; Markdown без HTML и без загрузки изображений | SC-08: `test_retrieval_context.py`, `test_chat_stream.py`, `test_source_sync.py` | 12.4: набор враждебных документов через весь pipeline |
 | XSS | React-экранирование, Markdown без сырого HTML, только http(s)-ссылки, CSP без `unsafe-inline` для скриптов (ADR-023 §5) | `AnswerMarkdown.test.tsx`, `viewer.test.tsx`, проверка заголовков в CI-smoke | — (nonce для стилей — §20) |
-| CSRF | Double-submit token + проверка `Origin`, SameSite (ADR-013) | `test_chat_security_gate.py`, тесты auth | 12.2: каждый изменяющий маршрут без CSRF → `403` |
+| CSRF | Double-submit token + проверка `Origin`, SameSite (ADR-013) | `test_chat_security_gate.py`, тесты auth, `test_rbac_matrix.py` (каждый изменяющий маршрут без CSRF → `403 csrf_failed`) | 12.2 (выполнен) |
 | CORS | Same-origin; allowlist origins, никогда `*` с credentials | Тесты конфигурации | 12.5: тесты preflight и ответов на чужой origin |
 | Session theft | HttpOnly/Secure, хэш токена в БД, idle/абсолютный срок, отзыв, новая сессия при входе (ADR-013) | Тесты revoked/expired sessions, session fixation | — |
 | Resource exhaustion | Лимиты login, setup, activation, upload, chat, provider_test, search, sync, expensive; семафор генераций; лимиты парсинга; pools и timeouts | `test_rate_limiter.py`, `test_generation_control.py` | 12.5: общий лимит `general` |

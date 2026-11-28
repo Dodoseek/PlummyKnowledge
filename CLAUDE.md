@@ -58,7 +58,8 @@ Nginx/TLS/CSP, секретами файлами (`deploy/prod/init-secrets.sh`)
 страница `/admin/jobs`; retention версий документов (последние 3 `outdated`). Фаза 12 (Security hardening) начата:
 [ADR-024](docs/adr/0024-database-owner-and-runtime-roles.md) — владелец схемы (`plummy`, только `migrate`) и
 runtime-роль сервисов (`plummy_app`, только DML, `audit_logs` append-only; права — `db grant-runtime`), retention
-audit `maintenance prune-audit`; threat model пересмотрена (SECURITY_MODEL §17). Application Settings ещё нет ([DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md)).
+audit `maintenance prune-audit`; threat model пересмотрена (SECURITY_MODEL §17); инвентаризация маршрутов и
+матрица ролей (`tests/route_inventory.py`, SECURITY_MODEL §3.6) — новый маршрут нужно внести в таблицу. Application Settings ещё нет ([DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md)).
 Не начинать Google OAuth, Microsoft Graph и сложный RAG до стабильного запуска каркаса.
 
 ## Приоритет источников

@@ -280,10 +280,12 @@ security gate (проверки безопасности **внутри** фаз
   RBAC/KB-access audit (инвентаризация маршрутов, матрица ролей); 12.3 прогон SC-01…SC-09 и таблица трассировки;
   12.4 враждебные файлы и документы (XXE, billion laughs, вложенные архивы, polyglot, prompt injection); 12.5 лимит
   `general`, CORS, сквозной тест логов, `GET /audit/events` и страница `/admin/audit`; 12.6 Trivy и `SECURITY.md`;
-  12.7 security gate и предрелизный чек-лист (SECURITY_MODEL §19). Выполнены 12.0 и 12.1 (владелец схемы и
+  12.7 security gate и предрелизный чек-лист (SECURITY_MODEL §19). Выполнены 12.0, 12.1 (владелец схемы и
   runtime-роль в initdb, `db grant-runtime` в `migrate`, отказ старта в production с ролью владельца,
   `maintenance prune-audit` по таймеру хоста, `deploy/scripts/split-db-roles.sh`, upgrade path с `v0.4.0` через
-  него в CI; весь набор integration-тестов работает под runtime-ролью).
+  него в CI; весь набор integration-тестов работает под runtime-ролью) и 12.2 (таблица всех маршрутов с видом
+  доступа — SECURITY_MODEL §3.6, тест инвентаризации и матрица ролей, уровней доступа к KB, личных данных и CSRF на
+  настоящих PostgreSQL и Redis; расхождений не найдено).
 - **Выход (вместе с Фазой 11):** **релиз 0.5.0**.
 
 ### Фаза 13 — Open-source release (§13)

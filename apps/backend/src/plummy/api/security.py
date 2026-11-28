@@ -6,7 +6,6 @@ The frontend is not a security boundary: every check here runs on the server for
 from __future__ import annotations
 
 import ipaddress
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Annotated
 from urllib.parse import urlsplit
@@ -37,6 +36,7 @@ __all__ = [
     "AuthenticatedDep",
     "CsrfFailedError",
     "CurrentContext",
+    "RequirePermission",
     "SettingsDep",
     "clear_session_cookie",
     "client_info",
@@ -130,11 +130,22 @@ async def get_security_context(authenticated: AuthenticatedDep) -> SecurityConte
 CurrentContext = Annotated[SecurityContext, Depends(get_security_context)]
 
 
-def require_permission(*permissions: Permission) -> Callable[..., Awaitable[SecurityContext]]:
-    """Dependency for routes that need permissions. Use cases still check them (defense in depth)."""
+class RequirePermission:
+    """Route dependency for permissions: an early refusal. Use cases still check them (defense in depth).
 
-    async def dependency(context: CurrentContext) -> SecurityContext:
-        context.require(*permissions)
+    A class rather than a closure so the route inventory (``tests/unit/test_route_inventory.py``) can read
+    which permissions a route requires.
+    """
+
+    __slots__ = ("permissions",)
+
+    def __init__(self, permissions: tuple[Permission, ...]) -> None:
+        self.permissions = permissions
+
+    async def __call__(self, context: CurrentContext) -> SecurityContext:
+        context.require(*self.permissions)
         return context
 
-    return dependency
+
+def require_permission(*permissions: Permission) -> RequirePermission:
+    return RequirePermission(permissions)
