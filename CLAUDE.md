@@ -62,7 +62,8 @@ audit `maintenance prune-audit`; threat model пересмотрена (SECURITY
 матрица ролей (`tests/route_inventory.py`, SECURITY_MODEL §3.6) — новый маршрут нужно внести в таблицу;
 трассировка SC-01…SC-09 (`tests/security_scenarios.py`); враждебные файлы (`unsafe_content` при DTD в OOXML); общий
 лимит `general`, сквозной тест логов, журнал аудита `GET /audit/events` и страница `/admin/audit`; Trivy для
-образов production-стека (`deploy/scripts/scan-images.sh`, исключения — `deploy/trivy/`). Application Settings ещё нет ([DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md)).
+образов production-стека (`deploy/scripts/scan-images.sh`, исключения — `deploy/trivy/`). Фаза 13 (Open-source release) начата: [ADR-025](docs/adr/0025-semver-and-contract-stability.md) — публичный контракт 1.x,
+ломающие изменения только в major, deprecation, CHANGELOG. Application Settings ещё нет ([DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md)).
 Не начинать Google OAuth, Microsoft Graph и сложный RAG до стабильного запуска каркаса.
 
 ## Приоритет источников

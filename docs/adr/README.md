@@ -41,6 +41,7 @@
 | [ADR-022](0022-s3-compatible-storage.md) | S3-Compatible Document Storage | Accepted | 2026-11-26 |
 | [ADR-023](0023-production-deployment.md) | Production Deployment with Docker Compose | Accepted | 2026-11-26 |
 | [ADR-024](0024-database-owner-and-runtime-roles.md) | Database Owner and Runtime Roles, Audit Retention | Accepted | 2026-11-27 |
+| [ADR-025](0025-semver-and-contract-stability.md) | SemVer and Contract Stability from 1.0.0 | Accepted | 2026-11-28 |
 
 ADR-001…004 оформляют решения, уже зафиксированные в blueprint v1.0; новых решений они не вводят. ADR-012 изменяет
 блупринт: инсталляция принадлежит одной организации (multi-tenancy упразднена); ADR-005…008, 010, 011 содержат

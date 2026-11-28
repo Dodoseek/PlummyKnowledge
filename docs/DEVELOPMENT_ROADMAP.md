@@ -308,6 +308,13 @@ security gate (проверки безопасности **внутри** фаз
 - Connector/provider development guides, backup/restore, troubleshooting.
 - CONTRIBUTING, CODE_OF_CONDUCT, SECURITY, LICENSE, NOTICE.
 - CHANGELOG, SemVer, GitHub Release, demo, roadmap, Discussions.
+- Решение — [ADR-025](adr/0025-semver-and-contract-stability.md): публичный контракт 1.x, ломающие
+  изменения, deprecation, обновление и patch-релизы, CHANGELOG и GitHub Release, snapshot OpenAPI. Шаги: 13.0 ADR-025;
+  13.1 стабилизация контрактов и snapshot OpenAPI; 13.2 CHANGELOG и workflow релизов; 13.3 README и диаграммы;
+  13.4 руководства администратора; 13.5 руководства для разработчиков провайдеров и коннекторов; 13.6
+  CODE_OF_CONDUCT, CONTRIBUTING, шаблоны; 13.7 демо; 13.8 release gate 1.0.0. Публичная документация — на
+  английском (README, CONTRIBUTING, CODE_OF_CONDUCT, SECURITY, руководства) с кратким `README.ru.md`;
+  спецификации и ADR — на русском.
 - **Выход:** **релиз 1.0.0** — стабильные contracts и production readiness (§19).
 
 ## 3. Релизы (§19)
