@@ -221,7 +221,8 @@ The version is in [`VERSION`](VERSION) and goes up with every commit (`X.Y.Z-dev
 
 ## Security
 
-Please report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
+Please report vulnerabilities privately as described in [SECURITY.md](SECURITY.md). Everyone taking part in the
+project follows the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License
 

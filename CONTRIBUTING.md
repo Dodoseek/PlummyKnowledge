@@ -1,47 +1,69 @@
-# Участие в разработке
+# Contributing
 
-Спасибо за интерес к PlummyKnowledge. Проект — модульный монолит с жёсткими правилами безопасности, поэтому перед
-изменениями прочитайте [README.md](README.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
-[docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md) и утверждённые [ADR](docs/adr/README.md). Рабочие правила и все
-команды собраны в [CLAUDE.md](CLAUDE.md) — они действуют и для людей.
+Thank you for your interest in PlummyKnowledge. Bug reports, documentation fixes, translations, tests and code
+are all welcome. By taking part you agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
-Об уязвимостях не пишите в issues — см. [SECURITY.md](SECURITY.md).
+**Security vulnerabilities are never reported in public**: see [SECURITY.md](SECURITY.md).
 
-## Перед началом
+## Before you start
 
-- Для ошибки или идеи откройте issue: что происходит, что ожидается, как воспроизвести, версия.
-- Крупное изменение (новая функция, смена поведения API) сначала обсудите в issue.
-- Изменение framework, БД, очереди, модели доступа, auth/session-стратегии или публичного API требует ADR со
-  статусом `Proposed` **до** кода ([docs/adr/](docs/adr/README.md)).
-- Не расширяйте MVP: что вне его границ — [docs/PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md).
+- **Bugs and ideas:** open an issue with the version, what happens, what you expected and how to reproduce it.
+- **Larger changes** (a feature, a change of API behavior) are discussed in an issue first, so your work fits the
+  architecture and the roadmap ([DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md)).
+- **Architecture changes** (framework, database, queue, access model, authentication or sessions, the public
+  contract) need an Architecture Decision Record with status `Proposed` **before** code: see
+  [docs/adr/](docs/adr/README.md).
+- **Scope:** the product scope and what is deliberately out of it are in [PRODUCT_SPEC.md](docs/PRODUCT_SPEC.md).
 
-## Среда
+Specifications and ADRs are written in Russian; public documents and guides are in English. Issues and pull
+requests in English or Russian are both fine.
+
+## Understand the project
+
+Read the [README](README.md), the [architecture](docs/ARCHITECTURE.md), the
+[security model](docs/SECURITY_MODEL.md) and the accepted [ADRs](docs/adr/README.md). Working rules and every
+command are collected in [CLAUDE.md](CLAUDE.md); they apply to people as much as to AI agents. To add an AI
+provider or a document source, follow the [developer guides](docs/guides/README.md#developers).
+
+## Set up
+
+You need Docker with Compose v2, and for the frontend Node.js 20.19+, 22.13+ or 24+ with npm 11.
 
 ```bash
-sh scripts/setup-git-hooks.sh        # один раз: hooks (secret scan, lint, VERSION)
-docker compose up --build            # весь стек разработки
+sh scripts/setup-git-hooks.sh        # once per clone: secret scan, lint, VERSION bump
+docker compose up --build            # the whole development stack
 ```
 
-Frontend требует npm 11.21.2 (`npx npm@11.21.2 ci` в `apps/frontend`).
+In `apps/frontend` use `npx npm@11.21.2 ci` if your npm is older: `.npmrc` refuses other npm versions.
 
-## Требования к изменению
+## What a change must include
 
-- **Одна задача — один коммит**, с понятным сообщением на английском.
-- **Слои:** `domain` и `application` не импортируют FastAPI, Celery, SQLAlchemy и SDK; бизнес-логика — в use cases,
-  не в routers и не в Celery tasks; ORM-модели не отдаются из API.
-- **Безопасность:** права проверяются в каждом use case; данные KB фильтруются в SQL до retrieval и до передачи
-  текста в LLM; исходящие соединения — только через `SafeHttpClient`; секреты, токены, пароли, содержимое документов
-  и prompts не логируются.
-- **Тесты обязательны:** позитивные, негативные, граничные случаи, ошибки и, если задача касается доступа, проверка
-  отсутствия доступа к чужим данным. Integration-тесты — на настоящих PostgreSQL и Redis.
-- **Зависимости:** новая или обновлённая зависимость — только с обоснованием в описании.
-- **Документация:** обновите затронутые документы в `docs/` в том же изменении.
-- **Версия:** `VERSION` повышает pre-commit hook; не редактируйте его вручную и не используйте `--no-verify`.
-- **CHANGELOG:** изменение, заметное администратору, пользователю или интегратору, добавьте в раздел `Unreleased`
-  файла [CHANGELOG.md](CHANGELOG.md); изменение REST API — вместе с обновлённым snapshot OpenAPI
-  ([ADR-025](docs/adr/0025-semver-and-contract-stability.md)).
+- **One task, one commit**, with a clear message in English.
+- **Layers** ([ADR-002](docs/adr/0002-modular-monolith-and-layering.md)): `domain` and `application` do not import
+  FastAPI, Celery, SQLAlchemy or vendor SDKs; business logic lives in use cases, not in routers or Celery tasks;
+  the API returns Pydantic DTOs, never ORM objects.
+- **Security:** permissions are checked in every use case; knowledge-base data is filtered by access in SQL before
+  retrieval and before any text reaches a model; all outbound connections go through `SafeHttpClient`; secrets,
+  tokens, passwords, document content and prompts are never logged.
+- **Tests are required:** positive, negative, edge cases and errors, and, when access is involved, proof that
+  other users' data stays out of reach. Integration tests use real PostgreSQL and Redis, not mocks of security
+  checks.
+- **Dependencies:** add or upgrade one only with a reason in the pull request.
+- **Documentation:** update the affected documents in `docs/` in the same change.
+- **Changelog:** a change visible to administrators, users or integrators adds an entry under `Unreleased` in
+  [CHANGELOG.md](CHANGELOG.md).
+- **API contract:** a change of the REST API updates the OpenAPI snapshot and
+  [API_CONTRACTS.md](docs/API_CONTRACTS.md) in the same commit; removing or renaming anything needs a deprecation
+  first ([ADR-025](docs/adr/0025-semver-and-contract-stability.md)). Update the snapshot with:
 
-## Проверки
+  ```bash
+  docker compose run --rm --no-deps -v "$PWD/apps/backend:/work" -w /work -e UPDATE_OPENAPI_SNAPSHOT=1 \
+    backend pytest tests/contract/test_openapi_snapshot.py
+  ```
+
+- **Version:** the pre-commit hook bumps `VERSION`; do not edit it by hand or skip hooks with `--no-verify`.
+
+## Checks
 
 ```bash
 docker compose exec backend pytest
@@ -49,13 +71,20 @@ docker compose exec backend ruff check src tests alembic
 docker compose exec backend ruff format --check src tests alembic
 docker compose exec backend mypy
 cd apps/frontend && npm test && npm run lint && npm run typecheck && npm run format:check && npm run build
+python3 -m unittest discover -s scripts/tests
 python3 scripts/check_secrets.py
 ```
 
-E2E (Playwright) — команды в [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) («E2E-стек»). CI запускает всё это на каждый
-pull request.
+End-to-end tests (Playwright) run in a separate Compose project; the commands are in
+[CLAUDE.md](CLAUDE.md#команды). CI runs all of this, plus dependency audits, on every pull request.
 
-## Лицензия
+## Pull requests
 
-Отправляя изменение, вы соглашаетесь, что оно распространяется на условиях [Apache License 2.0](LICENSE)
-(раздел 5 лицензии).
+Fill in the pull request template: what and why, decisions and risks, and the checklist. Keep pull requests
+focused; unrelated refactoring belongs in its own change. A maintainer reviews every pull request for scope,
+security, tests and documentation.
+
+## License
+
+By submitting a contribution you agree that it is licensed under the [Apache License 2.0](LICENSE) (section 5 of
+the license).

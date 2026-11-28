@@ -3,3 +3,6 @@ contact_links:
   - name: Report a security vulnerability (private)
     url: https://github.com/Dodoseek/PlummyKnowledge/security/advisories/new
     about: Never open a public issue for vulnerabilities.
+  - name: Guides (installation, configuration, troubleshooting)
+    url: https://github.com/Dodoseek/PlummyKnowledge/tree/main/docs/guides
+    about: Check the guides and the troubleshooting table before opening an issue.

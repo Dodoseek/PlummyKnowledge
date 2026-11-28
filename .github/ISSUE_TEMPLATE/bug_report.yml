@@ -11,8 +11,8 @@ body:
     id: version
     attributes:
       label: Version
-      description: Contents of `VERSION` or `GET /api/v1/health` → `version`.
-      placeholder: 0.1.0-dev.3
+      description: The `VERSION` file of your checkout, or the version in the web app's header.
+      placeholder: 0.5.0
     validations:
       required: true
   - type: dropdown
@@ -21,10 +21,14 @@ body:
       label: Area
       options:
         - Setup / authentication
+        - Users, groups, roles
+        - AI providers / models
+        - Knowledge bases / documents / indexing
+        - Search / chat / citations
+        - Connectors (Google Drive, Microsoft 365)
         - Backend API
-        - Worker / jobs
         - Frontend
-        - Deployment / Docker Compose
+        - Deployment / upgrade / backup
         - Documentation
         - Other
     validations:
@@ -54,4 +58,4 @@ body:
     id: environment
     attributes:
       label: Environment
-      description: OS, Docker / Compose versions, browser, APP_ENV, deployment profile.
+      description: OS, Docker / Compose versions, browser, development stack or compose.prod.yaml, storage (local, built-in or external S3), provider types.

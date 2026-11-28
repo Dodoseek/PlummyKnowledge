@@ -5,8 +5,9 @@ body:
   - type: markdown
     attributes:
       value: |
-        Check the MVP scope first: docs/PRODUCT_SPEC.md and docs/DEVELOPMENT_ROADMAP.md. Changes to framework,
-        database, queue, auth/session strategy or the public API need an ADR (docs/adr/).
+        Check the scope first: docs/PRODUCT_SPEC.md and docs/DEVELOPMENT_ROADMAP.md. Changes to framework,
+        database, queue, auth/session strategy or the public contract need an ADR (docs/adr/); removing or
+        renaming parts of the contract waits for a major release (ADR-025).
   - type: textarea
     id: problem
     attributes:

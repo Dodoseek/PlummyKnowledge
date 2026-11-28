@@ -7,7 +7,15 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-PUBLIC = ["README.md", "README.ru.md", "CHANGELOG.md", "CONTRIBUTING.md", "SECURITY.md"] + sorted(
+PUBLIC = [
+    "README.md",
+    "README.ru.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "CODE_OF_CONDUCT.md",
+    ".github/pull_request_template.md",
+] + sorted(
     str(path.relative_to(ROOT)) for path in (ROOT / "docs" / "guides").glob("*.md")
 )
 LINK = re.compile(r"(?<!!)\[[^\]]*\]\(([^)\s]+)\)")

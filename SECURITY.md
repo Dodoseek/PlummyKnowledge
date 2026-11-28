@@ -1,55 +1,62 @@
-# Политика безопасности
+# Security policy
 
-PlummyKnowledge — self-hosted платформа: инсталляцию разворачивает и обслуживает её владелец. Модель угроз,
-границы доверия и обязательные проверки описаны в [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md).
+PlummyKnowledge is self-hosted: each installation is deployed and run by its owner. The threat model, trust
+boundaries and required checks are in [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md) (in Russian).
 
-## Поддерживаемые версии
+## Supported versions
 
-| Версия | Исправления безопасности |
+| Version | Security fixes |
 |---|---|
-| Последний выпущенный релиз (сейчас 0.5.x) | Да |
-| Предыдущие релизы (0.4.x, 0.1.x) | Нет — обновитесь до последнего релиза ([DEPLOYMENT.md](docs/DEPLOYMENT.md), обновление) |
-| Сборки между релизами (`X.Y.Z-dev.N`) | Нет — для разработки и проверки |
+| The latest release (currently 0.5.x) | Yes |
+| Earlier releases (0.4.x, 0.1.x) | No: upgrade to the latest release ([upgrade guide](docs/guides/upgrade.md)) |
+| Builds between releases (`X.Y.Z-dev.N`) | No: for development and testing |
 
-Production-профиль — `compose.prod.yaml` (Nginx, TLS, CSP, секреты файлами; [ADR-023](docs/adr/0023-production-deployment.md)).
-До релиза 1.0.0 ([roadmap](docs/DEVELOPMENT_ROADMAP.md)) контракты API могут меняться между минорными версиями.
+From 1.0.0, security fixes are published for the latest minor release, and the public contract follows Semantic
+Versioning ([ADR-025](docs/adr/0025-semver-and-contract-stability.md)). A fix that cannot be made without changing
+the contract is released anyway and described under `Security` in [CHANGELOG.md](CHANGELOG.md). Before 1.0.0 the
+contract may change between minor versions.
 
-## Как сообщить об уязвимости
+The production profile is `compose.prod.yaml`: Nginx with TLS and CSP, secrets as files, segmented networks
+([installation guide](docs/guides/installation.md)).
 
-**Не создавайте публичный issue, pull request или обсуждение.** Напишите на
-**developer@plummycode.ru** и укажите:
+## Reporting a vulnerability
 
-- версию (файл `VERSION` или подпись в шапке web-интерфейса) и способ развёртывания;
-- описание проблемы и её последствия (какие данные или права затронуты);
-- шаги воспроизведения или proof of concept;
-- известные обходные пути, если есть.
+**Do not open a public issue, pull request or discussion.** Report privately, either through
+[GitHub private vulnerability reporting](https://github.com/Dodoseek/PlummyKnowledge/security/advisories/new) or
+by email to **developer@plummycode.ru**, with:
 
-Не прикладывайте реальные секреты, токены, пароли и содержимое чужих документов. Мы подтвердим получение,
-согласуем с вами сроки исправления и раскрытия и укажем вас в описании исправления, если вы этого хотите.
+- the version (the `VERSION` file, or the version shown in the web app's header) and how it is deployed;
+- what the problem is and its impact (which data or permissions are affected);
+- steps to reproduce or a proof of concept;
+- known workarounds, if any.
 
-*English:* please report vulnerabilities privately to **developer@plummycode.ru**, not in public issues.
+Do not include real secrets, tokens, passwords or other people's documents. We acknowledge every report, agree
+on a timeline for the fix and the disclosure with you, and credit you in the release notes if you wish.
 
-## Что считается уязвимостью
+Сообщения на русском тоже принимаются.
 
-Например: обход авторизации или изоляции данных (доступ к чужой базе знаний, документу, диалогу или сессии),
-попадание недоступных фрагментов в запрос к LLM, CSRF/XSS, SSRF в обход сетевой политики, раскрытие секретов
-провайдеров или токенов, выход загруженного файла за пределы storage, обход первоначальной настройки.
+## What counts as a vulnerability
 
-Не являются уязвимостями проекта: проблемы конфигурации конкретной инсталляции (открытые наружу порты, слабые
-пароли, отключённый TLS вопреки [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)), уязвимости в зависимостях без
-доказанного влияния на PlummyKnowledge (о них сообщайте авторам зависимости) и ответы модели, которые не выходят за
-пределы данных, доступных пользователю.
+For example: bypassing authorization or data isolation (access to another user's knowledge base, document,
+conversation or session), passages the user may not read reaching a model, CSRF or XSS, SSRF around the network
+policy, disclosure of provider secrets or connector tokens, an uploaded file escaping storage, bypassing the
+first-run setup.
 
-## Как мы проверяем зависимости и образы
+Not vulnerabilities of the project: configuration problems of a particular installation (ports exposed, weak
+passwords, TLS disabled contrary to the [guides](docs/guides/README.md)); vulnerabilities in dependencies without
+a demonstrated impact on PlummyKnowledge (report those to the dependency's authors); model answers that stay
+within the data the user may read.
 
-- **Зависимости:** `pip-audit` (uv.lock) и `npm audit` на каждом push и pull request, dependency review новых
-  зависимостей в pull request, Dependabot для Python, npm, GitHub Actions, Docker и Compose
-  ([.github/workflows/ci.yml](.github/workflows/ci.yml)).
-- **Образы:** Trivy (версия и digest зафиксированы) проверяет все образы production-стека — собственные `backend`,
-  `worker-ingestion`, `web` и сторонние PostgreSQL/pgvector, Redis, S3-сервер. CI не проходит при уязвимости
-  уровня CRITICAL или HIGH, для которой есть исправленная версия. Собственные образы при сборке получают обновления
-  безопасности базового образа и не содержат pip. Исключения допускаются только для сторонних образов — в
-  `deploy/trivy/<образ>.trivyignore`, каждое с обоснованием и сроком (не дальше года), после которого находка снова
-  останавливает CI ([SECURITY_MODEL.md](docs/SECURITY_MODEL.md) §19).
-- Проверить свою инсталляцию: `sh deploy/scripts/scan-images.sh` на сервере после `docker compose pull` и
-  `docker compose build` (нужен доступ к Docker и к базе уязвимостей Trivy).
+## How dependencies and images are checked
+
+- **Dependencies:** `pip-audit` (`uv.lock`) and `npm audit` on every push and pull request, dependency review of
+  new dependencies in pull requests, and Dependabot for Python, npm, GitHub Actions, Docker and Compose
+  ([ci.yml](.github/workflows/ci.yml)).
+- **Images:** Trivy (pinned by version and digest) scans every image of the production stack: the project's own
+  `backend`, `worker-ingestion` and `web` images and the third-party PostgreSQL with pgvector, Redis and S3 server
+  images. CI fails on a CRITICAL or HIGH vulnerability that has a fixed version. Own images install the base
+  image's security updates at build time and contain no pip. Exceptions are allowed only for third-party images,
+  in `deploy/trivy/<image>.trivyignore`, each with a reason and an expiry date at most a year away, after which the
+  finding fails CI again ([SECURITY_MODEL.md](docs/SECURITY_MODEL.md) §19).
+- To check your own installation, run `sh deploy/scripts/scan-images.sh` on the server after `docker compose pull`
+  and `docker compose build` (it needs Docker and access to the Trivy vulnerability database).

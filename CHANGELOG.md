@@ -24,6 +24,8 @@ separately.
 - Operator guides in `docs/guides/`: installation, configuration, local models, connectors, upgrade, backup and
   restore, operations, troubleshooting.
 - Developer guides for AI providers and connectors (`docs/guides/developing-*.md`).
+- `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1); `CONTRIBUTING.md` and `SECURITY.md` in English, with GitHub
+  private vulnerability reporting as a reporting channel; updated issue and pull request templates.
 
 ### Changed
 
