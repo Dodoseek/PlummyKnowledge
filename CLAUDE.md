@@ -65,7 +65,9 @@ audit `maintenance prune-audit`; threat model пересмотрена (SECURITY
 образов production-стека (`deploy/scripts/scan-images.sh`, исключения — `deploy/trivy/`). Фаза 13 (Open-source release) начата: [ADR-025](docs/adr/0025-semver-and-contract-stability.md) — публичный контракт 1.x,
 ломающие изменения только в major, deprecation, CHANGELOG; snapshot OpenAPI (`apps/backend/tests/contract/`) и проверка
 совместимости `scripts/openapi_compat.py` — изменение API обновляет snapshot и API_CONTRACTS в том же коммите;
-нереализованное в API_CONTRACTS помечено **Вне 1.0**. Application Settings ещё нет ([DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md)).
+нереализованное в API_CONTRACTS помечено **Вне 1.0**. CHANGELOG и workflow GitHub Release — шаг 13.2; README на
+английском с Mermaid-диаграммами и `README.ru.md` — 13.3 (ссылки публичных документов проверяет
+`scripts/tests/test_public_docs.py`). Application Settings ещё нет ([DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md)).
 Не начинать Google OAuth, Microsoft Graph и сложный RAG до стабильного запуска каркаса.
 
 ## Приоритет источников

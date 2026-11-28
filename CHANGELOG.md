@@ -19,6 +19,8 @@ separately.
 - This changelog. `scripts/version.py release` moves `Unreleased` into the release section and refuses to release
   without entries; `scripts/version.py notes X.Y.Z` prints a release section; pushing a `vX.Y.Z` tag creates the
   GitHub Release from it.
+- README in English with diagrams of the services, document indexing and answering a question, and a short
+  Russian `README.ru.md`.
 
 ### Changed
 

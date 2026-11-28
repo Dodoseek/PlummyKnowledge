@@ -315,6 +315,9 @@ security gate (проверки безопасности **внутри** фаз
   CODE_OF_CONDUCT, CONTRIBUTING, шаблоны; 13.7 демо; 13.8 release gate 1.0.0. Публичная документация — на
   английском (README, CONTRIBUTING, CODE_OF_CONDUCT, SECURITY, руководства) с кратким `README.ru.md`;
   спецификации и ADR — на русском.
+- **Выполнено:** 13.0 (ADR-025), 13.1 (snapshot OpenAPI, `scripts/openapi_compat.py`, API_CONTRACTS без
+  [Proposed]), 13.2 (`CHANGELOG.md`, `version.py notes`, `release.yml`; GitHub Releases для v0.1.0, v0.4.0, v0.5.0),
+  13.3 (README на английском с диаграммами, `README.ru.md`).
 - **Выход:** **релиз 1.0.0** — стабильные contracts и production readiness (§19).
 
 ## 3. Релизы (§19)
