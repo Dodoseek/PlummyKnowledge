@@ -5,6 +5,7 @@ const INGESTION_ERRORS: Record<string, string> = {
   encrypted_file: 'The file is password-protected.',
   macro_enabled: 'Files with macros are not accepted.',
   archive_limits_exceeded: 'The file unpacks to more data than allowed.',
+  unsafe_content: 'The file contains XML declarations, which documents must not have.',
   invalid_text_encoding: 'The text is not valid UTF-8.',
   empty_file: 'The file is empty.',
   original_missing: 'The uploaded file is no longer available. Upload it again.',

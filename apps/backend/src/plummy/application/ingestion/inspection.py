@@ -1,8 +1,13 @@
 """Stages 3-4 of the pipeline: type and safety of the whole file (ADR-008 §3, SECURITY_MODEL.md §9).
 
-Runs in the worker on the quarantined file, for every source. Nothing is extracted to disk: ZIP containers
-(DOCX, XLSX) are checked from their central directory, and only ``[Content_Types].xml`` is read, with a cap.
-Nested archives are never opened by the pipeline, so the outer limits bound the work.
+Runs in the worker on the quarantined file, for every source. Nothing is extracted to disk: ZIP
+containers (DOCX, XLSX) are checked from their central directory, ``[Content_Types].xml`` is read with a
+cap, and of every other XML part only the prolog. Nested archives are never opened by the pipeline, so the
+outer limits bound the work.
+
+XML parts must not declare a DTD: OPC (ECMA-376 Part 2) forbids document type declarations in package XML,
+so no legitimate document has one, and refusing them removes XXE and entity expansion ("billion laughs")
+before any parser sees the file (SECURITY_MODEL.md §9).
 """
 
 from __future__ import annotations
@@ -26,6 +31,9 @@ from plummy.domain.file_types import (
 READ_CHUNK: Final = 1024 * 1024
 CONTENT_TYPES: Final = "[Content_Types].xml"
 MAX_CONTENT_TYPES_BYTES: Final = 1024 * 1024
+# The prolog of an OOXML part is an XML declaration; a longer one is padding meant to hide a declaration.
+MAX_PROLOG_BYTES: Final = 64 * 1024
+XML_SUFFIXES: Final = (".xml", ".rels", ".vml")
 DOCX_MAIN: Final = "wordprocessingml.document.main+xml"
 XLSX_MAIN: Final = "spreadsheetml.sheet.main+xml"
 
@@ -95,6 +103,9 @@ def _inspect_zip(path: Path, limits: ArchiveLimits) -> DocumentFormat:
             if any(PurePosixPath(name).name == "vbaproject.bin" for name in names):
                 raise _macro()
             content_types = _read_content_types(archive)
+            for entry in entries:
+                if entry.filename.lower().endswith(XML_SUFFIXES) and _declares_dtd(archive, entry):
+                    raise _unsafe()
     except (zipfile.BadZipFile, zipfile.LargeZipFile, NotImplementedError, EOFError):
         raise FileRejectedError("malformed_file", "The file is damaged or not a valid document.") from None
     if "macroenabled" in content_types.lower():
@@ -137,6 +148,43 @@ def _read_content_types(archive: zipfile.ZipFile) -> str:
     if len(data) > MAX_CONTENT_TYPES_BYTES:
         raise _too_large()
     return data.decode("utf-8", errors="replace")
+
+
+def _declares_dtd(archive: zipfile.ZipFile, entry: zipfile.ZipInfo) -> bool:
+    """Whether the prolog of an XML part has a markup declaration (``<!DOCTYPE``, ``<!ENTITY``, ...).
+
+    Only the prolog is read: a DTD can only stand before the root element. A prolog that does not end within
+    :data:`MAX_PROLOG_BYTES` counts as declaring one.
+    """
+    with archive.open(entry) as handle:
+        head = handle.read(MAX_PROLOG_BYTES)
+    if head.startswith((b"\xff\xfe", b"\xfe\xff")):
+        text = head.decode("utf-16", errors="ignore")
+    else:
+        text = head.removeprefix(UTF8_BOM).decode("utf-8", errors="ignore")
+    position = 0
+    while True:
+        while position < len(text) and text[position] in " \t\r\n":
+            position += 1
+        if position >= len(text):
+            return len(head) >= MAX_PROLOG_BYTES  # an empty or whitespace part is the parser's problem
+        if text.startswith("<?", position):
+            end = text.find("?>", position + 2)
+            terminator = 2
+        elif text.startswith("<!--", position):
+            end = text.find("-->", position + 4)
+            terminator = 3
+        else:
+            return text.startswith("<!", position)
+        if end < 0:
+            return True
+        position = end + terminator
+
+
+def _unsafe() -> FileRejectedError:
+    return FileRejectedError(
+        "unsafe_content", "XML declarations (DTD, entities) are not accepted in documents."
+    )
 
 
 def _macro() -> FileRejectedError:

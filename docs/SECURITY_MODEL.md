@@ -427,7 +427,9 @@ OpenAI/Anthropic). Полный алгоритм — в ADR-007; здесь — 
 | Тип | По содержимому (magic bytes), а не расширению/`Content-Type`; только форматы MVP (§6); macro-enabled (`.docm`, `.xlsm`) отклоняются |
 | Размер | Лимит на файл (по умолчанию 50 МБ) — проверяется потоково, до полной загрузки |
 | Страницы / листы / строки | 2000 страниц PDF, 100 листов, 200 000 строк XLSX/CSV |
-| Archive bombs | DOCX и XLSX — ZIP-контейнеры: не более 10 000 записей, 512 МБ распакованного размера, коэффициент сжатия записи ≤ 100 (для записей больше 1 МБ); вложенные архивы и XML-сущности — проверки шага 12.4 |
+| Archive bombs | DOCX и XLSX — ZIP-контейнеры: не более 10 000 записей, 512 МБ распакованного размера, коэффициент сжатия записи ≤ 100 (для записей больше 1 МБ). Вложенные архивы не распаковываются: они учитываются в лимитах внешнего архива по своему размеру и никем не открываются; ZIP без `[Content_Types].xml` (архив документов) — `unsupported_media_type` |
+| XML-сущности (XXE, billion laughs) | В XML-частях DOCX/XLSX (`.xml`, `.rels`, `.vml`) читается только пролог: объявление DTD или сущности → `unsafe_content` до парсера. OPC (ECMA-376 Part 2) запрещает DTD в пакете, легитимные документы его не содержат. Пролог длиннее 64 КБ считается объявлением. Парсер Docling без этой проверки XXE и billion laughs тоже не раскрывает (`parse_failed`), и сети у него нет |
+| Polyglot | Тип определяют первые байты, а не имя: PDF с приложенным архивом — PDF; архив с PDF-заголовком внутри — архив; HTML и скрипты в текстовом файле остаются текстом и показываются как данные (viewer, чат) |
 | Время парсинга | Жёсткий timeout на документ (300 с, группа процессов завершается); превышение → `failed` с кодом `parse_timeout` |
 | Ресурсы worker | Парсинг в отдельном процессе/контейнере с лимитами CPU/памяти (cgroups, rlimits); отдельная очередь |
 | Имена файлов | Используются только для отображения; ключи storage генерирует сервер; `Content-Disposition` с безопасным кодированием. Malicious filenames не выходят из storage (§12) |
@@ -456,6 +458,16 @@ OpenAI/Anthropic). Полный алгоритм — в ADR-007; здесь — 
 (`tests/unit/test_retrieval_context.py`): «ignore all previous instructions», поддельные `</documents>` и
 `<document id=…>`, выдуманные `[c99]`, ссылки и изображения для эксфильтрации, отсутствие секретов в теле
 запроса к провайдеру. Проверка поведения реальной модели на adversarial documents — в harness фазы 8.
+
+Враждебный корпус (шаг 12.4, `test_hostile_documents.py`): документы с «IGNORE ALL PREVIOUS INSTRUCTIONS», с
+поддельным закрытием блока документов и `<system>`, с поддельным `<document id="c7">`, с изображениями и ссылками на
+внешний адрес загружаются и индексируются настоящим pipeline, затем по ним задаётся вопрос в чате. Проверяется, что:
+
+- правила остаются в instructions, вопрос пользователя не меняется;
+- документы остаются данными внутри одного блока `<documents>`;
+- у запроса к модели нет tools;
+- из ответа удаляются ID, которые backend не выдавал;
+- ключ провайдера в prompt не попадает.
 
 ## 11. Audit log (§8 п.9)
 
@@ -602,9 +614,9 @@ append-only обеспечивает runtime-роль без `UPDATE`/`DELETE` �
 | Утечка API keys / OAuth tokens | AES-256-GCM, key ring вне БД и вне backup, write-only API, redaction ошибок, нет в prompt (ADR-016) | `test_secrets.py`, тесты API провайдеров и источников, E2E: токены фейковых Google/Microsoft не попадают в страницу | 12.5: сквозной тест логов на DEBUG |
 | Подмена или удаление audit log, DDL при компрометации API/worker | Runtime-роль сервисов без DDL, `TRUNCATE`, `TEMPORARY` и без `UPDATE`/`DELETE` на `audit_logs`; владелец схемы — только у `migrate`; единственный путь к DDL — две функции `SECURITY DEFINER` для HNSW-индексов профиля (ADR-024 §2.1); отказ старта в production с ролью владельца; retention — CLI владельца ([ADR-024](adr/0024-database-owner-and-runtime-roles.md), шаг 12.1) | `test_database_roles.py`, `checks.sh` в CI (роли подключений и права runtime-роли) | — (закрыто в 12.1) |
 | SSRF | `SafeHttpClient`: валидация URL и IP, запрет private/metadata/loopback, allowlist в Instance Settings, pinning адреса, проверка redirect (ADR-007); сегментация сетей Compose | `test_safe_http_client.py`, `test_safe_http_redirects.py`, `test_network_policy.py`, `test_network_egress.py` (SC-06, SC-07) | 12.3 (выполнен): SC-прогон, §18.2 |
-| Malicious uploads / parser exploits | Quarantine, magic bytes, отказ от macro-enabled, лимиты размера/страниц/листов/строк, парсер в отдельном контейнере без сети и секретов, процесс с rlimits и timeout | `test_file_inspection.py`, `test_isolated_parser.py`, `test_document_upload.py` | 12.4: XXE и billion laughs в DOCX/XLSX, вложенные архивы, polyglot, несовпадение MIME — в `worker-ingestion` |
-| Archive bombs | Лимиты числа записей, распакованного размера и коэффициента сжатия ZIP | `test_file_inspection.py` | 12.4: вложенные архивы |
-| Prompt injection | Документы — данные в блоке `<documents>`; нет tools; system rules первыми; citation IDs выдаёт и фильтрует backend; Markdown без HTML и без загрузки изображений | SC-08: `test_retrieval_context.py`, `test_chat_stream.py`, `test_source_sync.py` | 12.4: набор враждебных документов через весь pipeline |
+| Malicious uploads / parser exploits | Quarantine, magic bytes, отказ от macro-enabled, лимиты размера/страниц/листов/строк, парсер в отдельном контейнере без сети и секретов, процесс с rlimits и timeout | `test_file_inspection.py`, `test_hostile_files.py`, `test_isolated_parser.py`, `test_document_upload.py`, ingestion `test_docling_parser.py` (XXE и billion laughs на настоящем Docling) | 12.4 (выполнен): отказ `unsafe_content` при DTD в XML-частях (§9), вложенные архивы, polyglot |
+| Archive bombs | Лимиты числа записей, распакованного размера и коэффициента сжатия ZIP; вложенные архивы не открываются | `test_file_inspection.py`, `test_hostile_files.py` | 12.4 (выполнен) |
+| Prompt injection | Документы — данные в блоке `<documents>`; нет tools; system rules первыми; citation IDs выдаёт и фильтрует backend; Markdown без HTML и без загрузки изображений | SC-08: `test_retrieval_context.py`, `test_chat_stream.py`, `test_source_sync.py`, `test_hostile_documents.py` | 12.4 (выполнен): враждебные документы через весь pipeline (§10) |
 | XSS | React-экранирование, Markdown без сырого HTML, только http(s)-ссылки, CSP без `unsafe-inline` для скриптов (ADR-023 §5) | `AnswerMarkdown.test.tsx`, `viewer.test.tsx`, проверка заголовков в CI-smoke | — (nonce для стилей — §20) |
 | CSRF | Double-submit token + проверка `Origin`, SameSite (ADR-013) | `test_chat_security_gate.py`, тесты auth, `test_rbac_matrix.py` (каждый изменяющий маршрут без CSRF → `403 csrf_failed`) | 12.2 (выполнен) |
 | CORS | Same-origin; allowlist origins, никогда `*` с credentials | Тесты конфигурации | 12.5: тесты preflight и ответов на чужой origin |

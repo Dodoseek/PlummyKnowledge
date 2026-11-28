@@ -111,6 +111,7 @@ SCENARIOS: dict[str, dict[str, list[str]]] = {
             UNIT
             + "test_retrieval_context.py::test_rules_forbid_obeying_documents_links_images_and_prompt_disclosure",  # noqa: E501
             INT + "test_source_sync.py::test_sc08_a_synced_document_reaches_the_prompt_only_as_escaped_data",
+            INT + "test_hostile_documents.py::test_injected_instructions_reach_the_model_only_inside_the_documents",
         ],
         "the model gets no tools": [
             CONTRACT + "test_ai_providers.py::test_openai_chat_streams_deltas_then_finish_with_usage",
@@ -121,6 +122,7 @@ SCENARIOS: dict[str, dict[str, list[str]]] = {
             UNIT + "test_retrieval_context.py::test_valid_ids_pass_and_unknown_ones_are_removed",
             UNIT + "test_retrieval_context.py::test_an_id_from_an_earlier_generation_is_rejected",
             INT + "test_chat_stream.py::test_answer_streams_with_validated_citations",
+            INT + "test_hostile_documents.py::test_a_citation_the_document_asks_for_is_not_issued",
         ],
         "external images in an answer are not loaded": [
             FRONTEND
@@ -129,6 +131,7 @@ SCENARIOS: dict[str, dict[str, list[str]]] = {
         ],
         "no secret is in the prompt": [
             UNIT + "test_retrieval_context.py::test_no_secret_reaches_the_prompt",
+            INT + "test_hostile_documents.py::test_a_secret_named_in_a_document_is_not_in_the_prompt",
         ],
     },
     "SC-09": {

@@ -170,3 +170,95 @@ async def test_timeout_and_memory_limits_apply_to_docling(parser: IsolatedParser
             parser, path, DocumentFormat.PDF, ParseLimits(timeout_seconds=240, memory_bytes=64 * 1024**2)
         )
     assert error.value.code in {"parse_resource_limit", "parse_failed"}
+
+
+# --- hostile files without the pipeline's checks in front (12.4, defense in depth) -----------------------
+
+SECRET_PATH = "/etc/hostname"
+SECRET = Path(SECRET_PATH).read_text().strip() if Path(SECRET_PATH).is_file() else "unreachable"
+
+
+def with_declaration(source: bytes, part: str, declaration: str, placeholder: str, payload: str) -> bytes:
+    """``source`` with ``declaration`` before the root of ``part`` and ``payload`` for the placeholder."""
+    import io
+    import zipfile
+
+    original = zipfile.ZipFile(io.BytesIO(source))
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as out:
+        for item in original.infolist():
+            data = original.read(item.filename)
+            if item.filename == part:
+                head, _, rest = data.decode().partition("?>")
+                data = (head + "?>" + declaration + rest.replace(placeholder, payload)).encode()
+            out.writestr(item, data)
+    return buffer.getvalue()
+
+
+def docx_bytes(text: str) -> bytes:
+    import io
+
+    from docx import Document
+
+    source = Document()
+    source.add_paragraph(text)
+    buffer = io.BytesIO()
+    source.save(buffer)
+    return buffer.getvalue()
+
+
+def xlsx_bytes(text: str) -> bytes:
+    import io
+
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    workbook.active["A1"] = text  # type: ignore[index]
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()
+
+
+EXTERNAL = f'<!DOCTYPE r [<!ENTITY x SYSTEM "file://{SECRET_PATH}">]>'
+LAUGHS = (
+    '<!DOCTYPE r [<!ENTITY a "AAAAAAAAAA"><!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">'
+    '<!ENTITY c "&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;"><!ENTITY d "&c;&c;&c;&c;&c;&c;&c;&c;&c;&c;">'
+    '<!ENTITY e "&d;&d;&d;&d;&d;&d;&d;&d;&d;&d;"><!ENTITY f "&e;&e;&e;&e;&e;&e;&e;&e;&e;&e;">]>'
+)
+
+
+@pytest.mark.parametrize(
+    ("file_format", "build", "part"),
+    [
+        (DocumentFormat.DOCX, docx_bytes, "word/document.xml"),
+        (DocumentFormat.XLSX, xlsx_bytes, "xl/worksheets/sheet1.xml"),
+    ],
+)
+@pytest.mark.parametrize("declaration", [EXTERNAL, LAUGHS], ids=["xxe", "laughs"])
+async def test_entity_declarations_never_reach_the_text(
+    parser: IsolatedParser,
+    tmp_path: Path,
+    file_format: DocumentFormat,
+    build: object,
+    part: str,
+    declaration: str,
+) -> None:
+    path = tmp_path / "hostile"
+    hostile = with_declaration(build("MARKER"), part, declaration, "MARKER", "LEAK[&x;&f;]")  # type: ignore[operator]
+    path.write_bytes(hostile)
+    outcome = await parse_or_error(parser, path, file_format)
+    if isinstance(outcome, ParseError):
+        assert outcome.code in {"parse_failed", "no_text"}
+        return
+    text = " ".join(block.text for block in outcome.blocks)
+    assert SECRET not in text
+    assert "AAAAAAAAAA" * 10 not in text
+
+
+async def parse_or_error(
+    parser: IsolatedParser, path: Path, file_format: DocumentFormat
+) -> NormalizedDocument | ParseError:
+    try:
+        return await parse(parser, path, file_format)
+    except ParseError as error:
+        return error

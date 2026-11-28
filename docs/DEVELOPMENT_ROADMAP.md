@@ -286,7 +286,9 @@ security gate (проверки безопасности **внутри** фаз
   него в CI; весь набор integration-тестов работает под runtime-ролью) и 12.2 (таблица всех маршрутов с видом
   доступа — SECURITY_MODEL §3.6, тест инвентаризации и матрица ролей, уровней доступа к KB, личных данных и CSRF на
   настоящих PostgreSQL и Redis; расхождений не найдено), 12.3 (трассировка SC-01…SC-09 к тестам —
-  SECURITY_MODEL §18.2, `tests/security_scenarios.py` с проверкой ссылок в CI, прогон сценариев).
+  SECURITY_MODEL §18.2, `tests/security_scenarios.py` с проверкой ссылок в CI, прогон сценариев), 12.4 (отказ
+  `unsafe_content` при DTD и сущностях в XML-частях DOCX/XLSX до парсера, вложенные архивы и polyglot, XXE и
+  billion laughs на настоящем Docling, враждебные документы через pipeline и чат — SECURITY_MODEL §9, §10).
 - **Выход (вместе с Фазой 11):** **релиз 0.5.0**.
 
 ### Фаза 13 — Open-source release (§13)
