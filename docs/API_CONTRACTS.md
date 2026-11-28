@@ -921,10 +921,17 @@ retry не реализован (повтор того же запроса по�
 
 | Метод | Путь | Назначение | Permission | Scope | Idem | Audit | RL |
 |---|---|---|---|---|---|---|---|
-| GET | `/api/v1/audit/events` | Журнал (`action`, `actor_user_id`, `target_type`, `target_id`, `outcome`, `from`, `to`) | `audit.read` | auth | — | **[Proposed]** `audit.viewed` | general |
-| GET | `/api/v1/audit/events/{id}` | Событие | `audit.read` | auth | — | — | — |
+| GET | `/api/v1/audit/events` | Журнал (`action`, `actor_user_id`, `target_type`, `target_id`, `outcome`, `from`, `to`; `sort` = `-created_at` (по умолчанию) или `created_at`, `limit`, `cursor`) | `audit.read` | auth | — | **[Proposed]** `audit.viewed` | general |
+| GET | `/api/v1/audit/events/{id}` | Событие | `audit.read` | auth | — | — | general |
 
-Аудит доступен только на чтение; endpoints изменения/удаления событий отсутствуют.
+Реализовано (шаг 12.5). Аудит доступен только на чтение; endpoints изменения/удаления событий отсутствуют (`405`).
+`from` — включительно, `to` — не включительно; время только с часовым поясом (иначе `422 validation_error`),
+`from` не позже `to` (иначе `422 invalid_query_parameter`). Неизвестное событие — `404 not_found`. Ответ — `no-store`.
+
+`AuditEvent`: `id`, `created_at`, `actor_type` (`user` | `anonymous` | `system` | `worker`), `actor_user_id`, `action`,
+`target_type`, `target_id`, `outcome` (`success` | `denied` | `failure`), `correlation_id`, `ip_address`,
+`user_agent`, `details` (объект; без секретов, токенов, паролей, email открытым текстом и содержимого документов —
+SECURITY_MODEL.md §11).
 
 ### 2.17 `system` ([ADR-006](adr/0006-initial-setup-and-system-configuration.md), [ADR-007](adr/0007-network-access-and-local-llm.md))
 
@@ -1132,9 +1139,10 @@ data: {"delta":"Перенос возможен "}
 
 ## 5. Rate limits (§5, §8 п.5)
 
-`login`, `setup`, `activation`, `provider_test`, `search` и `chat` реализованы ([ADR-013](adr/0013-auth-session-strategy.md),
-[ADR-015](adr/0015-user-activation-links.md)); остальные значения — **[Proposed]** (по умолчанию, настраиваются).
-Хранилище счётчиков — Redis; при его недоступности эти endpoints отвечают `503`.
+`login`, `setup`, `activation`, `provider_test`, `search`, `chat` и `general` реализованы ([ADR-013](adr/0013-auth-session-strategy.md),
+[ADR-015](adr/0015-user-activation-links.md), шаг 12.5); остальные значения — **[Proposed]** (по умолчанию, настраиваются).
+Хранилище счётчиков — Redis; при его недоступности эти endpoints отвечают `503` — кроме `general`, который тогда
+пропускает запросы с предупреждением в логе (он ограничивает только нагрузку; SECURITY_MODEL.md §13).
 
 | Профиль | Лимит | Ключ |
 |---|---|---|
@@ -1147,7 +1155,7 @@ data: {"delta":"Перенос возможен "}
 | `sync` | 6/час | источник |
 | `expensive` (reindex, retry) | 10/час | инсталляция |
 | `search` | 30/мин (утверждён 2026-11-25) | пользователь |
-| `general` | 300/мин | пользователь |
+| `general` | 300/мин (`RATE_LIMIT_GENERAL_PER_MINUTE`); без health и `POST /chat/stream` | пользователь; без сессии — IP |
 
 При превышении — `429 rate_limited` + `Retry-After`.
 

@@ -25,5 +25,6 @@ export const PERMISSIONS = {
   jobsRead: 'jobs.read',
   jobsManage: 'jobs.manage',
   assistantsManage: 'assistants.manage',
+  auditRead: 'audit.read',
   chatUse: 'chat.use',
 } as const;

@@ -109,3 +109,25 @@ class AuditRecord:
     target_type: str | None
     target_id: UUID | None
     created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class AuditEvent:
+    """A stored event as ``GET /audit/events`` returns it (API_CONTRACTS.md §2.16).
+
+    ``details`` were written under the :class:`AuditEntry` rule: no secrets, tokens, passwords, plain-text
+    emails or document content.
+    """
+
+    id: UUID
+    created_at: datetime
+    actor_type: str
+    actor_user_id: UUID | None
+    action: str
+    target_type: str | None
+    target_id: UUID | None
+    outcome: str
+    correlation_id: str | None
+    ip_address: str | None
+    user_agent: str | None
+    details: dict[str, object]

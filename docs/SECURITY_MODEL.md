@@ -161,8 +161,9 @@ review как изменения кода.
 | Доступ к KB | Остальные `knowledge-bases/*`, `documents/*` | Уровень доступа к KB (§3.4) в use case: без доступа — `404 not_found`, `read` вместо `manage` — `403 permission_denied`; список KB — только доступные |
 | Ассистент | `assistants*` | ADR-005 (§6.3) |
 
-Все маршруты проверяют `Origin` (§4.4); изменяющие маршруты с сессией — ещё CSRF-токен. Права `settings.manage`
-(Application Settings ещё нет) и `audit.read` (до `GET /audit/events`, шаг 12.5) маршрутами пока не используются.
+Все маршруты проверяют `Origin` (§4.4); изменяющие маршруты с сессией — ещё CSRF-токен. Право `settings.manage`
+(Application Settings ещё нет) маршрутами пока не используется; `audit.read` — `GET /audit/events` и
+`GET /audit/events/{id}` (шаг 12.5).
 
 Проверки:
 
@@ -481,6 +482,13 @@ append-only обеспечивает runtime-роль без `UPDATE`/`DELETE` �
 `maintenance.audit_pruned`); остальные — **[Proposed]**. В audit провайдеров нет значений ключей:
 `provider.secret.rotated` содержит только `change = added | replaced | removed`.
 
+**Чтение журнала** (шаг 12.5): `GET /api/v1/audit/events` и `GET /api/v1/audit/events/{id}` с правом `audit.read`
+(роли `auditor` и `admin`), страница `/admin/audit`. Фильтры `action`, `actor_user_id`, `target_type`, `target_id`,
+`outcome`, `from` (включительно), `to` (не включительно; время только с часовым поясом), cursor-пагинация по
+`created_at`. Маршрутов изменения и удаления событий нет (`405`). События возвращаются как записаны: правило записи
+(`AuditEntry`) запрещает секреты, токены, пароли, email открытым текстом и содержимое документов, что проверяет
+`test_audit_api.py`. Само чтение журнала не аудируется (`audit.viewed` — **[Proposed]**, открытый вопрос 4, §20).
+
 **Критичные действия:**
 
 | Область | События |
@@ -512,14 +520,21 @@ append-only обеспечивает runtime-роль без `UPDATE`/`DELETE` �
   `rel="noopener noreferrer nofollow"` и показом домена; `javascript:`/`data:`/`mailto:` и прочие схемы — текст;
   ссылки на источники строятся из UUID цитат, выданных backend; текст документа в viewer — только текст
   (`AnswerMarkdown.test.tsx`, `viewer.test.tsx`). CSP задаёт Nginx (реализовано, Фаза 11).
-- **CORS:** same-origin; при необходимости — явный allowlist origins, никогда `*` вместе с credentials.
+- **CORS:** same-origin; при необходимости — явный allowlist origins (`CORS_ORIGINS`), никогда `*` вместе с
+  credentials; в production — только `https://` (шаг 12.5: origins из списка доверены и для изменяющих запросов).
+  Ответ чужому origin не несёт `Access-Control-Allow-Origin`; preflight с методом или заголовком вне списка
+  отклоняется (`test_errors_and_middleware.py`).
 - **Session theft:** HttpOnly cookies, хэш токена в БД, idle и абсолютный срок, немедленный отзыв, новая сессия при входе (ADR-013).
 
 ## 13. Rate limiting и resource exhaustion (§8 п.5, п.6)
 
 - Rate limits для login, setup, activation, upload, chat, provider test, search, sync и дорогих операций (§8 п.5);
-  общий лимит `general` (300 запросов в минуту на пользователя, без сессии — на IP; без health и SSE-потока) — шаг
-  12.5. Значения — [API_CONTRACTS.md](API_CONTRACTS.md), раздел 5 «Rate limits».
+  общий лимит `general` (реализован в шаге 12.5): `RATE_LIMIT_GENERAL_PER_MINUTE` (300) запросов в минуту на
+  пользователя для маршрутов с сессией, на IP — для маршрутов без сессии (setup, login, logout, activate, OAuth
+  callback); health и SSE-поток чата (у него свои лимит и слоты) не считаются. Отказанные запросы тоже считаются.
+  При недоступности Redis `general` пропускает запросы и пишет предупреждение не чаще раза в минуту: он ограничивает
+  только нагрузку, а лимиты login, setup и activation, защищающие секреты, по-прежнему отвечают `503`. Значения —
+  [API_CONTRACTS.md](API_CONTRACTS.md), раздел 5 «Rate limits».
 - Лимит одновременных генераций на пользователя и общий лимит на инсталляцию.
 - Ограниченные DB pools, лимиты очередей, timeouts на всех внешних вызовах (§11).
 - Ограничение длины сообщения чата, числа сообщений истории и context budget (§5, §6).
@@ -531,6 +546,10 @@ append-only обеспечивает runtime-роль без `UPDATE`/`DELETE` �
 - Ошибки внешних SDK санитизируются: они могут содержать фрагменты запроса или ключа.
 - В логах — идентификаторы (`user_id`, `job_id`, `correlation_id`), а не email/имена, где возможно.
 - Уровень DEBUG в production не включает payload-логирование.
+- Сквозная проверка (шаг 12.5, `test_log_canaries.py`): сценарий активации, неудачного и успешного входа, записи
+  ключа провайдера, индексации документа, поиска и вопроса в чат на уровне DEBUG; каждая запись рендерится
+  production-форматтером JSON и не должна содержать ни одного маркерного значения — пароли, токен активации,
+  cookie, CSRF-токен, ключи провайдеров, текст документа, поисковый запрос, вопрос и ответ.
 
 ## 15. OAuth-коннекторы (§7, §13 Фазы 9, 10)
 
@@ -611,7 +630,7 @@ append-only обеспечивает runtime-роль без `UPDATE`/`DELETE` �
 | RBAC bypass | `require_permission` и policy в каждом use case, deny by default, frontend не boundary | Negative RBAC tests по модулям (`tests/integration/rbac.py`); инвентаризация и матрица ролей (§3.6) | 12.2 (выполнен): тест падает, если маршрут не описан в таблице прав; `401` без сессии, `403` без права и в use case без проверки маршрута |
 | Потеря управления и эскалация через управление пользователями | Последний активный администратор защищён блокировкой строки роли `admin`; запрет отключать/удалять себя; роли при создании — только с `roles.assign` (§3.1) | Тесты последнего администратора, в том числе параллельные | — |
 | Перехват ссылки активации | Токен во фрагменте URL, только SHA-256 в БД, 72 ч, одноразовость под блокировкой, лимит на IP (ADR-015) | Тесты повторной, параллельной, истёкшей и перевыпущенной активации | — |
-| Утечка API keys / OAuth tokens | AES-256-GCM, key ring вне БД и вне backup, write-only API, redaction ошибок, нет в prompt (ADR-016) | `test_secrets.py`, тесты API провайдеров и источников, E2E: токены фейковых Google/Microsoft не попадают в страницу | 12.5: сквозной тест логов на DEBUG |
+| Утечка API keys / OAuth tokens | AES-256-GCM, key ring вне БД и вне backup, write-only API, redaction ошибок, нет в prompt (ADR-016) | `test_secrets.py`, тесты API провайдеров и источников, E2E: токены фейковых Google/Microsoft не попадают в страницу | 12.5 (выполнен): `test_log_canaries.py` (§14) |
 | Подмена или удаление audit log, DDL при компрометации API/worker | Runtime-роль сервисов без DDL, `TRUNCATE`, `TEMPORARY` и без `UPDATE`/`DELETE` на `audit_logs`; владелец схемы — только у `migrate`; единственный путь к DDL — две функции `SECURITY DEFINER` для HNSW-индексов профиля (ADR-024 §2.1); отказ старта в production с ролью владельца; retention — CLI владельца ([ADR-024](adr/0024-database-owner-and-runtime-roles.md), шаг 12.1) | `test_database_roles.py`, `checks.sh` в CI (роли подключений и права runtime-роли) | — (закрыто в 12.1) |
 | SSRF | `SafeHttpClient`: валидация URL и IP, запрет private/metadata/loopback, allowlist в Instance Settings, pinning адреса, проверка redirect (ADR-007); сегментация сетей Compose | `test_safe_http_client.py`, `test_safe_http_redirects.py`, `test_network_policy.py`, `test_network_egress.py` (SC-06, SC-07) | 12.3 (выполнен): SC-прогон, §18.2 |
 | Malicious uploads / parser exploits | Quarantine, magic bytes, отказ от macro-enabled, лимиты размера/страниц/листов/строк, парсер в отдельном контейнере без сети и секретов, процесс с rlimits и timeout | `test_file_inspection.py`, `test_hostile_files.py`, `test_isolated_parser.py`, `test_document_upload.py`, ingestion `test_docling_parser.py` (XXE и billion laughs на настоящем Docling) | 12.4 (выполнен): отказ `unsafe_content` при DTD в XML-частях (§9), вложенные архивы, polyglot |
@@ -619,10 +638,10 @@ append-only обеспечивает runtime-роль без `UPDATE`/`DELETE` �
 | Prompt injection | Документы — данные в блоке `<documents>`; нет tools; system rules первыми; citation IDs выдаёт и фильтрует backend; Markdown без HTML и без загрузки изображений | SC-08: `test_retrieval_context.py`, `test_chat_stream.py`, `test_source_sync.py`, `test_hostile_documents.py` | 12.4 (выполнен): враждебные документы через весь pipeline (§10) |
 | XSS | React-экранирование, Markdown без сырого HTML, только http(s)-ссылки, CSP без `unsafe-inline` для скриптов (ADR-023 §5) | `AnswerMarkdown.test.tsx`, `viewer.test.tsx`, проверка заголовков в CI-smoke | — (nonce для стилей — §20) |
 | CSRF | Double-submit token + проверка `Origin`, SameSite (ADR-013) | `test_chat_security_gate.py`, тесты auth, `test_rbac_matrix.py` (каждый изменяющий маршрут без CSRF → `403 csrf_failed`) | 12.2 (выполнен) |
-| CORS | Same-origin; allowlist origins, никогда `*` с credentials | Тесты конфигурации | 12.5: тесты preflight и ответов на чужой origin |
+| CORS | Same-origin; allowlist origins, никогда `*` с credentials | `test_config.py` (без `*`, `https` в production), `test_errors_and_middleware.py` (preflight, ответ чужому origin) | 12.5 (выполнен) |
 | Session theft | HttpOnly/Secure, хэш токена в БД, idle/абсолютный срок, отзыв, новая сессия при входе (ADR-013) | Тесты revoked/expired sessions, session fixation | — |
-| Resource exhaustion | Лимиты login, setup, activation, upload, chat, provider_test, search, sync, expensive; семафор генераций; лимиты парсинга; pools и timeouts | `test_rate_limiter.py`, `test_generation_control.py` | 12.5: общий лимит `general` |
-| Утечки через логи | Запрет payload-логирования, redaction | `test_chat_security_gate.py` (чат), `test_logging_and_version.py` | 12.5: сквозной тест загрузки, провайдеров и коннекторов на DEBUG |
+| Resource exhaustion | Лимиты login, setup, activation, upload, chat, provider_test, search, sync, expensive; семафор генераций; лимиты парсинга; pools и timeouts | `test_rate_limiter.py`, `test_generation_control.py`, `test_general_limit.py`, `test_route_inventory.py` (каждый маршрут без сессии ограничен по IP) | 12.5 (выполнен): общий лимит `general` (§13) |
+| Утечки через логи | Запрет payload-логирования, redaction | `test_chat_security_gate.py` (чат), `test_logging_and_version.py`, `test_log_canaries.py` | 12.5 (выполнен): сквозной тест на DEBUG (§14) |
 | Ошибки удаления | Немедленное исключение из retrieval, purge, retention версий, повторное применение удалений после restore (ADR-023 §6) | «deleted docs не находятся», `test_restore_deletions.py`, restore drill в CI | — |
 | Захват неинициализированной инсталляции | Bootstrap token, атомарная инициализация, флаг без сброса через API, CLI-восстановление (ADR-006) | SC-03, SC-04 (`test_setup_api.py`) | 12.3 (выполнен): SC-прогон, §18.2 |
 | Обход сетевой политики администратором приложения | Allowlist только в Instance Settings, нет API изменения (ADR-007) | SC-02 | 12.3 (выполнен): SC-прогон, §18.2 |

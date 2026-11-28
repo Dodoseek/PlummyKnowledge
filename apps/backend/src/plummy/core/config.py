@@ -221,6 +221,8 @@ class Settings(BaseSettings):
     upload_max_bytes: int = Field(default=50 * 1024 * 1024, ge=1024, le=2 * 1024 * 1024 * 1024)
     # Hard limit of one answer, retrieval included (ADR-019 §2); a slower answer ends with provider_timeout.
     chat_generation_timeout_seconds: int = Field(default=120, ge=10, le=600)
+    # The ``general`` limit of every API request, per user or per IP (API_CONTRACTS §5, SECURITY_MODEL §13).
+    rate_limit_general_per_minute: int = Field(default=300, ge=10, le=100_000)
 
     # OAuth client of the Google Drive connector (ADR-020 §2): both or neither. The redirect URI is
     # PUBLIC_URL + /api/v1/data-sources/oauth/callback; without PUBLIC_URL the connector is not configured.
@@ -429,6 +431,9 @@ class Settings(BaseSettings):
                 raise ValueError("SESSION_COOKIE_SECURE must be true when APP_ENV=production")
             if self.public_url is not None and not self.public_url.startswith("https://"):
                 raise ValueError("PUBLIC_URL must use https when APP_ENV=production")
+            # CORS origins are trusted for state-changing requests too (``trusted_origins``).
+            if any(not origin.startswith("https://") for origin in self.cors_origins):
+                raise ValueError("CORS_ORIGINS must use https when APP_ENV=production")
             # Only the API and the worker handle sessions, OAuth redirects and stored secrets; the ingestion
             # worker, the scheduler and migrate run without them (ADR-023 §3).
             if self.process_role in (ProcessRole.API, ProcessRole.WORKER):
@@ -503,6 +508,7 @@ class Settings(BaseSettings):
             "s3_bucket": self.s3_bucket if self.storage_backend is StorageBackend.S3 else None,
             "quarantine_ttl_seconds": int(self.quarantine_ttl.total_seconds()),
             "upload_max_bytes": self.upload_max_bytes,
+            "rate_limit_general_per_minute": self.rate_limit_general_per_minute,
             "google_drive_configured": self.google_drive_configured,
             "microsoft_365_configured": self.microsoft_365_configured,
         }

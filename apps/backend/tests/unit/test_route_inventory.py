@@ -15,7 +15,13 @@ import pytest
 from fastapi.dependencies.models import Dependant
 from fastapi.routing import APIRoute, iter_route_contexts
 
-from plummy.api.security import RequirePermission, get_authenticated, verify_origin
+from plummy.api.security import (
+    GENERAL_LIMIT_EXEMPT,
+    RequirePermission,
+    get_authenticated,
+    limit_by_address,
+    verify_origin,
+)
 from plummy.domain.identity import Permission
 from plummy.domain.identity.permissions import SYSTEM_ROLE_PERMISSIONS, SystemRole
 from tests.conftest import make_settings
@@ -139,3 +145,19 @@ def test_sc02_no_route_changes_instance_settings(routes: list[Found]) -> None:
     for route in routes:
         if route.path.startswith((f"{V1}/system", f"{V1}/settings")):
             assert (route.method, route.path) == ("GET", f"{V1}/system/settings")
+
+
+def test_routes_without_a_session_are_limited_per_address(routes: list[Found]) -> None:
+    """The ``general`` limit (API_CONTRACTS §5): per IP without a session, per user in get_authenticated."""
+    for route in routes:
+        rule = ROUTES[_key(route)]
+        expected = rule.access is Access.PUBLIC and not route.path.startswith(f"{V1}/health")
+        assert (limit_by_address in route.dependencies) is expected, (route.method, route.path)
+
+
+def test_the_limit_exemptions_are_routes_with_a_session() -> None:
+    for path in GENERAL_LIMIT_EXEMPT:
+        assert path.startswith(V1)
+        rules = [rule for (_, route_path), rule in ROUTES.items() if V1 + route_path == path]
+        assert rules, path
+        assert all(rule.access is not Access.PUBLIC for rule in rules), path

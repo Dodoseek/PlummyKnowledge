@@ -155,6 +155,8 @@ ROUTES: dict[tuple[str, str], Rule] = {
     ("POST", "/chat/stream"): own(P.CHAT_USE),
     ("POST", "/chat/runs/{run_id}/stop"): own(P.CHAT_USE),
     # Jobs.
+    ("GET", "/audit/events"): perm(P.AUDIT_READ),
+    ("GET", "/audit/events/{event_id}"): perm(P.AUDIT_READ),
     ("GET", "/jobs"): perm(P.JOBS_READ),
     ("GET", "/jobs/{job_type}/{job_id}"): perm(P.JOBS_READ),
     ("POST", "/jobs/{job_type}/{job_id}/retry"): perm(P.JOBS_MANAGE),
@@ -166,5 +168,4 @@ ROUTES: dict[tuple[str, str], Rule] = {
 # Permissions no route requires yet, with the reason; anything else unused is a mistake in the catalog.
 RESERVED: dict[Permission, str] = {
     P.SETTINGS_MANAGE: "Application Settings are not implemented yet",
-    P.AUDIT_READ: "GET /audit/events arrives in step 12.5",
 }

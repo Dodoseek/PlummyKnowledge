@@ -26,8 +26,10 @@ from plummy.application.assistants.use_cases import (
     ListAssistants,
     UpdateAssistant,
 )
+from plummy.application.audit_events import GetAuditEvent, ListAuditEvents
 from plummy.application.auth.account import ChangePassword, ListMySessions, RevokeMySession
 from plummy.application.auth.activation import ActivateAccount
+from plummy.application.auth.general_limit import GeneralRateLimit
 from plummy.application.auth.sessions import SessionIssuer, SessionPolicy
 from plummy.application.auth.throttle import AttemptThrottle
 from plummy.application.auth.use_cases import AuthenticateSession, Login, Logout
@@ -216,6 +218,7 @@ class AuthServices:
     list_sessions: ListMySessions
     revoke_session: RevokeMySession
     change_password: ChangePassword
+    general_limit: GeneralRateLimit
 
 
 @dataclass(frozen=True, slots=True)
@@ -340,6 +343,14 @@ class SourceServices:
 
 
 @dataclass(frozen=True, slots=True)
+class AuditServices:
+    """The audit log, read only (``audit.read``, checked by the use cases)."""
+
+    list: ListAuditEvents
+    get: GetAuditEvent
+
+
+@dataclass(frozen=True, slots=True)
 class JobServices:
     """Background jobs (``jobs.read`` / ``jobs.manage``, checked by the use cases)."""
 
@@ -382,6 +393,7 @@ class Resources:
     documents: DocumentServices
     sources: SourceServices
     job_admin: JobServices
+    audit: AuditServices
     secrets: SecretVault
     http: SafeHttpClient
     storage: DocumentStorage
@@ -789,6 +801,7 @@ def build_resources(
         list_sessions=ListMySessions(uow, clock, issuer),
         revoke_session=RevokeMySession(uow, clock),
         change_password=ChangePassword(uow, clock, hasher, throttle, issuer),
+        general_limit=GeneralRateLimit(limiter, per_minute=settings.rate_limit_general_per_minute),
     )
     links = ActivationLinks(settings.public_url)
     admin = AdminServices(
@@ -912,6 +925,7 @@ def build_resources(
             cancel=CancelJob(uow, clock),
             cancel_sync=CancelSyncJob(uow, clock),
         ),
+        audit=AuditServices(list=ListAuditEvents(uow), get=GetAuditEvent(uow)),
         secrets=vault,
         http=http,
         storage=storage,

@@ -14,7 +14,7 @@ from plummy.application.pagination import Page, PageRequest
 from plummy.application.retrieval.model import ChunkHit, RetrievalScope
 from plummy.domain.ai import AIProvider, EmbeddingProfile, ModelConfig, TestStatus
 from plummy.domain.assistants import Assistant
-from plummy.domain.audit import AuditEntry, AuditRecord
+from plummy.domain.audit import AuditEntry, AuditEvent, AuditRecord
 from plummy.domain.chat import Conversation, GenerationRun, Message, MessageCitation, MessageStatus
 from plummy.domain.documents import (
     DeletionReason,
@@ -299,8 +299,25 @@ class InstanceStateRepository(Protocol):
     async def save(self, state: InstanceState) -> None: ...
 
 
+@dataclass(frozen=True, slots=True)
+class AuditQuery:
+    """``GET /audit/events`` filters; ``created_from`` is inclusive, ``created_to`` exclusive."""
+
+    action: str | None = None
+    actor_user_id: UUID | None = None
+    target_type: str | None = None
+    target_id: UUID | None = None
+    outcome: str | None = None
+    created_from: datetime | None = None
+    created_to: datetime | None = None
+
+
 class AuditLog(Protocol):
     async def record(self, entry: AuditEntry) -> None: ...
+
+    async def page(self, query: AuditQuery, page: PageRequest) -> Page[AuditEvent]: ...
+
+    async def get(self, event_id: UUID) -> AuditEvent | None: ...
 
     async def successful_since(self, since: datetime, actions: Collection[str]) -> list[AuditRecord]:
         """Successful events of ``actions`` at or after ``since``, oldest first."""

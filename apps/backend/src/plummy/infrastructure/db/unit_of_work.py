@@ -20,6 +20,7 @@ from plummy.application.ports import (
     ActivationTokenRepository,
     AssistantRepository,
     AuditLog,
+    AuditQuery,
     ChunkNeighbourhood,
     ChunkRepository,
     ChunkSearch,
@@ -68,7 +69,7 @@ from plummy.domain.ai import (
     TestStatus,
 )
 from plummy.domain.assistants import Assistant, AssistantRetrieval, AssistantStatus
-from plummy.domain.audit import AuditEntry, AuditOutcome, AuditRecord
+from plummy.domain.audit import AuditEntry, AuditEvent, AuditOutcome, AuditRecord
 from plummy.domain.documents import (
     DeletionReason,
     Document,
@@ -700,6 +701,23 @@ class SqlInstanceStateRepository:
         )
 
 
+def _audit_event(row: AuditLogModel) -> AuditEvent:
+    return AuditEvent(
+        id=row.id,
+        created_at=row.created_at,
+        actor_type=row.actor_type,
+        actor_user_id=row.actor_user_id,
+        action=row.action,
+        target_type=row.target_type,
+        target_id=row.target_id,
+        outcome=row.outcome,
+        correlation_id=row.correlation_id,
+        ip_address=str(row.ip_address) if row.ip_address is not None else None,
+        user_agent=row.user_agent,
+        details=dict(row.details),
+    )
+
+
 class SqlAuditLog:
     """Append-only: the services only INSERT (DATABASE_SCHEMA.md §7.3); their database role cannot UPDATE or
     DELETE (ADR-024). ``delete_older_than`` is retention, run under the schema owner role."""
@@ -724,6 +742,27 @@ class SqlAuditLog:
             )
         )
         await self._db.flush()
+
+    async def page(self, query: AuditQuery, page: PageRequest) -> Page[AuditEvent]:
+        statement = select(AuditLogModel)
+        for column, value in (
+            (AuditLogModel.action, query.action),
+            (AuditLogModel.actor_user_id, query.actor_user_id),
+            (AuditLogModel.target_type, query.target_type),
+            (AuditLogModel.target_id, query.target_id),
+            (AuditLogModel.outcome, query.outcome),
+        ):
+            if value is not None:
+                statement = statement.where(column == value)
+        if query.created_from is not None:
+            statement = statement.where(AuditLogModel.created_at >= query.created_from)
+        if query.created_to is not None:
+            statement = statement.where(AuditLogModel.created_at < query.created_to)
+        return await paginate(self._db, statement, AuditLogModel, page, _audit_event)
+
+    async def get(self, event_id: UUID) -> AuditEvent | None:
+        row = await self._db.get(AuditLogModel, event_id)
+        return _audit_event(row) if row is not None else None
 
     async def successful_since(self, since: datetime, actions: Collection[str]) -> list[AuditRecord]:
         rows = await self._db.execute(

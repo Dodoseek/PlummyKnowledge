@@ -16,6 +16,7 @@ from plummy.api.security import (
     SettingsDep,
     clear_session_cookie,
     client_info,
+    limit_by_address,
     read_session_token,
     verify_csrf_token,
 )
@@ -36,7 +37,7 @@ from plummy.application.errors import AuthenticationRequiredError
 router = APIRouter(prefix="/auth", tags=["auth"], dependencies=[Depends(no_store)])
 
 
-@router.post("/login", response_model=SessionResponse)
+@router.post("/login", response_model=SessionResponse, dependencies=[Depends(limit_by_address)])
 async def login(
     body: LoginRequest,
     request: Request,
@@ -56,7 +57,12 @@ async def login(
     return SessionResponse.from_issued(issued)
 
 
-@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
+@router.post(
+    "/logout",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    dependencies=[Depends(limit_by_address)],
+)
 async def logout(
     request: Request, response: Response, resources: ResourcesDep, settings: SettingsDep
 ) -> None:
@@ -121,7 +127,7 @@ async def change_password(
     return SessionResponse.from_issued(issued)
 
 
-@router.post("/activate", response_model=SessionResponse)
+@router.post("/activate", response_model=SessionResponse, dependencies=[Depends(limit_by_address)])
 async def activate(
     body: ActivateRequest,
     request: Request,

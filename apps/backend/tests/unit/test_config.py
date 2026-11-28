@@ -381,3 +381,24 @@ def test_a_runtime_role_that_is_not_a_plain_name_is_rejected(role: str) -> None:
 def test_audit_retention_bounds(days: int) -> None:
     with pytest.raises(ConfigurationError, match="AUDIT_RETENTION_DAYS"):
         make_settings(audit_retention_days=days)
+
+
+def test_production_cors_origins_must_use_https() -> None:
+    with pytest.raises(ConfigurationError) as exc_info:
+        make_settings(app_env="production", secret_key=VALID_SECRET_KEY, cors_origins="http://kb.example.com")
+    assert "CORS_ORIGINS must use https" in str(exc_info.value)
+    settings = make_settings(
+        app_env="production", secret_key=VALID_SECRET_KEY, cors_origins="https://kb.example.com"
+    )
+    assert settings.trusted_origins == {"https://kb.example.com", TEST_PUBLIC_URL}
+    # Outside production a local frontend dev server is allowed.
+    assert make_settings(cors_origins="http://localhost:5173").cors_origins == ["http://localhost:5173"]
+
+
+def test_general_rate_limit_setting() -> None:
+    assert make_settings().rate_limit_general_per_minute == 300
+    assert make_settings(rate_limit_general_per_minute=1000).rate_limit_general_per_minute == 1000
+    for invalid in (0, 9, 100_001):
+        with pytest.raises(ConfigurationError):
+            make_settings(rate_limit_general_per_minute=invalid)
+    assert make_settings().safe_summary()["rate_limit_general_per_minute"] == 300

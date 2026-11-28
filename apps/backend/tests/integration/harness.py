@@ -58,6 +58,9 @@ def harness_settings(database_url: str, redis_url: str, bootstrap_dir: Path, **o
         "session_cookie_secure": True,
         "secrets_keyring_file": make_keyring(bootstrap_dir.parent),
         "storage_path": _storage_root(bootstrap_dir.parent),
+        # Every test client shares one address, and not every test clears the counters: the ``general``
+        # limit is out of the way here and tested with its real value in ``test_general_limit.py``.
+        "rate_limit_general_per_minute": 100_000,
     }
     values.update(overrides)
     return make_settings(**values)

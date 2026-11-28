@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends
 
 from plummy.api.security import verify_origin
 from plummy.api.v1.assistants.router import router as assistants_router
+from plummy.api.v1.audit.router import router as audit_router
 from plummy.api.v1.auth.router import router as auth_router
 from plummy.api.v1.chat.router import router as chat_router
 from plummy.api.v1.conversations.router import router as conversations_router
@@ -35,4 +36,5 @@ router.include_router(assistants_router)
 router.include_router(conversations_router)
 router.include_router(chat_router)
 router.include_router(jobs_router)
+router.include_router(audit_router)
 router.include_router(system_router)

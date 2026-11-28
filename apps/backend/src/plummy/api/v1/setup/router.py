@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request, Response, status
 
 from plummy.api.dependencies import ResourcesDep
-from plummy.api.security import SettingsDep, client_info, read_session_token
+from plummy.api.security import SettingsDep, client_info, limit_by_address, read_session_token
 from plummy.api.v1.auth.schemas import SessionResponse
 from plummy.api.v1.common import attach_session_cookie, no_store
 from plummy.api.v1.setup.schemas import InitializeRequest, SetupStatusResponse
@@ -15,7 +15,7 @@ from plummy.application.setup.validation import AdministratorInput
 router = APIRouter(prefix="/setup", tags=["setup"], dependencies=[Depends(no_store)])
 
 
-@router.get("/status", response_model=SetupStatusResponse)
+@router.get("/status", response_model=SetupStatusResponse, dependencies=[Depends(limit_by_address)])
 async def setup_status(resources: ResourcesDep) -> SetupStatusResponse:
     result = await resources.auth.setup_status.execute()
     return SetupStatusResponse(
@@ -24,7 +24,12 @@ async def setup_status(resources: ResourcesDep) -> SetupStatusResponse:
     )
 
 
-@router.post("/initialize", status_code=status.HTTP_201_CREATED, response_model=SessionResponse)
+@router.post(
+    "/initialize",
+    status_code=status.HTTP_201_CREATED,
+    response_model=SessionResponse,
+    dependencies=[Depends(limit_by_address)],
+)
 async def initialize(
     body: InitializeRequest,
     request: Request,

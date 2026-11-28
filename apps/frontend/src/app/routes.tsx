@@ -8,6 +8,7 @@ import { GroupDetailPage } from '../features/admin/GroupDetailPage';
 import { GroupsPage } from '../features/admin/GroupsPage';
 import { UserDetailPage } from '../features/admin/UserDetailPage';
 import { UsersPage } from '../features/admin/UsersPage';
+import { AuditPage } from '../features/audit/AuditPage';
 import { ActivatePage } from '../features/auth/ActivatePage';
 import { LoginPage } from '../features/auth/LoginPage';
 import { RequireAuth } from '../features/auth/RequireAuth';
@@ -61,6 +62,7 @@ export const routes: RouteObject[] = [
           { path: 'admin/assistants', element: <AssistantsAdminPage /> },
           { path: 'admin/assistants/:assistantId', element: <AssistantDetailPage /> },
           { path: 'admin/jobs', element: <JobsPage /> },
+          { path: 'admin/audit', element: <AuditPage /> },
         ],
       },
       { path: '*', element: <NotFoundPage /> },

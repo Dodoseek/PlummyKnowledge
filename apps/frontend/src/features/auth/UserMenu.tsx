@@ -65,6 +65,11 @@ export function UserMenu() {
           Jobs
         </Link>
       )}
+      {can(PERMISSIONS.auditRead) && (
+        <Link as={RouterLink} to="/admin/audit" fontSize="sm">
+          Audit log
+        </Link>
+      )}
       <Link as={RouterLink} to="/account" fontSize="sm" data-testid="current-user">
         {session.user.display_name}
       </Link>

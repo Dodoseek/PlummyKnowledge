@@ -11,7 +11,13 @@ from fastapi import APIRouter, Depends, Request, status
 from fastapi.responses import RedirectResponse
 
 from plummy.api.dependencies import ResourcesDep
-from plummy.api.security import SettingsDep, client_info, read_session_token, require_permission
+from plummy.api.security import (
+    SettingsDep,
+    client_info,
+    limit_by_address,
+    read_session_token,
+    require_permission,
+)
 from plummy.api.v1.common import allow_query, no_store, page_request
 from plummy.api.v1.data_sources.schemas import (
     BrowseResponse,
@@ -85,7 +91,12 @@ def _bounded(value: str | None) -> str | None:
     return value if value is not None and len(value) <= MAX_CALLBACK_PARAM_LENGTH else None
 
 
-@router.get("/oauth/callback", response_class=RedirectResponse, status_code=status.HTTP_303_SEE_OTHER)
+@router.get(
+    "/oauth/callback",
+    response_class=RedirectResponse,
+    status_code=status.HTTP_303_SEE_OTHER,
+    dependencies=[Depends(limit_by_address)],
+)
 async def oauth_callback(
     request: Request,
     resources: ResourcesDep,

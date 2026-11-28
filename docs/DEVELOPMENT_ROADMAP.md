@@ -288,7 +288,10 @@ security gate (проверки безопасности **внутри** фаз
   настоящих PostgreSQL и Redis; расхождений не найдено), 12.3 (трассировка SC-01…SC-09 к тестам —
   SECURITY_MODEL §18.2, `tests/security_scenarios.py` с проверкой ссылок в CI, прогон сценариев), 12.4 (отказ
   `unsafe_content` при DTD и сущностях в XML-частях DOCX/XLSX до парсера, вложенные архивы и polyglot, XXE и
-  billion laughs на настоящем Docling, враждебные документы через pipeline и чат — SECURITY_MODEL §9, §10).
+  billion laughs на настоящем Docling, враждебные документы через pipeline и чат — SECURITY_MODEL §9, §10), 12.5
+  (лимит `general` на пользователя и на IP без health и SSE-потока, `RATE_LIMIT_GENERAL_PER_MINUTE`; `https` в
+  `CORS_ORIGINS` в production и тест ответов чужому origin; сквозной тест логов на DEBUG с маркерными значениями;
+  `GET /audit/events`, `GET /audit/events/{id}` и страница `/admin/audit` — SECURITY_MODEL §11–§14).
 - **Выход (вместе с Фазой 11):** **релиз 0.5.0**.
 
 ### Фаза 13 — Open-source release (§13)

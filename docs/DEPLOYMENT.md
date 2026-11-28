@@ -73,7 +73,7 @@
 | `PROCESS_ROLE` | `api` | `api` \| `worker` \| `ingestion` \| `scheduler` \| `migrate` (шаг 11.2): в `production` `SECRET_KEY`, `PUBLIC_URL` и `SECRETS_KEYRING_FILE` обязательны только для `api` и `worker`; `APP_DEBUG=false`, `SESSION_COOKIE_SECURE=true` и `https` в `PUBLIC_URL` — для всех ролей |
 | `DATABASE_URL` / `DATABASE_URL_FILE` | — (обязателен) | `postgresql+asyncpg://…` |
 | `REDIS_URL` / `REDIS_URL_FILE` | — (обязателен) | `redis://…` или `rediss://…` |
-| `CORS_ORIGINS` | пусто (CORS выключен) | Список origins через запятую; `*`, пути и credentials отклоняются |
+| `CORS_ORIGINS` | пусто (CORS выключен) | Список origins через запятую; `*`, пути и credentials отклоняются; в `production` — только `https` (шаг 12.5) |
 | `DB_POOL_SIZE`, `DB_MAX_OVERFLOW` | `5`, `5` | Ограничение пула соединений на процесс (§11) |
 | `API_DOCS_ENABLED` | вкл., кроме `production` | Swagger UI `/api/v1/docs` загружает JS/CSS с публичного CDN, поэтому в `production` выключен; `true` включает явно. `/api/v1/openapi.json` доступен всегда |
 | `PUBLIC_URL` | — (обязателен в `production`, только `https`) | Origin web-интерфейса. Небезопасные запросы (`POST`/`PUT`/`PATCH`/`DELETE`) принимаются только с `Origin`/`Referer` из `PUBLIC_URL` или `CORS_ORIGINS` (ADR-013). Dev compose: `http://localhost:5173` |
@@ -95,6 +95,7 @@
 | `STORAGE_PATH` | `/var/lib/plummy/storage` | Корень storage (области `quarantine` и `documents`); заменяет черновые `PLUMMY_STORAGE_PATH`, `PLUMMY_QUARANTINE_PATH` |
 | `QUARANTINE_TTL` | `86400` (24 ч) | Срок хранения файлов в quarantine до cleanup; от 10 мин до 7 дней |
 | `UPLOAD_MAX_BYTES` | `52428800` (50 МБ) | Наибольший принимаемый upload (проверяется при потоковой записи); от 1 КБ до 2 ГБ; заменяет черновое `PLUMMY_UPLOAD_MAX_BYTES` |
+| `RATE_LIMIT_GENERAL_PER_MINUTE` | `300` | Общий лимит запросов к API в минуту: на пользователя, без сессии — на IP; health и SSE-поток чата не считаются; от 10 до 100 000 (шаг 12.5, SECURITY_MODEL §13) |
 | `CHAT_GENERATION_TIMEOUT_SECONDS` | `120` | Жёсткий предел одного ответа чата вместе с retrieval ([ADR-019](adr/0019-answer-generation-in-api-process.md)); от 10 до 600 с. Прокси перед API должен держать SSE-соединение не меньше этого |
 
 `NAME` и `NAME_FILE` одновременно — ошибка конфигурации. Невалидная конфигурация → сообщение без значений секретов
@@ -206,7 +207,7 @@ docker compose -f compose.prod.yaml --env-file deploy/prod/.env run --rm migrate
 | Шифрование | `SECRETS_KEYRING_FILE` (key ring с `key_id`, реализовано, §0; заменяет черновое `PLUMMY_SECRETS_KEY_FILE`) | **да, хранится вне БД и отдельно от backup** |
 | Storage | `STORAGE_BACKEND`, `STORAGE_PATH`, `QUARANTINE_TTL` (реализовано, §0); `S3_ENDPOINT_URL`, `S3_BUCKET`, `S3_REGION`, `S3_PREFIX`, `S3_ACCESS_KEY_ID_FILE`, `S3_SECRET_ACCESS_KEY_FILE` — шаг 11.1, [ADR-022](adr/0022-s3-compatible-storage.md) | частично |
 | Setup | `SETUP_MODE` (`web` \| `cli_only`), `BOOTSTRAP_DIR`, `BOOTSTRAP_TOKEN_TTL` (реализовано, §0) | — |
-| Безопасность | `CORS_ORIGINS`, `SESSION_IDLE_TTL`, `SESSION_ABSOLUTE_TTL`, `SESSION_COOKIE_SECURE` (реализовано, §0); лимиты rate limit (пока константы, ADR-013 §4) | — |
+| Безопасность | `CORS_ORIGINS`, `SESSION_IDLE_TTL`, `SESSION_ABSOLUTE_TTL`, `SESSION_COOKIE_SECURE` (реализовано, §0); `RATE_LIMIT_GENERAL_PER_MINUTE` (шаг 12.5); остальные лимиты rate limit — константы (ADR-013 §4) | — |
 | Лимиты | `UPLOAD_MAX_BYTES`, `CHAT_GENERATION_TIMEOUT_SECONDS` (реализовано, §0); лимиты страниц/распаковки/времени парсинга — пока константы `ParseLimits`; одновременные генерации (2 на пользователя) — константа ([ADR-019](adr/0019-answer-generation-in-api-process.md)) | — |
 | Jobs | `WORKER_CONCURRENCY` (реализовано в dev compose, §0); retry/backoff — в определении каждой задачи | — |
 | SMTP | `PLUMMY_SMTP_HOST`, `PLUMMY_SMTP_USER`, `PLUMMY_SMTP_PASSWORD_FILE` | да |

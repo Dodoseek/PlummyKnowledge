@@ -111,7 +111,8 @@ SCENARIOS: dict[str, dict[str, list[str]]] = {
             UNIT
             + "test_retrieval_context.py::test_rules_forbid_obeying_documents_links_images_and_prompt_disclosure",  # noqa: E501
             INT + "test_source_sync.py::test_sc08_a_synced_document_reaches_the_prompt_only_as_escaped_data",
-            INT + "test_hostile_documents.py::test_injected_instructions_reach_the_model_only_inside_the_documents",
+            INT
+            + "test_hostile_documents.py::test_injected_instructions_reach_the_model_only_inside_the_documents",  # noqa: E501
         ],
         "the model gets no tools": [
             CONTRACT + "test_ai_providers.py::test_openai_chat_streams_deltas_then_finish_with_usage",

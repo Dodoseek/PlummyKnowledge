@@ -30,7 +30,7 @@ local storage с quarantine, KB с источником `upload`, upload док�
 `worker-ingestion` с Docling без сети и секретов, стадии 8–12 — `worker`: chunking, embeddings, атомарное
 переключение версии), API `knowledge-bases`, `documents`, `jobs`, удаление с purge, Celery beat `scheduler`.
 Frontend: React 18, Chakra UI, RTK Query, страницы `/setup`, `/login`, `/activate`, `/account`, `/admin/users`,
-`/admin/groups`, `/admin/providers`, `/admin/embedding-profiles`, `/admin/assistants`, `/admin/jobs`, `/assistants`,
+`/admin/groups`, `/admin/providers`, `/admin/embedding-profiles`, `/admin/assistants`, `/admin/jobs`, `/admin/audit`, `/assistants`,
 `/knowledge-bases`,
 `/knowledge-bases/:id`, `/chat`, `/viewer`, guard, выход.
 CI (GitHub Actions), pre-commit (secret scan, lint), Dependabot. Фаза 6: FTS ([ADR-018](docs/adr/0018-full-text-search-configuration.md), миграции `0011`/`0012`),
@@ -59,7 +59,9 @@ Nginx/TLS/CSP, секретами файлами (`deploy/prod/init-secrets.sh`)
 [ADR-024](docs/adr/0024-database-owner-and-runtime-roles.md) — владелец схемы (`plummy`, только `migrate`) и
 runtime-роль сервисов (`plummy_app`, только DML, `audit_logs` append-only; права — `db grant-runtime`), retention
 audit `maintenance prune-audit`; threat model пересмотрена (SECURITY_MODEL §17); инвентаризация маршрутов и
-матрица ролей (`tests/route_inventory.py`, SECURITY_MODEL §3.6) — новый маршрут нужно внести в таблицу. Application Settings ещё нет ([DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md)).
+матрица ролей (`tests/route_inventory.py`, SECURITY_MODEL §3.6) — новый маршрут нужно внести в таблицу;
+трассировка SC-01…SC-09 (`tests/security_scenarios.py`); враждебные файлы (`unsafe_content` при DTD в OOXML); общий
+лимит `general`, сквозной тест логов, журнал аудита `GET /audit/events` и страница `/admin/audit`. Application Settings ещё нет ([DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md)).
 Не начинать Google OAuth, Microsoft Graph и сложный RAG до стабильного запуска каркаса.
 
 ## Приоритет источников

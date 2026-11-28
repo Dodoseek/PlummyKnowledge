@@ -28,10 +28,14 @@ from plummy.domain.identity import Permission
 from plummy.domain.identity.models import MAX_USER_AGENT_LENGTH
 
 CSRF_HEADER = "X-CSRF-Token"
+# Not counted by the ``general`` limit: the chat stream has its own limit and generation slots
+# (SECURITY_MODEL §13). Health checks take no session and no limit.
+GENERAL_LIMIT_EXEMPT = frozenset({"/api/v1/chat/stream"})
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 __all__ = [
     "CSRF_HEADER",
+    "GENERAL_LIMIT_EXEMPT",
     "Authenticated",
     "AuthenticatedDep",
     "CsrfFailedError",
@@ -41,6 +45,7 @@ __all__ = [
     "clear_session_cookie",
     "client_info",
     "get_authenticated",
+    "limit_by_address",
     "read_session_token",
     "require_permission",
     "session_cookie_name",
@@ -117,6 +122,8 @@ async def get_authenticated(
     context = await resources.auth.authenticate.execute(token)
     if request.method not in SAFE_METHODS:
         verify_csrf_token(request, token)
+    if request.url.path not in GENERAL_LIMIT_EXEMPT:
+        await resources.auth.general_limit.for_user(context.user_id)
     return Authenticated(context=context, csrf_token=derive_csrf_token(token))
 
 
@@ -128,6 +135,11 @@ async def get_security_context(authenticated: AuthenticatedDep) -> SecurityConte
 
 
 CurrentContext = Annotated[SecurityContext, Depends(get_security_context)]
+
+
+async def limit_by_address(request: Request, resources: ResourcesDep) -> None:
+    """The ``general`` limit of a route without a session, per client address (API_CONTRACTS §5)."""
+    await resources.auth.general_limit.for_address(client_info(request).ip_address)
 
 
 class RequirePermission:

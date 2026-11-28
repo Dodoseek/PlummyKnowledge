@@ -197,6 +197,28 @@ async def test_cors_allows_only_configured_origins() -> None:
     assert "access-control-allow-origin" not in denied.headers
 
 
+async def test_cors_answers_a_foreign_origin_without_allowing_it() -> None:
+    """Phase 12.5: a simple request from another origin gets no CORS headers, so the browser hides the
+    response; a preflight for a header outside the list (e.g. ``Authorization``) is refused."""
+    app = _app_with_test_routes(cors_origins="https://kb.example.com")
+    async with make_client(app) as client:
+        own = await client.get("/api/v1/health/live", headers={"Origin": "https://kb.example.com"})
+        foreign = await client.get("/api/v1/health/live", headers={"Origin": "https://evil.example"})
+        header = await client.options(
+            "/api/v1/health/live",
+            headers={
+                "Origin": "https://kb.example.com",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "Authorization",
+            },
+        )
+    assert own.headers["access-control-allow-origin"] == "https://kb.example.com"
+    assert own.headers["access-control-expose-headers"].lower() == "x-request-id"
+    assert "access-control-allow-origin" not in foreign.headers
+    assert foreign.headers["vary"] == "Origin"  # caches keep the answers per origin apart
+    assert header.status_code == 400
+
+
 # --- startup --------------------------------------------------------------------------------------------
 
 
