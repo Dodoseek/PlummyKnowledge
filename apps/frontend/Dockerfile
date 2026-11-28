@@ -9,7 +9,7 @@
 #           unprivileged (ports 8080/8443), read-only root filesystem with a tmpfs /tmp.
 
 ARG NODE_IMAGE=node:22-alpine
-ARG NGINX_IMAGE=nginxinc/nginx-unprivileged:1.29.3-alpine
+ARG NGINX_IMAGE=nginx:1.30.7-alpine3.24
 
 FROM ${NODE_IMAGE} AS deps
 WORKDIR /app
@@ -47,7 +47,8 @@ ENV NGINX_ENVSUBST_OUTPUT_DIR=/tmp/nginx-conf \
     PLUMMY_CLIENT_MAX_BODY_SIZE=60m \
     PLUMMY_STREAM_READ_TIMEOUT=660s
 USER root
-RUN rm -f /etc/nginx/conf.d/default.conf
+# Security updates of Alpine packages published after the tag was built (Trivy, SECURITY_MODEL §19).
+RUN apk upgrade --no-cache && rm -f /etc/nginx/conf.d/default.conf
 COPY deploy/nginx/nginx.conf /etc/nginx/nginx.conf
 COPY deploy/nginx/security-headers.conf deploy/nginx/proxy-api.conf /etc/nginx/plummy/
 COPY deploy/nginx/templates/ /etc/nginx/templates/

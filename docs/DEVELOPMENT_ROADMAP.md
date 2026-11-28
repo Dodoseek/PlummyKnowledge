@@ -291,7 +291,10 @@ security gate (проверки безопасности **внутри** фаз
   billion laughs на настоящем Docling, враждебные документы через pipeline и чат — SECURITY_MODEL §9, §10), 12.5
   (лимит `general` на пользователя и на IP без health и SSE-потока, `RATE_LIMIT_GENERAL_PER_MINUTE`; `https` в
   `CORS_ORIGINS` в production и тест ответов чужому origin; сквозной тест логов на DEBUG с маркерными значениями;
-  `GET /audit/events`, `GET /audit/events/{id}` и страница `/admin/audit` — SECURITY_MODEL §11–§14).
+  `GET /audit/events`, `GET /audit/events/{id}` и страница `/admin/audit` — SECURITY_MODEL §11–§14), 12.6 (Trivy
+  для всех образов production-стека в CI, `deploy/scripts/scan-images.sh`, исключения только для сторонних образов
+  с обоснованием и сроком; образы ставят обновления безопасности базового образа, pip удалён, `web` на официальном
+  `nginx` 1.30.7; `SECURITY.md` — поддерживаемые версии и проверка зависимостей и образов).
 - **Выход (вместе с Фазой 11):** **релиз 0.5.0**.
 
 ### Фаза 13 — Open-source release (§13)

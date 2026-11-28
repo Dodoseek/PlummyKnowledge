@@ -23,6 +23,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_PROJECT_ENVIRONMENT=/opt/venv \
     PYTHONPATH=/app/src \
     PATH=/opt/venv/bin:$PATH
+# Security updates of the base image's Debian packages published after the tag was built, and no pip: the
+# dependencies are installed by uv, and pip's vendored libraries would only be unused, unpatched code (Trivy,
+# SECURITY_MODEL §19).
+RUN apt-get update \
+    && apt-get upgrade --yes --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/* \
+    && python -m pip uninstall --yes --root-user-action=ignore pip
 RUN groupadd --system --gid 10001 app \
     && useradd --system --uid 10001 --gid app --no-create-home --shell /usr/sbin/nologin app \
     && install -d -m 0700 -o app -g app /var/lib/plummy/bootstrap /var/lib/plummy/secrets /var/lib/plummy/storage

@@ -148,7 +148,7 @@ jobs:
   production:
     name: Production stack (compose.prod.yaml, Nginx/TLS, S3, smoke)
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 45
     env:
       COMPOSE_PROJECT_NAME: plummy-prod
       COMPOSE_FILE: compose.prod.yaml:deploy/prod/smoke/compose.smoke.yaml
@@ -225,6 +225,10 @@ jobs:
           docker compose down --volumes
           sh deploy/scripts/restore.sh "$backup" --deletions "$RUNNER_TEMP/deletions.json"
           smoke verify-restore
+      # The images built and pulled above (SECURITY_MODEL §19): a fixable CRITICAL or HIGH vulnerability fails
+      # the job; exceptions for third-party images live in deploy/trivy/ with a reason and an expiry date.
+      - name: Container scan (Trivy, production images)
+        run: sh deploy/scripts/scan-images.sh
       - name: Service logs
         if: failure()
         run: docker compose logs --no-color --tail 200

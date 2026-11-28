@@ -454,7 +454,7 @@ Client secret Entra имеет срок действия: продлите ег�
 
 ## 8. TLS и Nginx (реализовано, шаг 11.2)
 
-Образ — таргет `web` в `apps/frontend/Dockerfile` (`nginx-unprivileged`, порты `8080`/`8443` внутри контейнера, статика
+Образ — таргет `web` в `apps/frontend/Dockerfile` (официальный `nginx` на Alpine от uid 101, порты `8080`/`8443` внутри контейнера, статика
 из `dist`), конфигурация — `deploy/nginx/`:
 
 - TLS 1.2/1.3, `ssl_session_tickets off`; порт 80 отвечает только `301` на HTTPS (и `/nginx-health` для healthcheck).

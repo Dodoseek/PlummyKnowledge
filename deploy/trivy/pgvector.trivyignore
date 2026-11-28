@@ -1,0 +1,43 @@
+# Exceptions for pgvector/pgvector (compose.prod.yaml), checked by deploy/scripts/scan-images.sh. Each entry:
+# the reason in a comment above it and an expiry date (exp:YYYY-MM-DD), after which Trivy reports the finding
+# again. Remove entries when the image tag is moved to a build without them.
+
+# gosu (usr/local/bin/gosu) is built with an old Go standard library. It only switches from root to the
+# postgres user and execs the server at start: it parses no certificates, URLs, MIME, XML or HTTP and opens
+# no connections, so none of these standard library vulnerabilities is reachable (the gosu maintainers'
+# position, https://github.com/tianon/gosu/blob/master/SECURITY.md). The image is the only Go binary.
+CVE-2025-61726 exp:2027-02-28
+CVE-2025-61729 exp:2027-02-28
+CVE-2025-68121 exp:2027-02-28
+CVE-2026-111943 exp:2027-02-28
+CVE-2026-25679 exp:2027-02-28
+CVE-2026-27145 exp:2027-02-28
+CVE-2026-32280 exp:2027-02-28
+CVE-2026-32281 exp:2027-02-28
+CVE-2026-32283 exp:2027-02-28
+CVE-2026-33811 exp:2027-02-28
+CVE-2026-33814 exp:2027-02-28
+CVE-2026-33818 exp:2027-02-28
+CVE-2026-39820 exp:2027-02-28
+CVE-2026-39821 exp:2027-02-28
+CVE-2026-39822 exp:2027-02-28
+CVE-2026-39836 exp:2027-02-28
+CVE-2026-42499 exp:2027-02-28
+CVE-2026-42504 exp:2027-02-28
+CVE-2026-56853 exp:2027-02-28
+CVE-2026-56858 exp:2027-02-28
+CVE-2026-56859 exp:2027-02-28
+CVE-2026-56860 exp:2027-02-28
+CVE-2026-56862 exp:2027-02-28
+CVE-2026-78667 exp:2027-02-28
+CVE-2026-78669 exp:2027-02-28
+CVE-2026-97031 exp:2027-02-28
+
+# Linux-PAM pam_namespace directory traversal: the container has no login, su or PAM-authenticated service;
+# PostgreSQL authenticates with scram-sha-256 (the image entrypoint with a password file), not PAM.
+CVE-2025-6020 exp:2027-02-28
+
+# zstd information disclosure via an uninitialized buffer when compressing, published 2026-11-24 after the
+# image was built: the stack does not compress with zstd (wal_compression is off, backup.sh writes pg_dump's
+# default gzip). Short expiry: the next pgvector build of the tag includes the Debian fix.
+CVE-2026-124851 exp:2026-12-31

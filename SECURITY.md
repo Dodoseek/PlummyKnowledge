@@ -7,11 +7,12 @@ PlummyKnowledge — self-hosted платформа: инсталляцию ра�
 
 | Версия | Исправления безопасности |
 |---|---|
-| 0.1.x | Да |
-| < 0.1.0 (`0.1.0-dev.N`) | Нет — обновитесь до релиза |
+| Последний выпущенный релиз (сейчас 0.4.x) | Да |
+| Предыдущие релизы (0.1.x) | Нет — обновитесь до последнего релиза ([DEPLOYMENT.md](docs/DEPLOYMENT.md), обновление) |
+| Сборки между релизами (`X.Y.Z-dev.N`) | Нет — для разработки и проверки |
 
-Production-профиль (Nginx, TLS, CSP) появится в Фазе 11 ([roadmap](docs/DEVELOPMENT_ROADMAP.md)); до этого
-выпуски предназначены для оценки и пилотов, а не для production.
+Production-профиль — `compose.prod.yaml` (Nginx, TLS, CSP, секреты файлами; [ADR-023](docs/adr/0023-production-deployment.md)).
+До релиза 1.0.0 ([roadmap](docs/DEVELOPMENT_ROADMAP.md)) контракты API могут меняться между минорными версиями.
 
 ## Как сообщить об уязвимости
 
@@ -38,3 +39,17 @@ Production-профиль (Nginx, TLS, CSP) появится в Фазе 11 ([ro
 пароли, отключённый TLS вопреки [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)), уязвимости в зависимостях без
 доказанного влияния на PlummyKnowledge (о них сообщайте авторам зависимости) и ответы модели, которые не выходят за
 пределы данных, доступных пользователю.
+
+## Как мы проверяем зависимости и образы
+
+- **Зависимости:** `pip-audit` (uv.lock) и `npm audit` на каждом push и pull request, dependency review новых
+  зависимостей в pull request, Dependabot для Python, npm, GitHub Actions, Docker и Compose
+  ([.github/workflows/ci.yml](.github/workflows/ci.yml)).
+- **Образы:** Trivy (версия и digest зафиксированы) проверяет все образы production-стека — собственные `backend`,
+  `worker-ingestion`, `web` и сторонние PostgreSQL/pgvector, Redis, S3-сервер. CI не проходит при уязвимости
+  уровня CRITICAL или HIGH, для которой есть исправленная версия. Собственные образы при сборке получают обновления
+  безопасности базового образа и не содержат pip. Исключения допускаются только для сторонних образов — в
+  `deploy/trivy/<образ>.trivyignore`, каждое с обоснованием и сроком (не дальше года), после которого находка снова
+  останавливает CI ([SECURITY_MODEL.md](docs/SECURITY_MODEL.md) §19).
+- Проверить свою инсталляцию: `sh deploy/scripts/scan-images.sh` на сервере после `docker compose pull` и
+  `docker compose build` (нужен доступ к Docker и к базе уязвимостей Trivy).

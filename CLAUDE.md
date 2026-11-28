@@ -61,7 +61,8 @@ runtime-роль сервисов (`plummy_app`, только DML, `audit_logs` 
 audit `maintenance prune-audit`; threat model пересмотрена (SECURITY_MODEL §17); инвентаризация маршрутов и
 матрица ролей (`tests/route_inventory.py`, SECURITY_MODEL §3.6) — новый маршрут нужно внести в таблицу;
 трассировка SC-01…SC-09 (`tests/security_scenarios.py`); враждебные файлы (`unsafe_content` при DTD в OOXML); общий
-лимит `general`, сквозной тест логов, журнал аудита `GET /audit/events` и страница `/admin/audit`. Application Settings ещё нет ([DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md)).
+лимит `general`, сквозной тест логов, журнал аудита `GET /audit/events` и страница `/admin/audit`; Trivy для
+образов production-стека (`deploy/scripts/scan-images.sh`, исключения — `deploy/trivy/`). Application Settings ещё нет ([DEVELOPMENT_ROADMAP.md](docs/DEVELOPMENT_ROADMAP.md)).
 Не начинать Google OAuth, Microsoft Graph и сложный RAG до стабильного запуска каркаса.
 
 ## Приоритет источников
@@ -274,6 +275,7 @@ docker compose up -d --build frontend                          # после из
 docker compose build worker-ingestion                          # образ с Docling и моделями (~4 ГБ)
 docker compose run --rm --no-deps worker-ingestion pytest -p no:cacheprovider tests/ingestion tests/unit/test_isolated_parser.py
 python3 scripts/check_secrets.py                               # secret scan всех tracked-файлов
+sh deploy/scripts/scan-images.sh                               # Trivy: образы compose.prod.yaml (нужно окружение prod)
 python3 -m unittest discover -s scripts/tests                  # тесты scripts/
 ```
 

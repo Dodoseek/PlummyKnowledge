@@ -647,7 +647,7 @@ append-only обеспечивает runtime-роль без `UPDATE`/`DELETE` �
 | Обход сетевой политики администратором приложения | Allowlist только в Instance Settings, нет API изменения (ADR-007) | SC-02 | 12.3 (выполнен): SC-прогон, §18.2 |
 | Доступ к ассистенту без доступа ко всем его KB | ADR-005, проверка на каждом запросе | SC-01 (`test_assistant_access.py`, `test_chat_stream.py`) | 12.3 (выполнен): SC-прогон, §18.2 |
 | Чрезмерные OAuth permissions | Минимальные scopes, фактические scopes в UI, предупреждение о широте токена (§15) | `test_microsoft_sources_api.py`, E2E `drive.spec.ts`, `microsoft.spec.ts` | — (Selected permissions — отдельный ADR при потребности) |
-| Уязвимые зависимости и образы | pip-audit, npm audit, Dependabot, dependency review в CI | CI | 12.6: Trivy для production-образов |
+| Уязвимые зависимости и образы | pip-audit, npm audit, Dependabot, dependency review в CI | CI: `scan-images.sh` (Trivy), `test_image_scan.py` | 12.6 (выполнен): Trivy для всех образов production-стека (§19) |
 | Компрометация backup | Ключ шифрования и setup token не попадают в backup (`backup.sh` отказывается), каталог `0700`, checksums в manifest (ADR-023 §6) | Restore drill в CI | — |
 
 ## 18. Обязательные security-тесты (§12)
@@ -722,9 +722,13 @@ Backend-тесты всех сценариев запускаются одной
 ## 19. Процессы (§12, §13 Фаза 12, §20)
 
 - **Definition of Done** включает security review (§12).
-- **Dependency и container scanning** в CI (§13 Фаза 12): pip-audit, npm audit, Dependabot и dependency review
-  (реализовано); Trivy для production-образов — шаг 12.6 (сбой на CRITICAL/HIGH, для которых есть исправление;
-  исключения — в `.trivyignore` с причиной и сроком).
+- **Dependency и container scanning** в CI (§13 Фаза 12): pip-audit, npm audit, Dependabot и dependency review;
+  Trivy (версия и digest зафиксированы) для всех образов `compose.prod.yaml` — `deploy/scripts/scan-images.sh` в
+  CI-job «Production stack» (реализовано, шаг 12.6): сбой на CRITICAL/HIGH, для которых есть исправленная версия.
+  Собственные образы (`backend`, `worker-ingestion`, `web`) исключений не имеют: при сборке они ставят обновления
+  безопасности базового образа, pip из них удалён. Исключения для сторонних образов — `deploy/trivy/<образ>.trivyignore`,
+  каждое с обоснованием в комментарии и сроком `exp:` не дальше года (`scripts/tests/test_image_scan.py`); по
+  истечении срока находка снова останавливает CI. Скрипт можно запустить на сервере инсталляции.
 - **Security reporting:** `SECURITY.md` с процессом ответственного раскрытия (§4, §13 Фаза 13).
 - **Перед релизом** (§20): нет известных critical/high issues; тесты изоляции KB/пользователей и permission tests проходят; secrets
   не попадают в logs/API responses; upload/parser limits и ingestion idempotency работают; deleted docs исключены

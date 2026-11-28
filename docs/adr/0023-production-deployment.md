@@ -151,7 +151,7 @@ drill), 11.5 (retention, security gate).
 **Шаг 11.2 (реализовано).**
 
 - `compose.prod.yaml`, `deploy/prod/` (`init-secrets.sh`, `postgres-initdb/`, `s3-init.sh`, `plummy.toml`,
-  `prod.env.example`), `deploy/nginx/` и таргет `web` в `apps/frontend/Dockerfile` (`nginx-unprivileged`, порты 8080/8443
+  `prod.env.example`), `deploy/nginx/` и таргет `web` в `apps/frontend/Dockerfile` (`nginx-unprivileged`, с шага 12.6 — официальный `nginx` от uid 101; порты 8080/8443
   в контейнере). Порядок установки — [DEPLOYMENT.md §1.1](../DEPLOYMENT.md).
 - **`PROCESS_ROLE`** (`api`, `worker`, `ingestion`, `scheduler`, `migrate`): раньше `production` требовал
   `SECRET_KEY`, `PUBLIC_URL` и key ring от каждого процесса, что противоречило §3. Теперь их требуют только `api` и
@@ -232,6 +232,13 @@ drill), 11.5 (retention, security gate).
 
 Остаётся на Фазу 12: retention audit logs (отдельная роль БД), полный прогон SC-01…SC-09, сканирование
 образов и зависимостей контейнеров.
+
+**Изменение в шаге 12.6 (сканирование образов).** Базовый образ таргета `web` — официальный `nginx` (Alpine) вместо
+`nginx-unprivileged`: исправленная версия nginx (CRITICAL-уязвимости от 2026-11-18) вышла в официальном образе
+раньше. Конфигурация `deploy/nginx/` от образа не зависела (pid и временные файлы в `/tmp`, без директивы `user`,
+порты 8080/8443), процесс по-прежнему работает от uid 101 на read-only файловой системе. Оба собственных образа при
+сборке ставят обновления безопасности пакетов базового образа (`apt-get upgrade`, `apk upgrade`), из backend-образов
+удалён pip. Сканирование — `deploy/scripts/scan-images.sh` в CI-job «Production stack» (SECURITY_MODEL §19).
 
 ## Related documents
 
