@@ -132,3 +132,10 @@ ROLE_MATRIX: dict[SystemRole, set[Permission]] = {
 
 def test_system_roles_match_the_documented_matrix() -> None:
     assert {role: set(permissions) for role, permissions in SYSTEM_ROLE_PERMISSIONS.items()} == ROLE_MATRIX
+
+
+def test_sc02_no_route_changes_instance_settings(routes: list[Found]) -> None:
+    """SC-02: Instance Settings, the network allowlist among them, are read-only through the API (ADR-006)."""
+    for route in routes:
+        if route.path.startswith((f"{V1}/system", f"{V1}/settings")):
+            assert (route.method, route.path) == ("GET", f"{V1}/system/settings")

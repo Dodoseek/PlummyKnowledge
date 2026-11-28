@@ -594,14 +594,14 @@ append-only обеспечивает runtime-роль без `UPDATE`/`DELETE` �
 
 | Угроза (§8) | Меры (реализовано) | Проверка | Фаза 12 |
 |---|---|---|---|
-| Утечка между KB / пользователями | Контекст из сессии; фильтры доступа к KB, документам и версиям в SQL до retrieval и LLM; jobs заново загружают ресурс и проверяют состояние; `404` без раскрытия существования. RLS нет (§5 п.6, §20) | SC-05, `test_authorization.py`, `test_rbac_matrix.py` и `test_route_inventory.py` (§3.6), `test_source_viewer.py`, `test_conversations_api.py`, E2E `access.spec.ts` | 12.2 (выполнен): инвентаризация маршрутов и матрица ролей, расхождений нет; 12.3: SC-прогон |
+| Утечка между KB / пользователями | Контекст из сессии; фильтры доступа к KB, документам и версиям в SQL до retrieval и LLM; jobs заново загружают ресурс и проверяют состояние; `404` без раскрытия существования. RLS нет (§5 п.6, §20) | SC-05, `test_authorization.py`, `test_rbac_matrix.py` и `test_route_inventory.py` (§3.6), `test_source_viewer.py`, `test_conversations_api.py`, E2E `access.spec.ts` | 12.2 (выполнен): инвентаризация маршрутов и матрица ролей, расхождений нет; 12.3 (выполнен): SC-прогон, §18.2 |
 | Утечка между организациями | Одна организация на инсталляцию (ADR-012): отдельные БД, storage, ключи | Не применимо внутри инсталляции | — |
 | RBAC bypass | `require_permission` и policy в каждом use case, deny by default, frontend не boundary | Negative RBAC tests по модулям (`tests/integration/rbac.py`); инвентаризация и матрица ролей (§3.6) | 12.2 (выполнен): тест падает, если маршрут не описан в таблице прав; `401` без сессии, `403` без права и в use case без проверки маршрута |
 | Потеря управления и эскалация через управление пользователями | Последний активный администратор защищён блокировкой строки роли `admin`; запрет отключать/удалять себя; роли при создании — только с `roles.assign` (§3.1) | Тесты последнего администратора, в том числе параллельные | — |
 | Перехват ссылки активации | Токен во фрагменте URL, только SHA-256 в БД, 72 ч, одноразовость под блокировкой, лимит на IP (ADR-015) | Тесты повторной, параллельной, истёкшей и перевыпущенной активации | — |
 | Утечка API keys / OAuth tokens | AES-256-GCM, key ring вне БД и вне backup, write-only API, redaction ошибок, нет в prompt (ADR-016) | `test_secrets.py`, тесты API провайдеров и источников, E2E: токены фейковых Google/Microsoft не попадают в страницу | 12.5: сквозной тест логов на DEBUG |
 | Подмена или удаление audit log, DDL при компрометации API/worker | Runtime-роль сервисов без DDL, `TRUNCATE`, `TEMPORARY` и без `UPDATE`/`DELETE` на `audit_logs`; владелец схемы — только у `migrate`; единственный путь к DDL — две функции `SECURITY DEFINER` для HNSW-индексов профиля (ADR-024 §2.1); отказ старта в production с ролью владельца; retention — CLI владельца ([ADR-024](adr/0024-database-owner-and-runtime-roles.md), шаг 12.1) | `test_database_roles.py`, `checks.sh` в CI (роли подключений и права runtime-роли) | — (закрыто в 12.1) |
-| SSRF | `SafeHttpClient`: валидация URL и IP, запрет private/metadata/loopback, allowlist в Instance Settings, pinning адреса, проверка redirect (ADR-007); сегментация сетей Compose | `test_safe_http_client.py`, `test_safe_http_redirects.py`, `test_network_policy.py`, `test_network_egress.py` (SC-06, SC-07) | 12.3: SC-прогон |
+| SSRF | `SafeHttpClient`: валидация URL и IP, запрет private/metadata/loopback, allowlist в Instance Settings, pinning адреса, проверка redirect (ADR-007); сегментация сетей Compose | `test_safe_http_client.py`, `test_safe_http_redirects.py`, `test_network_policy.py`, `test_network_egress.py` (SC-06, SC-07) | 12.3 (выполнен): SC-прогон, §18.2 |
 | Malicious uploads / parser exploits | Quarantine, magic bytes, отказ от macro-enabled, лимиты размера/страниц/листов/строк, парсер в отдельном контейнере без сети и секретов, процесс с rlimits и timeout | `test_file_inspection.py`, `test_isolated_parser.py`, `test_document_upload.py` | 12.4: XXE и billion laughs в DOCX/XLSX, вложенные архивы, polyglot, несовпадение MIME — в `worker-ingestion` |
 | Archive bombs | Лимиты числа записей, распакованного размера и коэффициента сжатия ZIP | `test_file_inspection.py` | 12.4: вложенные архивы |
 | Prompt injection | Документы — данные в блоке `<documents>`; нет tools; system rules первыми; citation IDs выдаёт и фильтрует backend; Markdown без HTML и без загрузки изображений | SC-08: `test_retrieval_context.py`, `test_chat_stream.py`, `test_source_sync.py` | 12.4: набор враждебных документов через весь pipeline |
@@ -612,9 +612,9 @@ append-only обеспечивает runtime-роль без `UPDATE`/`DELETE` �
 | Resource exhaustion | Лимиты login, setup, activation, upload, chat, provider_test, search, sync, expensive; семафор генераций; лимиты парсинга; pools и timeouts | `test_rate_limiter.py`, `test_generation_control.py` | 12.5: общий лимит `general` |
 | Утечки через логи | Запрет payload-логирования, redaction | `test_chat_security_gate.py` (чат), `test_logging_and_version.py` | 12.5: сквозной тест загрузки, провайдеров и коннекторов на DEBUG |
 | Ошибки удаления | Немедленное исключение из retrieval, purge, retention версий, повторное применение удалений после restore (ADR-023 §6) | «deleted docs не находятся», `test_restore_deletions.py`, restore drill в CI | — |
-| Захват неинициализированной инсталляции | Bootstrap token, атомарная инициализация, флаг без сброса через API, CLI-восстановление (ADR-006) | SC-03, SC-04 (`test_setup_api.py`) | 12.3: SC-прогон |
-| Обход сетевой политики администратором приложения | Allowlist только в Instance Settings, нет API изменения (ADR-007) | SC-02 | 12.3: SC-прогон |
-| Доступ к ассистенту без доступа ко всем его KB | ADR-005, проверка на каждом запросе | SC-01 (`test_assistant_access.py`, `test_chat_stream.py`) | 12.3: SC-прогон |
+| Захват неинициализированной инсталляции | Bootstrap token, атомарная инициализация, флаг без сброса через API, CLI-восстановление (ADR-006) | SC-03, SC-04 (`test_setup_api.py`) | 12.3 (выполнен): SC-прогон, §18.2 |
+| Обход сетевой политики администратором приложения | Allowlist только в Instance Settings, нет API изменения (ADR-007) | SC-02 | 12.3 (выполнен): SC-прогон, §18.2 |
+| Доступ к ассистенту без доступа ко всем его KB | ADR-005, проверка на каждом запросе | SC-01 (`test_assistant_access.py`, `test_chat_stream.py`) | 12.3 (выполнен): SC-прогон, §18.2 |
 | Чрезмерные OAuth permissions | Минимальные scopes, фактические scopes в UI, предупреждение о широте токена (§15) | `test_microsoft_sources_api.py`, E2E `drive.spec.ts`, `microsoft.spec.ts` | — (Selected permissions — отдельный ADR при потребности) |
 | Уязвимые зависимости и образы | pip-audit, npm audit, Dependabot, dependency review в CI | CI | 12.6: Trivy для production-образов |
 | Компрометация backup | Ключ шифрования и setup token не попадают в backup (`backup.sh` отказывается), каталог `0700`, checksums в manifest (ADR-023 §6) | Restore drill в CI | — |
@@ -658,6 +658,35 @@ restart, interrupted sync.
 | SC-07 | Разрешённый hostname после DNS-разрешения указывает на запрещённый адрес (вне `allowed_cidrs`, metadata, loopback) | Соединение не устанавливается; `egress_denied`; `network.egress.denied` в audit; повторного DNS-разрешения нет | ADR-007 | 4 |
 | SC-08 | Внешний документ содержит prompt injection | Инструкции из документа не меняют правила; модель без tools; выдуманные citation IDs отклоняются; внешние изображения в ответе не загружаются; секреты в prompt отсутствуют | §10, ADR-008 | 6, 9 |
 | SC-09 | Повторная задача ingestion для уже обработанной версии | Job завершается `succeeded` с `result = skipped_already_processed`; число chunks и embeddings не меняется; при гонке двух jobs дубликатов нет (unique + lock) | ADR-008 | 5 |
+
+### 18.2 Трассировка и прогон (шаг 12.3)
+
+Каждый пункт ожидаемого поведения SC-01…SC-09 связан с тестами в
+`apps/backend/tests/security_scenarios.py`. Тест `scripts/tests/test_security_scenarios.py` (CI-job «Repository»)
+проверяет, что набор сценариев совпадает с §18.1, у каждого пункта есть тесты и каждый указанный тест существует.
+Backend-тесты всех сценариев запускаются одной командой в контейнере backend:
+`pytest $(python -m tests.security_scenarios)`.
+
+| ID | Чем проверено |
+|---|---|
+| SC-01 | `test_assistant_access.py` (список и карточка), `test_chat_stream.py` (`404`, `403 assistant_unavailable`, до модели не доходит ни один запрос), E2E `access.spec.ts` |
+| SC-02 | `test_route_inventory.py` (кроме `GET /system/settings`, маршрутов `/system` и `/settings` нет), `test_groups_api.py` (`PATCH` → `405`), `test_providers_api.py` (`422 endpoint_not_allowed`). Пункт о `PATCH /settings` → `422` не применим: Application Settings ещё нет, маршрута нет |
+| SC-03 | `test_setup_api.py`: `409` с любым токеном после инициализации, `403` до неё; событие `setup.initialize.rejected` в обоих случаях |
+| SC-04 | `test_setup_api.py`: параллельная инициализация, откат при сбое |
+| SC-05 | `test_documents_api.py`, `test_rbac_matrix.py` (все маршруты KB и документов), `test_source_viewer.py`, `test_retrieval.py`, E2E `access.spec.ts` |
+| SC-06 | `test_network_egress.py`, `test_safe_http_client.py`, contract `test_ai_providers.py`, `test_providers_api.py` |
+| SC-07 | `test_safe_http_client.py` (адрес после DNS, DNS rebinding), `test_network_egress.py` (`network.egress.denied`) |
+| SC-08 | `test_retrieval_context.py`, `test_source_sync.py`, contract `test_ai_providers.py` (без tools), `test_chat_stream.py` (citation IDs), frontend `AnswerMarkdown.test.tsx` (без изображений и HTML) |
+| SC-09 | `test_indexing.py`: повтор и гонка jobs |
+
+Прогон 12.3 (2026-11-28): backend — 52 passed; frontend `AnswerMarkdown.test.tsx` — 8 passed; E2E `access.spec.ts`
+— в CI-job «E2E». В ходе прогона добавлены тесты:
+
+- SC-01 через чат: ассистент на двух KB при доступе к одной из них;
+- SC-02: в инвентаризации нет маршрутов, меняющих Instance Settings;
+- SC-03: событие `setup.initialize.rejected` после инициализации.
+
+Расхождений с реализацией не найдено.
 
 ## 19. Процессы (§12, §13 Фаза 12, §20)
 

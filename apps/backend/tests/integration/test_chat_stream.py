@@ -336,6 +336,22 @@ async def test_an_assistant_the_caller_cannot_use(chat: Chat) -> None:
     assert await env.harness.sql("SELECT count(*) FROM messages") == [(2,)]
 
 
+async def test_sc01_an_assistant_on_two_knowledge_bases_needs_read_on_both(chat: Chat) -> None:
+    """SC-01 in the chat: read on HR only; the assistant on HR and IT answers nothing and calls no model."""
+    env = chat.env
+    both = await create(env, name="Both", knowledge_base_ids=[env.hr, env.it])
+    problem(await send(chat, assistant_id=both["id"]), 404, "not_found")
+    assert chat.llm.requests == []
+    # With IT granted the conversation starts; IT taken away again, the conversation stops with 403.
+    await grant_read(env, env.it, chat.member_id)
+    start = named(events(await send(chat, assistant_id=both["id"])), "message_start")[0]
+    assert len(chat.llm.requests) == 1
+    await grant_read(env, env.it)
+    response = await send(chat, conversation_id=start["conversation_id"], assistant_id=None)
+    problem(response, 403, "assistant_unavailable")
+    assert len(chat.llm.requests) == 1
+
+
 async def test_a_disabled_assistant_stops_an_existing_conversation(chat: Chat) -> None:
     start = named(events(await send(chat)), "message_start")[0]
     updated = await chat.env.admin.patch(f"/api/v1/assistants/{chat.assistant}", json={"status": "disabled"})

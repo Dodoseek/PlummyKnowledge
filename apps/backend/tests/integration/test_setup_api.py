@@ -85,7 +85,11 @@ async def test_repeated_initialization_is_rejected_with_any_token(harness: Harne
     assert same_token.status_code == 409
     assert same_token.json()["code"] == "setup_already_completed"
     assert wrong_token.status_code == 409
+    assert wrong_token.json()["code"] == "setup_already_completed"
     assert await harness.sql("SELECT count(*) FROM users") == [(1,)]
+    # SC-03: every attempt is recorded.
+    rejected = await harness.sql("SELECT details FROM audit_logs WHERE action = 'setup.initialize.rejected'")
+    assert rejected == [({"reason": "already_completed"},)] * 2
 
 
 async def test_reissuing_token_after_initialization_does_not_reopen_setup(harness: Harness) -> None:

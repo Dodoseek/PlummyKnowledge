@@ -285,7 +285,8 @@ security gate (проверки безопасности **внутри** фаз
   `maintenance prune-audit` по таймеру хоста, `deploy/scripts/split-db-roles.sh`, upgrade path с `v0.4.0` через
   него в CI; весь набор integration-тестов работает под runtime-ролью) и 12.2 (таблица всех маршрутов с видом
   доступа — SECURITY_MODEL §3.6, тест инвентаризации и матрица ролей, уровней доступа к KB, личных данных и CSRF на
-  настоящих PostgreSQL и Redis; расхождений не найдено).
+  настоящих PostgreSQL и Redis; расхождений не найдено), 12.3 (трассировка SC-01…SC-09 к тестам —
+  SECURITY_MODEL §18.2, `tests/security_scenarios.py` с проверкой ссылок в CI, прогон сценариев).
 - **Выход (вместе с Фазой 11):** **релиз 0.5.0**.
 
 ### Фаза 13 — Open-source release (§13)
