@@ -332,7 +332,9 @@ security gate (проверки безопасности **внутри** фаз
 
 **Версии ([ADR-009](adr/0009-automatic-versioning.md)).** Между релизами каждый коммит автоматически повышает
 `VERSION`: `0.1.0-dev.1`, `0.1.0-dev.2`, … Релиз выпускается командой `python3 scripts/version.py release`
-(→ `0.1.0`, тег `v0.1.0`), после чего разработка продолжается с `0.2.0-dev.1`. Номера релизов остаются привязанными
+(→ `0.1.0`, тег `v0.1.0`), после чего разработка продолжается с `0.2.0-dev.1`. С шага 13.2 `release` переносит
+раздел `Unreleased` [CHANGELOG.md](../CHANGELOG.md) в раздел версии, а workflow `release.yml` по пушу тега создаёт
+GitHub Release с этим текстом ([ADR-025](adr/0025-semver-and-contract-stability.md) §5). Номера релизов остаются привязанными
 к таблице выше. В Фазе 1 версия backend, frontend и Docker-образов берётся из `VERSION`, а CI проверяет её рост
 (`python3 scripts/version.py check`).
 

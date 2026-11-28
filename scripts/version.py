@@ -11,7 +11,9 @@ Commands:
     show                 print the current version
     bump                 next development version; called by the pre-commit hook
     sync-index           re-stage VERSION after `git commit <paths>`; called by the post-commit hook
-    release              X.Y.Z-dev.N -> X.Y.Z, commit and annotated tag vX.Y.Z
+    release              X.Y.Z-dev.N -> X.Y.Z, move CHANGELOG `Unreleased` into the release section,
+                         commit and annotated tag vX.Y.Z (docs/adr/0025-semver-and-contract-stability.md)
+    notes X.Y.Z          print the CHANGELOG section of release X.Y.Z (GitHub Release text)
     set VERSION          set a new target manually (must be greater than the current one)
     check [--against R]  validate VERSION and ensure it is greater than in revision R
     merge O A B          git merge driver: result = next(max(A, B))
@@ -21,6 +23,7 @@ Uses only the Python standard library.
 from __future__ import annotations
 
 import argparse
+import datetime
 import os
 import re
 import subprocess
@@ -29,6 +32,11 @@ from pathlib import Path
 from typing import NamedTuple, Optional
 
 VERSION_FILE = "VERSION"
+CHANGELOG_FILE = "CHANGELOG.md"
+UNRELEASED = "Unreleased"
+_SECTION = re.compile(r"^## \[(?P<name>[^\]]+)\].*$", re.MULTILINE)
+_LINK = re.compile(r"^\[[^\]]+\]: \S+$", re.MULTILINE)
+_UNRELEASED_LINK = re.compile(r"^\[Unreleased\]: (?P<base>\S+)/compare/(?P<previous>\S+)\.\.\.HEAD$", re.MULTILINE)
 SKIP_ENV = "PLUMMY_SKIP_VERSION_BUMP"
 _PATTERN = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-dev\.(0|[1-9]\d*))?$"
@@ -77,6 +85,71 @@ class Version(NamedTuple):
 
 class CommandError(Exception):
     pass
+
+
+def _section_bounds(text: str, name: str) -> Optional[tuple[int, int, int]]:
+    """(heading start, body start, body end) of ``## [name]``; the body ends at the next section or links."""
+    sections = list(_SECTION.finditer(text))
+    for index, match in enumerate(sections):
+        if match.group("name") != name:
+            continue
+        end = sections[index + 1].start() if index + 1 < len(sections) else len(text)
+        link = _LINK.search(text, match.end(), end)
+        return match.start(), match.end(), link.start() if link else end
+    return None
+
+
+def _without_empty_groups(body: str) -> str:
+    """Drop ``### Group`` headings that have no entries under them."""
+    kept: list[str] = []
+    for block in re.split(r"(?m)^(?=### )", body):
+        lines = [line for line in block.strip("\n").splitlines()]
+        if lines and lines[0].startswith("### ") and not any(line.strip() for line in lines[1:]):
+            continue
+        if any(line.strip() for line in lines):
+            kept.append("\n".join(lines))
+    return "\n\n".join(kept)
+
+
+def changelog_release(text: str, version: Version, date: datetime.date) -> str:
+    """CHANGELOG text with the entries of ``Unreleased`` moved into the section of ``version``."""
+    if _section_bounds(text, str(version)) is not None:
+        raise CommandError(f"{CHANGELOG_FILE} already has a section for {version}")
+    bounds = _section_bounds(text, UNRELEASED)
+    if bounds is None:
+        raise CommandError(f"{CHANGELOG_FILE} has no '## [{UNRELEASED}]' section")
+    start, body_start, body_end = bounds
+    body = _without_empty_groups(text[body_start:body_end])
+    if not re.search(r"(?m)^\s*[-*] \S", body):
+        raise CommandError(
+            f"'{UNRELEASED}' in {CHANGELOG_FILE} has no entries: describe the release before tagging it"
+        )
+    rest = text[body_end:].lstrip("\n")
+    released = f"## [{UNRELEASED}]\n\n## [{version}] - {date.isoformat()}\n\n{body}\n"
+    result = text[:start] + released + ("\n" + rest if rest else "")
+    link = _UNRELEASED_LINK.search(result)
+    if link:
+        base, previous = link.group("base"), link.group("previous")
+        result = (
+            result[: link.start()]
+            + f"[{UNRELEASED}]: {base}/compare/v{version}...HEAD\n"
+            + f"[{version}]: {base}/compare/{previous}...v{version}"
+            + result[link.end() :]
+        )
+    return result
+
+
+def changelog_notes(text: str, version: str) -> str:
+    """Body of the CHANGELOG section of release ``version``."""
+    Version.parse(version)
+    bounds = _section_bounds(text, version)
+    if bounds is None:
+        raise CommandError(f"{CHANGELOG_FILE} has no section for {version}")
+    _, body_start, body_end = bounds
+    body = text[body_start:body_end].strip("\n")
+    if not body:
+        raise CommandError(f"the {CHANGELOG_FILE} section for {version} is empty")
+    return body + "\n"
 
 
 def _git(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -180,14 +253,30 @@ def cmd_release(args: argparse.Namespace) -> int:
     tag = f"v{release}"
     if _git("rev-parse", "-q", "--verify", f"refs/tags/{tag}", check=False).returncode == 0:
         raise CommandError(f"tag {tag} already exists")
+    changelog_path = _repo_root() / CHANGELOG_FILE
+    if not changelog_path.exists():
+        raise CommandError(f"{CHANGELOG_FILE} not found: a release needs release notes (ADR-025 §5)")
+    changelog = changelog_release(
+        changelog_path.read_text(encoding="utf-8"), release, datetime.datetime.now(datetime.timezone.utc).date()
+    )
     if args.dry_run:
         print(f"release: {current} -> {release} (tag {tag}) [dry run]")
         return 0
+    changelog_path.write_text(changelog, encoding="utf-8")
+    _git("add", "--", CHANGELOG_FILE)
     _write_version(release, stage=True)
     _git("commit", "-m", f"chore(release): {tag}")
     _git("tag", "-a", tag, "-m", f"PlummyKnowledge {tag}")
     print(f"release: {current} -> {release}, tag {tag} created")
     print(f"publish with: git push origin HEAD {tag}")
+    return 0
+
+
+def cmd_notes(args: argparse.Namespace) -> int:
+    path = _repo_root() / CHANGELOG_FILE
+    if not path.exists():
+        raise CommandError(f"{CHANGELOG_FILE} not found")
+    sys.stdout.write(changelog_notes(path.read_text(encoding="utf-8"), args.version))
     return 0
 
 
@@ -244,6 +333,9 @@ def build_parser() -> argparse.ArgumentParser:
     release = sub.add_parser("release", help="X.Y.Z-dev.N -> X.Y.Z, commit and tag")
     release.add_argument("--dry-run", action="store_true")
     release.set_defaults(func=cmd_release)
+    notes = sub.add_parser("notes", help="print the CHANGELOG section of a release")
+    notes.add_argument("version")
+    notes.set_defaults(func=cmd_notes)
     set_cmd = sub.add_parser("set", help="set a new version manually")
     set_cmd.add_argument("version")
     set_cmd.set_defaults(func=cmd_set)

@@ -224,6 +224,10 @@ CLAUDE.md, VERSION, README.md, LICENSE, NOTICE, CONTRIBUTING.md, SECURITY.md
 - Не редактировать `VERSION` вручную и не обходить hook (`--no-verify`) без явной просьбы владельца.
 - Релиз и смена целевой версии — только по решению владельца: `python3 scripts/version.py release`,
   `python3 scripts/version.py set <version>`.
+- [ADR-025](docs/adr/0025-semver-and-contract-stability.md): изменение, заметное администратору, пользователю или
+  интегратору, дополняет раздел `Unreleased` в [CHANGELOG.md](CHANGELOG.md) (Keep a Changelog) в том же коммите;
+  `release` переносит его в раздел версии и отказывает, если он пуст; пуш тега создаёт GitHub Release
+  (`.github/workflows/release.yml`).
 
 ## Команды
 
@@ -233,7 +237,8 @@ CLAUDE.md, VERSION, README.md, LICENSE, NOTICE, CONTRIBUTING.md, SECURITY.md
 sh scripts/setup-git-hooks.sh          # один раз на клон: hooks и merge-driver версии
 python3 scripts/version.py show        # текущая версия
 python3 scripts/version.py check       # VERSION валиден и больше, чем в HEAD~1
-python3 scripts/version.py release     # релиз X.Y.Z + тег vX.Y.Z (только по решению владельца)
+python3 scripts/version.py release     # релиз X.Y.Z + CHANGELOG + тег vX.Y.Z (только по решению владельца)
+python3 scripts/version.py notes X.Y.Z # раздел CHANGELOG релиза (текст GitHub Release)
 ```
 
 Среда разработки (из корня репозитория):

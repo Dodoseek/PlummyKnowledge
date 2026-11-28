@@ -21,6 +21,8 @@ XLSX/CSV и RAG, 0.3.0 — Google Drive, 0.4.0 — Microsoft 365, 0.5.0 — hard
    - после релиза `X.Y.Z` → `X.(Y+1).0-dev.1`.
 4. **Релиз** — явное действие владельца: `scripts/version.py release` превращает `X.Y.Z-dev.N` в `X.Y.Z`, создаёт
    коммит `chore(release): vX.Y.Z` и аннотированный тег `vX.Y.Z`. Публикация — `git push origin HEAD vX.Y.Z`.
+   С [ADR-025](0025-semver-and-contract-stability.md) `release` также переносит `Unreleased` из `CHANGELOG.md` в
+   раздел версии (пустой `Unreleased` — отказ), а пуш тега создаёт GitHub Release.
 5. **Другая цель** (например, patch-релиз или 1.0.0): `scripts/version.py set <version>`; версия должна быть больше
    текущей, следующий коммит её сохраняет.
 6. **Слияния:** `VERSION` меняют обе ветки, поэтому в `.gitattributes` подключён merge-driver: результат =

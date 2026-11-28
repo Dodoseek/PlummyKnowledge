@@ -117,6 +117,15 @@ CHANGELOG и SECURITY.md сообщают, какие версии получа�
 Шаги Фазы 13 ([DEVELOPMENT_ROADMAP.md](../DEVELOPMENT_ROADMAP.md)): 13.1 — стабилизация контрактов и snapshot
 OpenAPI; 13.2 — CHANGELOG, `version.py release` с CHANGELOG, workflow GitHub Release.
 
+- §6 (13.1): snapshot — `apps/backend/tests/contract/openapi.snapshot.json`, тест `test_openapi_snapshot.py`;
+  сравнение с последним релизным тегом — `scripts/openapi_compat.py` (тест `scripts/tests/test_openapi_compatibility.py`,
+  пропускается, пока ни один тег не содержит snapshot); таблицы API_CONTRACTS сверяются со snapshot
+  (`scripts/tests/test_api_contracts_doc.py`), нереализованное помечено **Вне 1.0**.
+- §5 (13.2): `CHANGELOG.md`; `version.py release` переносит `Unreleased` и обновляет compare-ссылки,
+  `version.py notes X.Y.Z` печатает раздел; `.github/workflows/release.yml` — по пушу тега `vX.Y.Z` или вручную
+  (`workflow_dispatch`) для уже существующего тега, текст — из `CHANGELOG.md` ветки запуска; повторный запуск
+  обновляет текст. Права workflow — только `contents: write`.
+
 ## Related documents
 
 [ADR-009](0009-automatic-versioning.md) · [ADR-023](0023-production-deployment.md) §6 ·

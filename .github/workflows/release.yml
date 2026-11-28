@@ -1,0 +1,55 @@
+# GitHub Release for a release tag (ADR-025 §5). The text is the tag's section of CHANGELOG.md.
+#
+# - push of a tag vX.Y.Z (after `python3 scripts/version.py release` and `git push origin HEAD vX.Y.Z`);
+# - workflow_dispatch with an existing tag: notes are taken from CHANGELOG.md of the branch the workflow runs
+#   on, so releases tagged before CHANGELOG.md existed can be published too. Re-running updates the notes.
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag (vX.Y.Z)
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: GitHub Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check the tag
+        run: |
+          printf '%s\n' "$TAG" | grep -Eqx 'v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)' \
+            || { echo "not a release tag: $TAG" >&2; exit 1; }
+          git rev-parse -q --verify "refs/tags/$TAG" >/dev/null || { echo "no tag $TAG" >&2; exit 1; }
+          test "$(git show "$TAG:VERSION")" = "${TAG#v}" || { echo "VERSION at $TAG is not ${TAG#v}" >&2; exit 1; }
+      - name: Release notes from CHANGELOG.md
+        run: python3 scripts/version.py notes "${TAG#v}" > "$RUNNER_TEMP/notes.md"
+      - name: Create or update the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "PlummyKnowledge $TAG" --notes-file "$RUNNER_TEMP/notes.md"
+          else
+            gh release create "$TAG" --verify-tag --title "PlummyKnowledge $TAG" --notes-file "$RUNNER_TEMP/notes.md"
+          fi
