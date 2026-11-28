@@ -21,9 +21,13 @@ separately.
   GitHub Release from it.
 - README in English with diagrams of the services, document indexing and answering a question, and a short
   Russian `README.ru.md`.
+- Operator guides in `docs/guides/`: installation, configuration, local models, connectors, upgrade, backup and
+  restore, operations, troubleshooting.
 
 ### Changed
 
+- `compose.prod.yaml` passes `SESSION_IDLE_TTL`, `SESSION_ABSOLUTE_TTL` and `RATE_LIMIT_GENERAL_PER_MINUTE` from
+  `deploy/prod/.env` to the API (previously only the defaults applied).
 - `docs/API_CONTRACTS.md` is the 1.0 contract candidate. Parts that are not implemented are marked as outside
   1.0: the `Idempotency-Key` and `RateLimit-*` headers, Application Settings (`/settings`), password reset by
   email, custom roles, the knowledge-base `sources` routes, `acl_acknowledged` and the `audit.viewed` event.

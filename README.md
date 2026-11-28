@@ -158,8 +158,8 @@ docker compose -f compose.prod.yaml --env-file deploy/prod/.env --profile s3 up 
 ```
 
 Then copy `deploy/prod/secrets/keyring.json` to a safe place: without it, stored provider keys and connector
-tokens cannot be decrypted. Installation, upgrades, backup and restore are described in
-[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md). An installation created before 0.5.0 needs a one-time
+tokens cannot be decrypted. The [installation guide](docs/guides/installation.md) walks through every step;
+upgrades, backup and restore have their own [guides](docs/guides/README.md). An installation created before 0.5.0 needs a one-time
 `deploy/scripts/split-db-roles.sh` when upgrading (§6.1).
 
 ## Technology
@@ -197,7 +197,8 @@ The API and the frontend reload on code changes; restart the workers with
 
 ## Documentation
 
-Specifications and ADRs are written in Russian.
+Start with the [guides](docs/guides/README.md): installation, configuration, local models, connectors, upgrades,
+backup and restore, operations and troubleshooting. Specifications and ADRs are written in Russian.
 
 | Document | Contents |
 |---|---|

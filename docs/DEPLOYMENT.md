@@ -7,6 +7,7 @@
 | Решения | [ADR-006](adr/0006-initial-setup-and-system-configuration.md), [ADR-007](adr/0007-network-access-and-local-llm.md), [ADR-011](adr/0011-database-roles-and-extensions.md), [ADR-024](adr/0024-database-owner-and-runtime-roles.md), [ADR-013](adr/0013-auth-session-strategy.md), [ADR-022](adr/0022-s3-compatible-storage.md), [ADR-023](adr/0023-production-deployment.md) |
 | Связанные документы | [ARCHITECTURE.md §4, §10, §12](ARCHITECTURE.md), [SECURITY_MODEL.md](SECURITY_MODEL.md) |
 
+Руководства администратора на английском — [docs/guides/](guides/README.md); этот документ — их справочная основа.
 Разделы §0–§2, §4–§6, §7.1 и §8 описывают то, что реализовано. Остальные имена переменных и CLI-команд, помеченные
 **[Proposed]**, фиксируются при реализации соответствующих шагов и обновляются здесь.
 
@@ -409,7 +410,7 @@ Nginx и S3-сервера никогда не достаётся другому
 
    Для модели на хосте (`http://host.docker.internal:11434`) на Linux нужно сопоставление host-gateway и CIDR шлюза
    Docker bridge.
-3. Перезапустить `api` и `worker-io`.
+3. Перезапустить `backend` и `worker` (пример override-файла с сетью `llm` — [docs/guides/local-models.md](guides/local-models.md)).
 4. В приложении (Administrator) создать провайдера с тем же `base_url` и выполнить connection test.
 
 Allowlist по умолчанию пуст; примеры выше не являются значениями по умолчанию.
