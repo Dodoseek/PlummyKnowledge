@@ -17,4 +17,11 @@ Russian), which wins if the two ever disagree.
 | [Operations](operations.md) | Scaling, key rotation, audit retention, the server CLI |
 | [Troubleshooting](troubleshooting.md) | Symptoms and what to check |
 
+## Developers
+
+| Guide | Contents |
+|---|---|
+| [Developing AI providers](developing-providers.md) | Adding an LLM or embedding API: ports, adapter rules, tests |
+| [Developing connectors](developing-connectors.md) | Adding a document source: ADR, OAuth, sync, tests |
+
 Contributions to the code and to these guides are welcome: see [CONTRIBUTING.md](../../CONTRIBUTING.md).

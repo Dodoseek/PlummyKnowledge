@@ -680,6 +680,9 @@ RAG evaluation (§6): 30–50 документов, 50–100 вопросов (�
 
 ## 16. Принципы расширения
 
+Пошаговые руководства для разработчиков (на английском): [провайдеры](guides/developing-providers.md),
+[коннекторы](guides/developing-connectors.md).
+
 - **Новый LLM/embedding-провайдер** — адаптер `LLMProvider`/`EmbeddingProvider` + contract tests; сетевой доступ — через
   `SafeHttpClient`. Изменения в application не нужны.
 - **Новый тип источника** — реализация `DataSourceConnector`, значение `data_sources.type`, contract tests; ingestion

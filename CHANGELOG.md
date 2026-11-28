@@ -23,6 +23,7 @@ separately.
   Russian `README.ru.md`.
 - Operator guides in `docs/guides/`: installation, configuration, local models, connectors, upgrade, backup and
   restore, operations, troubleshooting.
+- Developer guides for AI providers and connectors (`docs/guides/developing-*.md`).
 
 ### Changed
 
