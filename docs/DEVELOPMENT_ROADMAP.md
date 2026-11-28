@@ -317,7 +317,9 @@ security gate (проверки безопасности **внутри** фаз
   спецификации и ADR — на русском.
 - **Выполнено:** 13.0 (ADR-025), 13.1 (snapshot OpenAPI, `scripts/openapi_compat.py`, API_CONTRACTS без
   [Proposed]), 13.2 (`CHANGELOG.md`, `version.py notes`, `release.yml`; GitHub Releases для v0.1.0, v0.4.0, v0.5.0),
-  13.3 (README на английском с диаграммами, `README.ru.md`).
+  13.3 (README на английском с диаграммами, `README.ru.md`), 13.4 (руководства администратора `docs/guides/`),
+  13.5 (руководства разработчика провайдеров и коннекторов), 13.6 (CODE_OF_CONDUCT, CONTRIBUTING и SECURITY на
+  английском, шаблоны), 13.7 (демо `compose.demo.yaml` с проверкой в CI).
 - **Выход:** **релиз 1.0.0** — стабильные contracts и production readiness (§19).
 
 ## 3. Релизы (§19)

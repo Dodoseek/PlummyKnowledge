@@ -1,4 +1,5 @@
-"""Fake OpenAI-compatible provider for the end-to-end tests (compose.e2e.yaml). Test infrastructure only.
+"""Fake OpenAI-compatible provider for the end-to-end tests (compose.e2e.yaml) and the local demo
+(compose.demo.yaml). Test and demo infrastructure only.
 
 Standard library only, deterministic, no network access:
 

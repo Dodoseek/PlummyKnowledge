@@ -1,0 +1,88 @@
+# PlummyKnowledge — local demo: the development stack with a built-in fake model and sample documents, no API keys.
+#
+#   docker compose -p plummy-demo -f compose.yaml -f compose.demo.yaml --profile demo up --build --detach --wait
+#   docker compose -p plummy-demo -f compose.yaml -f compose.demo.yaml --profile demo run --rm --no-deps \
+#     --entrypoint cat demo-seed /demo/credentials                    # administrator's sign-in details
+#   docker compose -p plummy-demo -f compose.yaml -f compose.demo.yaml --profile demo down --volumes
+#
+# Then open http://localhost:5173. The fake model (deploy/e2e/fake_llm.py) does not understand questions: it quotes
+# the first passage that retrieval found and cites it, which shows search, access control and verified citations
+# without any provider account. Add a real provider in the web app to get real answers. Development settings
+# (plain HTTP, ports bound to 127.0.0.1): never expose this stack or use it for real data.
+
+services:
+  # API and worker reach the fake model through the network allowlist (ADR-007), like a local LLM.
+  backend:
+    environment:
+      CONFIG_FILE: /etc/plummy/plummy.toml
+    volumes:
+      - ./deploy/demo/plummy.toml:/etc/plummy/plummy.toml:ro
+    networks:
+      demo-llm: {}
+
+  worker:
+    environment:
+      CONFIG_FILE: /etc/plummy/plummy.toml
+    volumes:
+      - ./deploy/demo/plummy.toml:/etc/plummy/plummy.toml:ro
+    networks:
+      demo-llm: {}
+
+  # The sample documents are Markdown, parsed by the plain-text parser: the slim image is enough (the Docling
+  # image for PDF and Office files is about 4 GB). Remove this override to try PDF and DOCX uploads.
+  worker-ingestion:
+    build:
+      target: dev
+
+  demo-llm:
+    profiles: [demo]
+    image: python:3.13-slim
+    command: ["python", "/fake/fake_llm.py"]
+    volumes:
+      - ./deploy/e2e/fake_llm.py:/fake/fake_llm.py:ro
+    networks:
+      demo-llm: {}
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # One-off: administrator, provider, knowledge base with the sample documents, assistant (deploy/demo/seed.py).
+  # Does nothing on an instance that is already set up.
+  demo-seed:
+    profiles: [demo]
+    image: python:3.13-slim
+    command: ["python", "/demo-src/seed.py"]
+    environment:
+      DEMO_API_URL: http://backend:8000
+      DEMO_ORIGIN: http://localhost:5173
+    volumes:
+      - ./deploy/demo:/demo-src:ro
+      - bootstrap-data:/bootstrap:ro
+      - demo-data:/demo
+    networks: [edge]
+    depends_on:
+      backend:
+        condition: service_healthy
+      worker:
+        condition: service_healthy
+      worker-ingestion:
+        condition: service_healthy
+      demo-llm:
+        condition: service_healthy
+
+networks:
+  # The fake model's network: internal (no internet), with a fixed subnet for the allowlist entry.
+  demo-llm:
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.213.18.0/24
+
+volumes:
+  demo-data:

@@ -300,6 +300,13 @@ docker compose -f compose.prod.yaml --env-file deploy/prod/.env exec -T backend 
 sh deploy/scripts/restore.sh /srv/plummy-backups/plummy-<время> --deletions deletions.json
 ```
 
+Демо без API-ключей (`compose.demo.yaml`: фейковая модель, примеры документов, `deploy/demo/seed.py`; job CI «Demo»):
+
+```bash
+docker compose -p plummy-demo -f compose.yaml -f compose.demo.yaml --profile demo up --build --detach --wait
+docker compose -p plummy-demo -f compose.yaml -f compose.demo.yaml --profile demo down --volumes
+```
+
 Оценка retrieval ([docs/evaluation/](docs/evaluation/README.md); индексация набора расходует токены
 embedding-провайдера):
 

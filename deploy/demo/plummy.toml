@@ -1,0 +1,9 @@
+# Instance configuration of the local demo (compose.demo.yaml): the built-in fake model is the only internal
+# address the backend may reach (ADR-007). Demo only.
+
+[[network.allowlist]]
+name           = "demo-llm"
+url            = "http://demo-llm:8080"
+purposes       = ["llm", "embedding"]
+provider_types = ["openai_compatible"]
+allowed_cidrs  = ["10.213.18.0/24"]

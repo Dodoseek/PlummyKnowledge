@@ -104,6 +104,25 @@ sequenceDiagram
     API-->>U: the cited passage in the viewer (access checked again)
 ```
 
+## Try the demo
+
+A local demo needs only Docker: it starts the stack with a built-in fake model and a knowledge base of sample
+documents, so no API keys are required.
+
+```bash
+git clone https://github.com/Dodoseek/PlummyKnowledge.git plummy-knowledge && cd plummy-knowledge
+docker compose -p plummy-demo -f compose.yaml -f compose.demo.yaml --profile demo up --build --detach --wait
+docker compose -p plummy-demo -f compose.yaml -f compose.demo.yaml --profile demo logs -f demo-seed   # until "ready"
+docker compose -p plummy-demo -f compose.yaml -f compose.demo.yaml --profile demo run --rm --no-deps \
+  --entrypoint cat demo-seed /demo/credentials
+```
+
+Open <http://localhost:5173>, sign in with the printed details and ask the **Handbook assistant**, for example,
+"How much can I spend on a hotel per night?". The fake model does not understand questions: it quotes the
+passage that search found and cites it, which shows retrieval, access control and verified citations. Add a real
+provider under **AI providers** to get real answers. The demo uses development settings: keep it on your machine.
+Remove it with `… --profile demo down --volumes`.
+
 ## Quick start (development)
 
 You need Docker with Docker Compose v2.
