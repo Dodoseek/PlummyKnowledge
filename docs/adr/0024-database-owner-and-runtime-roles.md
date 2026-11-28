@@ -171,6 +171,12 @@ python -m plummy.cli setup init-token`. Команда сначала отзыв
   контейнер `backend`, сам API её не читает). Тесты создают и мигрируют БД владельцем, выдают права runtime-роли и
   запускают приложение под ней — весь набор тестов проверяет, что сервисам хватает DML.
 
+Security gate Фазы 12 (шаг 12.7, SECURITY_MODEL §19.1): разделение ролей проверяют `test_database_roles.py`
+(runtime-роль без DDL, `TRUNCATE` и `UPDATE`/`DELETE` над `audit_logs`), весь набор integration-тестов под
+runtime-ролью, `checks.sh` в CI (роли подключений сервисов) и upgrade path с `v0.4.0` через `split-db-roles.sh`;
+retention журнала — `maintenance prune-audit` под ролью владельца. Журнал читается только через
+`GET /audit/events` с `audit.read` (шаг 12.5), маршрутов изменения и удаления событий нет.
+
 Изначальный план шага:
 
 - `deploy/prod/postgres-initdb/10-roles-and-extensions.sh` и `deploy/postgres/initdb/10-dev-roles-and-extensions.sh`

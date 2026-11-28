@@ -735,6 +735,36 @@ Backend-тесты всех сценариев запускаются одной
   из retrieval; citations валидируются backend; backup/restore проверены.
 - Threat model review и RBAC/KB-access audit — Фаза 12 и при значимых изменениях.
 
+### 19.1 Security gate Фазы 12 и предрелизный прогон 0.5.0 (шаг 12.7)
+
+Прогон 2026-11-28 на коммите шага 12.6 и рабочей копии 12.7 (код приложения не менялся). Пункты — PROJECT_BLUEPRINT
+§20 и список «Перед релизом» выше.
+
+| Пункт | Результат | Чем подтверждено |
+|---|---|---|
+| Миграции на чистой БД и upgrade path | ✓ | Integration-тесты создают и мигрируют чистую БД владельцем схемы; CI «Production stack»: БД `v0.4.0` → `split-db-roles.sh` → миграции до head (ADR-024 §5) |
+| Нет известных critical/high issues | ✓ | Threat model (§17): все строки закрыты или «—», открытые вопросы — §20; Trivy: в собственных образах и redis, S3-сервере нет исправимых CRITICAL/HIGH, в pgvector — только исключения `deploy/trivy/pgvector.trivyignore` со сроком; pip-audit и npm audit — CI «Dependency audit» |
+| Изоляция KB и пользователей, permission tests | ✓ | `test_rbac_matrix.py` и `test_route_inventory.py` (каждый маршрут, каждая роль, §3.6), SC-01…SC-09 — 55 passed (§18.2), E2E `access.spec.ts` |
+| Secrets не попадают в logs и ответы API | ✓ | `test_log_canaries.py` (§14), `test_audit_api.py` (журнал без секретов), `test_secrets.py`, тесты API провайдеров и источников (write-only), `checks.sh` (секреты не в `docker inspect`) |
+| Upload/parser limits и идемпотентность ingestion | ✓ | `test_file_inspection.py`, `test_hostile_files.py`, ingestion `test_docling_parser.py` (CI «Ingestion»), SC-09 (`test_indexing.py`) |
+| Удалённые документы исключены из retrieval | ✓ | `test_documents_api.py`, `test_retrieval.py`, restore drill (удалённый после backup документ не возвращается) |
+| Citations валидируются backend | ✓ | `test_chat_stream.py`, `test_hostile_documents.py` (выдуманные `[c7]`, `[c99]` отброшены), SC-08 |
+| Backup/restore | ✓ | Restore drill в CI «Production stack» (DEPLOYMENT §10) |
+| Docker images, healthchecks и CI | ✓ | CI на коммите 12.6 (`8cbf7dc`): все jobs зелёные; Trivy — «No fixable CRITICAL/HIGH vulnerabilities in 6 images» (backend, worker-ingestion, web, pgvector, redis, versitygw); smoke и restore drill production-стека с healthcheck `--wait` |
+| README, `.env.example`, changelog, LICENSE, NOTICE | Частично | README (статус `main`), `.env.example` (`RATE_LIMIT_GENERAL_PER_MINUTE`, `https` в `CORS_ORIGINS`), LICENSE и NOTICE без изменений. CHANGELOG в репозитории нет — пункт Фазы 13; описание релиза 0.5.0 готовит владелец при выпуске |
+
+Решения и ограничения гейта:
+
+- Чтение журнала аудита не аудируется (`audit.viewed`), просмотр документов — тоже (`document.viewed`):
+  открытый вопрос 4 (§20).
+- Лимит `general` при недоступности Redis пропускает запросы (§13): лимиты, защищающие секреты, остаются закрытыми.
+- Исключения Trivy для pgvector истекают 2026-12-31 (zstd) и 2027-02-28 (gosu, PAM): после этого CI снова требует
+  решения — новый тег образа или пересмотр исключения.
+- RLS, antivirus-сканирование загрузок и nonce в CSP для стилей остаются открытыми вопросами (§20) и не блокируют
+  0.5.0.
+
+Решение о выпуске 0.5.0 (`python3 scripts/version.py release`) принимает владелец проекта (ADR-009).
+
 ## 20. Открытые вопросы
 
 1. RLS как второй рубеж доступа на уровне KB (планируемый ADR). Разделение ролей БД

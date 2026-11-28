@@ -15,8 +15,12 @@ Open-source **self-hosted** платформа корпоративной баз
 > доступом по пользователям и группам, загрузка документов (гарантированно PDF и DOCX; также TXT, Markdown, CSV,
 > XLSX) с асинхронной индексацией, hybrid-поиск, ассистенты, чат с потоковым ответом, остановкой и историей,
 > проверенные цитаты и защищённый просмотр источника, синхронизация папок Google Drive и Microsoft 365
-> (SharePoint, OneDrive). Production-профиля (Nginx, TLS, CSP, MinIO) пока нет —
-> он запланирован в Фазе 11 ([roadmap](docs/DEVELOPMENT_ROADMAP.md)); не выставляйте инсталляцию в интернет.
+> (SharePoint, OneDrive).
+>
+> В `main` после 0.4.0 (готовится 0.5.0, [roadmap](docs/DEVELOPMENT_ROADMAP.md)): production-профиль
+> `compose.prod.yaml` (Nginx, TLS, CSP, S3-совместимое хранилище, секреты файлами), backup/restore и обновление,
+> страница фоновых задач, разделение ролей БД, журнал аудита для аудитора, общий rate limit и проверка образов
+> Trivy в CI. Production-развёртывание — [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ## Быстрый старт (разработка)
 

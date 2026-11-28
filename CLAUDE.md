@@ -11,9 +11,9 @@ PlummyKnowledge — open-source **self-hosted** платформа корпор�
 Лицензия — Apache License 2.0. Одна инсталляция принадлежит **одной** организации и работает на её серверах или в её
 облаке: multi-tenancy, сущности Organization и `organization_id` нет ([ADR-012](docs/adr/0012-single-organization-deployment.md)).
 
-**Текущее состояние:** Фазы 1–11 roadmap завершены (Foundation, Bootstrap & Authentication, Users & RBAC, AI providers
+**Текущее состояние:** Фазы 1–12 roadmap завершены (Foundation, Bootstrap & Authentication, Users & RBAC, AI providers
 & network policy, Local document ingestion, Retrieval & RAG evaluation, Knowledge Bases & Assistants, Chat UI &
-streaming, Google Drive, Microsoft 365, Production deployment); выпущены релизы 0.1.0 и 0.4.0 (теги `v0.1.0`, `v0.4.0`; 0.2.0 и 0.3.0 отдельно не
+streaming, Google Drive, Microsoft 365, Production deployment, Security hardening); выпущены релизы 0.1.0 и 0.4.0 (теги `v0.1.0`, `v0.4.0`; 0.2.0 и 0.3.0 отдельно не
 выпускались). Backend:
 FastAPI, Pydantic Settings, SQLAlchemy async, Alembic (`vector`/`citext`, users, activation tokens, groups,
 RBAC-каталог и назначения ролей, sessions, audit_logs), Redis (rate limit, брокер Celery), health live/ready; Celery
@@ -55,7 +55,7 @@ Delta Query), общий транспорт `connector_http.py`, выбор пр
 Nginx/TLS/CSP, секретами файлами (`deploy/prod/init-secrets.sh`), `PROCESS_ROLE` и CI-smoke
 (`deploy/prod/smoke/`); backup/restore (`deploy/scripts/`, CLI `maintenance`: объекты через `StorageProvider`,
 повторное применение удалений после backup), restore drill и upgrade path с `v0.4.0` в CI; отмена jobs и
-страница `/admin/jobs`; retention версий документов (последние 3 `outdated`). Фаза 12 (Security hardening) начата:
+страница `/admin/jobs`; retention версий документов (последние 3 `outdated`). Фаза 12 (Security hardening, завершена; security gate — SECURITY_MODEL §19.1):
 [ADR-024](docs/adr/0024-database-owner-and-runtime-roles.md) — владелец схемы (`plummy`, только `migrate`) и
 runtime-роль сервисов (`plummy_app`, только DML, `audit_logs` append-only; права — `db grant-runtime`), retention
 audit `maintenance prune-audit`; threat model пересмотрена (SECURITY_MODEL §17); инвентаризация маршрутов и
